@@ -1,0 +1,13 @@
+{
+    "remove_background": false,
+    "negative_mode": false,
+    "recent_files": [
+        "C:/Users/pablo/Downloads/scans_070525 1/scans_070525/RC15_16.tiff"
+    ],
+    "auto_measure": false,
+    "colormap": "viridis",
+    "use_gpu": false,
+    "gpu_force_enabled": false,
+    "use_multithreading": true,
+    "num_threads": 9
+}
