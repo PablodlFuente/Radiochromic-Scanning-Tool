@@ -1,0 +1,7 @@
+ImageName,Dose,ROIShape,ROISize,ROIX_orig,ROIY_orig,MeanR,MeanG,MeanB,StdDevR,StdDevG,StdDevB,NumPixels
+RC_0_0Gy.tiff,0.0,rectangle,30,1295.52,744.14,160.03,142.67,97.59,2.14,2.05,2.13,900
+RC_1_0.1Gy.tiff,0.1,rectangle,30,1371.72,793.45,153.58,139.08,96.75,2.21,1.61,2.00,900
+RC_2_0.3Gy.tiff,0.3,rectangle,30,1241.72,762.07,140.92,129.77,93.92,2.08,1.90,2.01,900
+RC_8_6Gy.tiff,6.0,rectangle,30,1246.21,766.55,66.58,50.25,63.20,2.28,1.92,2.23,900
+RC_9_8Gy.tiff,8.0,rectangle,30,1192.41,788.97,61.85,41.00,57.23,2.33,2.11,2.09,900
+RC_10_10Gy.tiff,10.0,rectangle,30,1170.00,802.41,58.91,35.19,52.12,2.28,2.20,2.18,900

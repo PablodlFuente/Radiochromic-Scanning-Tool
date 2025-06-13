@@ -682,85 +682,17 @@ class MainWindow:
     
     def start_calibration_wizard(self):
         """Start the calibration wizard."""
-        if not self.image_processor.has_image():
-            messagebox.showinfo("Information", "You must open an image first to calibrate.")
+        # Defer heavy imports so startup is not affected
+        try:
+            from app.ui.calibration_wizard import CalibrationWizardWindow
+        except Exception as exc:
+            messagebox.showerror("Calibration Wizard", f"No se pudo abrir el asistente de calibración:\n{exc}")
+            logger.error("Failed to launch calibration wizard", exc_info=True)
             return
-        
-        # Create calibration wizard window
-        wizard = tk.Toplevel(self.parent)
-        wizard.title("Calibration Wizard")
-        wizard.geometry("600x500")
-        wizard.grab_set()  # Modal
-        
-        # Create wizard interface
-        ttk.Label(
-            wizard, 
-            text="Radiochromic Film Calibration Wizard", 
-            font=("Arial", 14, "bold")
-        ).pack(pady=10)
-        
-        ttk.Label(
-            wizard, 
-            text="This wizard will guide you through the calibration process for radiochromic films."
-        ).pack(pady=5)
-        
-        # Parameters frame
-        params_frame = ttk.Frame(wizard)
-        params_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
-        
-        # Calibration parameters
-        ttk.Label(params_frame, text="Known dose (Gy):").grid(row=0, column=0, sticky=tk.W, pady=5)
-        dose_entry = ttk.Entry(params_frame)
-        dose_entry.grid(row=0, column=1, sticky=tk.W, pady=5)
-        dose_entry.insert(0, "0")
-        
-        ttk.Label(params_frame, text="Calibration factor:").grid(row=1, column=0, sticky=tk.W, pady=5)
-        factor_entry = ttk.Entry(params_frame)
-        factor_entry.grid(row=1, column=1, sticky=tk.W, pady=5)
-        factor_entry.insert(0, "1.0")
-        
-        ttk.Label(params_frame, text="Offset:").grid(row=2, column=0, sticky=tk.W, pady=5)
-        offset_entry = ttk.Entry(params_frame)
-        offset_entry.grid(row=2, column=1, sticky=tk.W, pady=5)
-        offset_entry.insert(0, "0.0")
-        
-        # Instructions
-        ttk.Label(wizard, text="Instructions:", font=("Arial", 10, "bold")).pack(anchor=tk.W, padx=20, pady=5)
-        ttk.Label(wizard, text="1. Select an irradiated area in the image").pack(anchor=tk.W, padx=30)
-        ttk.Label(wizard, text="2. Enter the known dose for that area").pack(anchor=tk.W, padx=30)
-        ttk.Label(wizard, text="3. Adjust the calibration parameters").pack(anchor=tk.W, padx=30)
-        ttk.Label(wizard, text="4. Save the calibration").pack(anchor=tk.W, padx=30)
-        
-        # Buttons
-        buttons_frame = ttk.Frame(wizard)
-        buttons_frame.pack(fill=tk.X, padx=20, pady=20)
-        
-        def save_calibration():
-            try:
-                # Get values
-                dose = float(dose_entry.get())
-                factor = float(factor_entry.get())
-                offset = float(offset_entry.get())
-                
-                # Save calibration
-                self.image_processor.set_calibration(dose, factor, offset)
-                
-                # Apply calibration
-                self.apply_calibration()
-                
-                # Close wizard
-                wizard.destroy()
-                
-                # Show success message
-                messagebox.showinfo("Success", "Calibration saved successfully.")
-                
-                logger.info("Calibration saved")
-            except ValueError:
-                messagebox.showerror("Error", "Please enter valid numeric values.")
-                logger.error("Invalid calibration values")
-        
-        ttk.Button(buttons_frame, text="Cancel", command=wizard.destroy).pack(side=tk.RIGHT, padx=5)
-        ttk.Button(buttons_frame, text="Save Calibration", command=save_calibration).pack(side=tk.RIGHT, padx=5)
+
+        # Create the wizard window (modal)
+        CalibrationWizardWindow(self.parent)
+        # No further action for now – the wizard handles its own lifecycle
     
     def apply_calibration(self):
         """Apply calibration to the current image."""

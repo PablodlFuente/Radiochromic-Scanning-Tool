@@ -2161,3 +2161,215 @@ IndexError: index 2565 is out of bounds for axis 1 with size 2550
 2025-06-05 18:58:59,450 - app.core.image_processor - INFO - Integral images computed successfully
 2025-06-05 18:58:59,454 - app.core.image_processor - INFO - Loaded image: C:\Users\Pablo\OneDrive - UAM\4 Protonterapia\1 Experimentos\1 Experimentos\2025_05_06_PT\scans_070525\RC1_2_3.tiff
 2025-06-05 18:58:59,458 - app.ui.main_window - INFO - Loaded image: C:\Users\Pablo\OneDrive - UAM\4 Protonterapia\1 Experimentos\1 Experimentos\2025_05_06_PT\scans_070525\RC1_2_3.tiff
+2025-06-07 13:45:26,589 - __main__ - INFO - Starting Radiochromic Film Analyzer
+2025-06-07 13:45:26,636 - app.rc_analyzer - INFO - Initializing RCAnalyzer application
+2025-06-07 13:45:26,636 - app.rc_analyzer - WARNING - Could not remove log file rc_analyzer.log: [WinError 32] El proceso no tiene acceso al archivo porque está siendo utilizado por otro proceso: 'rc_analyzer.log'
+2025-06-07 13:45:26,640 - app.rc_analyzer - INFO - Cleaned up local temp directory: C:\Users\Pablo\OneDrive - UAM\2 Proyectos\1 Otros\0 Software_propio_utilidades\RC\analizadorrc\temp
+2025-06-07 13:45:26,641 - app.rc_analyzer - INFO - Cleaned up log and temporary files
+2025-06-07 13:45:26,641 - app.utils.config_manager - INFO - Configuration manager initialized
+2025-06-07 13:45:26,642 - app.utils.config_manager - INFO - Configuration loaded from file
+2025-06-07 13:45:26,660 - app.core.image_processor - INFO - System info: {'platform': 'Windows', 'processor': 'AMD64 Family 23 Model 113 Stepping 0, AuthenticAMD', 'cpu_count': 12, 'memory_gb': 31.94003677368164, 'python_version': '3.12.0', 'opencv_version': '4.11.0'}
+2025-06-07 13:45:26,667 - app.core.image_processor - WARNING - CUDA test matrix creation failed: OpenCV(4.11.0) D:\a\opencv-python\opencv-python\opencv\modules\core\include\opencv2/core/private.cuda.hpp:106: error: (-216:No CUDA support) The library is compiled without CUDA support in function 'throw_no_cuda'
+
+2025-06-07 13:45:26,671 - app.core.image_processor - WARNING - Alternative CUDA test failed: OpenCV(4.11.0) :-1: error: (-5:Bad argument) in function 'createGpuMatFromCudaMemory'
+> Overload resolution failed:
+>  - createGpuMatFromCudaMemory() missing required argument 'type' (pos 3)
+>  - createGpuMatFromCudaMemory() missing required argument 'cudaMemoryAddress' (pos 3)
+
+2025-06-07 13:45:26,799 - app.core.image_processor - INFO - NVIDIA GPU detected: nvidia quadro p600
+2025-06-07 13:45:26,799 - app.core.image_processor - INFO - CUDA initialization failed. Setting GPU as available but with warning.
+2025-06-07 13:45:26,799 - app.core.image_processor - INFO - To fix CUDA issues, try:
+2025-06-07 13:45:26,799 - app.core.image_processor - INFO - 1. Install the latest NVIDIA drivers
+2025-06-07 13:45:26,799 - app.core.image_processor - INFO - 2. Install CUDA toolkit compatible with your GPU
+2025-06-07 13:45:26,799 - app.core.image_processor - INFO - 3. Use 'Force enable GPU' option in settings
+2025-06-07 13:45:26,799 - app.core.image_processor - INFO - GPU acceleration available. Enabled: False
+2025-06-07 13:45:26,803 - app.core.image_processor - INFO - Image processor initialized
+2025-06-07 13:45:26,803 - app.utils.file_manager - INFO - File manager initialized
+2025-06-07 13:45:26,852 - app.ui.image_panel - INFO - Image panel initialized
+2025-06-07 13:45:26,867 - app.ui.measurement_panel - INFO - Measurement panel initialized
+2025-06-07 13:45:26,881 - app.ui.image_settings_panel - INFO - Image settings panel initialized
+2025-06-07 13:45:26,882 - app.ui.main_window - INFO - Main window initialized
+2025-06-07 13:45:26,882 - app.rc_analyzer - INFO - RCAnalyzer initialization complete
+2025-06-07 14:12:57,385 - app.rc_analyzer - INFO - Saving configuration before exit
+2025-06-07 14:12:57,385 - app.utils.config_manager - INFO - Configuration saved to file
+2025-06-07 14:12:57,385 - app.rc_analyzer - WARNING - Could not remove log file rc_analyzer.log: [WinError 32] El proceso no tiene acceso al archivo porque está siendo utilizado por otro proceso: 'rc_analyzer.log'
+2025-06-07 14:12:57,391 - app.rc_analyzer - INFO - Cleaned up local temp directory: C:\Users\Pablo\OneDrive - UAM\2 Proyectos\1 Otros\0 Software_propio_utilidades\RC\analizadorrc\temp
+2025-06-07 14:12:57,391 - app.rc_analyzer - INFO - Cleaned up log and temporary files
+2025-06-07 14:12:57,485 - __main__ - INFO - Application closed normally
+2025-06-07 16:37:22,589 - __main__ - INFO - Starting Radiochromic Film Analyzer
+2025-06-07 16:37:22,873 - app.rc_analyzer - INFO - Initializing RCAnalyzer application
+2025-06-07 16:37:22,873 - app.rc_analyzer - WARNING - Could not remove log file rc_analyzer.log: [WinError 32] El proceso no tiene acceso al archivo porque está siendo utilizado por otro proceso: 'rc_analyzer.log'
+2025-06-07 16:37:22,880 - app.rc_analyzer - INFO - Cleaned up local temp directory: C:\Users\Pablo\OneDrive - UAM\2 Proyectos\1 Otros\0 Software_propio_utilidades\RC\analizadorrc\temp
+2025-06-07 16:37:22,880 - app.rc_analyzer - INFO - Cleaned up log and temporary files
+2025-06-07 16:37:22,880 - app.utils.config_manager - INFO - Configuration manager initialized
+2025-06-07 16:37:22,880 - app.utils.config_manager - INFO - Configuration loaded from file
+2025-06-07 16:37:22,900 - app.core.image_processor - INFO - System info: {'platform': 'Windows', 'processor': 'AMD64 Family 23 Model 113 Stepping 0, AuthenticAMD', 'cpu_count': 12, 'memory_gb': 31.94003677368164, 'python_version': '3.12.0', 'opencv_version': '4.11.0'}
+2025-06-07 16:37:22,900 - app.core.image_processor - WARNING - CUDA test matrix creation failed: OpenCV(4.11.0) D:\a\opencv-python\opencv-python\opencv\modules\core\include\opencv2/core/private.cuda.hpp:106: error: (-216:No CUDA support) The library is compiled without CUDA support in function 'throw_no_cuda'
+
+2025-06-07 16:37:22,900 - app.core.image_processor - WARNING - Alternative CUDA test failed: OpenCV(4.11.0) :-1: error: (-5:Bad argument) in function 'createGpuMatFromCudaMemory'
+> Overload resolution failed:
+>  - createGpuMatFromCudaMemory() missing required argument 'type' (pos 3)
+>  - createGpuMatFromCudaMemory() missing required argument 'cudaMemoryAddress' (pos 3)
+
+2025-06-07 16:37:23,716 - app.core.image_processor - INFO - NVIDIA GPU detected: nvidia quadro p600
+2025-06-07 16:37:23,716 - app.core.image_processor - INFO - CUDA initialization failed. Setting GPU as available but with warning.
+2025-06-07 16:37:23,716 - app.core.image_processor - INFO - To fix CUDA issues, try:
+2025-06-07 16:37:23,716 - app.core.image_processor - INFO - 1. Install the latest NVIDIA drivers
+2025-06-07 16:37:23,716 - app.core.image_processor - INFO - 2. Install CUDA toolkit compatible with your GPU
+2025-06-07 16:37:23,716 - app.core.image_processor - INFO - 3. Use 'Force enable GPU' option in settings
+2025-06-07 16:37:23,716 - app.core.image_processor - INFO - GPU acceleration available. Enabled: False
+2025-06-07 16:37:23,716 - app.core.image_processor - INFO - Image processor initialized
+2025-06-07 16:37:23,716 - app.utils.file_manager - INFO - File manager initialized
+2025-06-07 16:37:23,764 - app.ui.image_panel - INFO - Image panel initialized
+2025-06-07 16:37:23,780 - app.ui.measurement_panel - INFO - Measurement panel initialized
+2025-06-07 16:37:23,787 - app.ui.image_settings_panel - INFO - Image settings panel initialized
+2025-06-07 16:37:23,792 - app.ui.main_window - INFO - Main window initialized
+2025-06-07 16:37:23,792 - app.rc_analyzer - INFO - RCAnalyzer initialization complete
+2025-06-07 16:37:43,297 - app.ui.main_window - INFO - Loading image: C:/Users/Pablo/OneDrive - UAM/4 Protonterapia/1 Experimentos/0 Calibraciones/RC_calibrations/CUN_calibraciones/2025_04_25_CalibracionCUN2/25_04_2025_ Calibración_RC_Escaner_24h/RC_0_0Gy.tiff (Size: 14.63 MB)
+2025-06-07 16:37:43,383 - app.core.image_processor - ERROR - Error loading image: 'NoneType' object has no attribute 'shape'
+Traceback (most recent call last):
+  File "C:\Users\Pablo\OneDrive - UAM\2 Proyectos\1 Otros\0 Software_propio_utilidades\RC\analizadorrc\app\core\image_processor.py", line 332, in load_image
+    if len(image.shape) == 3 and image.shape[2] == 3:
+           ^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'shape'
+2025-06-07 16:37:43,385 - app.ui.main_window - ERROR - Error loading image: 'NoneType' object has no attribute 'shape'
+Traceback (most recent call last):
+  File "C:\Users\Pablo\OneDrive - UAM\2 Proyectos\1 Otros\0 Software_propio_utilidades\RC\analizadorrc\app\ui\main_window.py", line 180, in _load_image_thread
+    load_success = self.image_processor.load_image(file_path)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Pablo\OneDrive - UAM\2 Proyectos\1 Otros\0 Software_propio_utilidades\RC\analizadorrc\app\core\image_processor.py", line 332, in load_image
+    if len(image.shape) == 3 and image.shape[2] == 3:
+           ^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'shape'
+2025-06-07 16:37:54,940 - app.ui.main_window - INFO - Loading image: C:\Users\Pablo\OneDrive - UAM\4 Protonterapia\1 Experimentos\1 Experimentos\2025_05_06_PT\scans_070525\RC1_2_3.tiff (Size: 14.94 MB)
+2025-06-07 16:37:55,109 - app.core.image_processor - INFO - Loading image: C:\Users\Pablo\OneDrive - UAM\4 Protonterapia\1 Experimentos\1 Experimentos\2025_05_06_PT\scans_070525\RC1_2_3.tiff, size: 2550x3510
+2025-06-07 16:37:55,116 - app.core.image_processor - INFO - Computing integral images for fast statistics
+2025-06-07 16:37:55,384 - app.core.image_processor - INFO - Integral images computed successfully
+2025-06-07 16:37:55,394 - app.core.image_processor - INFO - Loaded image: C:\Users\Pablo\OneDrive - UAM\4 Protonterapia\1 Experimentos\1 Experimentos\2025_05_06_PT\scans_070525\RC1_2_3.tiff
+2025-06-07 16:37:55,394 - app.ui.main_window - INFO - Loaded image: C:\Users\Pablo\OneDrive - UAM\4 Protonterapia\1 Experimentos\1 Experimentos\2025_05_06_PT\scans_070525\RC1_2_3.tiff
+2025-06-07 16:38:07,113 - app.rc_analyzer - INFO - Saving configuration before exit
+2025-06-07 16:38:07,113 - app.utils.config_manager - INFO - Configuration saved to file
+2025-06-07 16:38:07,114 - app.rc_analyzer - WARNING - Could not remove log file rc_analyzer.log: [WinError 32] El proceso no tiene acceso al archivo porque está siendo utilizado por otro proceso: 'rc_analyzer.log'
+2025-06-07 16:38:07,118 - app.rc_analyzer - INFO - Cleaned up local temp directory: C:\Users\Pablo\OneDrive - UAM\2 Proyectos\1 Otros\0 Software_propio_utilidades\RC\analizadorrc\temp
+2025-06-07 16:38:07,118 - app.rc_analyzer - INFO - Cleaned up log and temporary files
+2025-06-07 16:38:07,207 - __main__ - INFO - Application closed normally
+2025-06-13 17:33:01,904 - __main__ - INFO - Starting Radiochromic Film Analyzer
+2025-06-13 17:33:01,954 - app.rc_analyzer - INFO - Initializing RCAnalyzer application
+2025-06-13 17:33:01,954 - app.rc_analyzer - WARNING - Could not remove log file rc_analyzer.log: [WinError 32] El proceso no tiene acceso al archivo porque está siendo utilizado por otro proceso: 'rc_analyzer.log'
+2025-06-13 17:33:01,970 - app.rc_analyzer - INFO - Cleaned up local temp directory: C:\Users\Pablo\OneDrive - UAM\2 Proyectos\1 Otros\0 Software_propio_utilidades\RC\analizadorrc\temp
+2025-06-13 17:33:01,970 - app.rc_analyzer - INFO - Cleaned up log and temporary files
+2025-06-13 17:33:01,970 - app.utils.config_manager - INFO - Configuration manager initialized
+2025-06-13 17:33:01,976 - app.utils.config_manager - INFO - Configuration loaded from file
+2025-06-13 17:33:01,996 - app.core.image_processor - INFO - System info: {'platform': 'Windows', 'processor': 'AMD64 Family 23 Model 113 Stepping 0, AuthenticAMD', 'cpu_count': 12, 'memory_gb': 31.94003677368164, 'python_version': '3.12.0', 'opencv_version': '4.11.0'}
+2025-06-13 17:33:02,008 - app.core.image_processor - WARNING - CUDA test matrix creation failed: OpenCV(4.11.0) D:\a\opencv-python\opencv-python\opencv\modules\core\include\opencv2/core/private.cuda.hpp:106: error: (-216:No CUDA support) The library is compiled without CUDA support in function 'throw_no_cuda'
+
+2025-06-13 17:33:02,010 - app.core.image_processor - WARNING - Alternative CUDA test failed: OpenCV(4.11.0) :-1: error: (-5:Bad argument) in function 'createGpuMatFromCudaMemory'
+> Overload resolution failed:
+>  - createGpuMatFromCudaMemory() missing required argument 'type' (pos 3)
+>  - createGpuMatFromCudaMemory() missing required argument 'cudaMemoryAddress' (pos 3)
+
+2025-06-13 17:33:02,150 - app.core.image_processor - INFO - NVIDIA GPU detected: nvidia quadro p600
+2025-06-13 17:33:02,150 - app.core.image_processor - INFO - CUDA initialization failed. Setting GPU as available but with warning.
+2025-06-13 17:33:02,150 - app.core.image_processor - INFO - To fix CUDA issues, try:
+2025-06-13 17:33:02,150 - app.core.image_processor - INFO - 1. Install the latest NVIDIA drivers
+2025-06-13 17:33:02,150 - app.core.image_processor - INFO - 2. Install CUDA toolkit compatible with your GPU
+2025-06-13 17:33:02,150 - app.core.image_processor - INFO - 3. Use 'Force enable GPU' option in settings
+2025-06-13 17:33:02,150 - app.core.image_processor - INFO - GPU acceleration available. Enabled: False
+2025-06-13 17:33:02,151 - app.core.image_processor - INFO - Image processor initialized
+2025-06-13 17:33:02,159 - app.utils.file_manager - INFO - File manager initialized
+2025-06-13 17:33:02,200 - app.ui.image_panel - INFO - Image panel initialized
+2025-06-13 17:33:02,217 - app.ui.measurement_panel - INFO - Measurement panel initialized
+2025-06-13 17:33:02,229 - app.ui.image_settings_panel - INFO - Image settings panel initialized
+2025-06-13 17:33:02,232 - app.ui.main_window - INFO - Main window initialized
+2025-06-13 17:33:02,232 - app.rc_analyzer - INFO - RCAnalyzer initialization complete
+2025-06-13 17:33:09,551 - app.rc_analyzer - INFO - Saving configuration before exit
+2025-06-13 17:33:09,555 - app.utils.config_manager - INFO - Configuration saved to file
+2025-06-13 17:33:09,555 - app.rc_analyzer - WARNING - Could not remove log file rc_analyzer.log: [WinError 32] El proceso no tiene acceso al archivo porque está siendo utilizado por otro proceso: 'rc_analyzer.log'
+2025-06-13 17:33:09,557 - app.rc_analyzer - INFO - Cleaned up local temp directory: C:\Users\Pablo\OneDrive - UAM\2 Proyectos\1 Otros\0 Software_propio_utilidades\RC\analizadorrc\temp
+2025-06-13 17:33:09,557 - app.rc_analyzer - INFO - Cleaned up log and temporary files
+2025-06-13 17:33:09,656 - __main__ - INFO - Application closed normally
+2025-06-13 17:42:46,679 - __main__ - INFO - Starting Radiochromic Film Analyzer
+2025-06-13 17:42:46,725 - app.rc_analyzer - INFO - Initializing RCAnalyzer application
+2025-06-13 17:42:46,727 - app.rc_analyzer - WARNING - Could not remove log file rc_analyzer.log: [WinError 32] El proceso no tiene acceso al archivo porque está siendo utilizado por otro proceso: 'rc_analyzer.log'
+2025-06-13 17:42:46,731 - app.rc_analyzer - INFO - Cleaned up local temp directory: C:\Users\Pablo\OneDrive - UAM\2 Proyectos\1 Otros\0 Software_propio_utilidades\RC\analizadorrc\temp
+2025-06-13 17:42:46,732 - app.rc_analyzer - INFO - Cleaned up log and temporary files
+2025-06-13 17:42:46,732 - app.utils.config_manager - INFO - Configuration manager initialized
+2025-06-13 17:42:46,732 - app.utils.config_manager - INFO - Configuration loaded from file
+2025-06-13 17:42:46,749 - app.core.image_processor - INFO - System info: {'platform': 'Windows', 'processor': 'AMD64 Family 23 Model 113 Stepping 0, AuthenticAMD', 'cpu_count': 12, 'memory_gb': 31.94003677368164, 'python_version': '3.12.0', 'opencv_version': '4.11.0'}
+2025-06-13 17:42:46,750 - app.core.image_processor - WARNING - CUDA test matrix creation failed: OpenCV(4.11.0) D:\a\opencv-python\opencv-python\opencv\modules\core\include\opencv2/core/private.cuda.hpp:106: error: (-216:No CUDA support) The library is compiled without CUDA support in function 'throw_no_cuda'
+
+2025-06-13 17:42:46,750 - app.core.image_processor - WARNING - Alternative CUDA test failed: OpenCV(4.11.0) :-1: error: (-5:Bad argument) in function 'createGpuMatFromCudaMemory'
+> Overload resolution failed:
+>  - createGpuMatFromCudaMemory() missing required argument 'type' (pos 3)
+>  - createGpuMatFromCudaMemory() missing required argument 'cudaMemoryAddress' (pos 3)
+
+2025-06-13 17:42:46,841 - app.core.image_processor - INFO - NVIDIA GPU detected: nvidia quadro p600
+2025-06-13 17:42:46,841 - app.core.image_processor - INFO - CUDA initialization failed. Setting GPU as available but with warning.
+2025-06-13 17:42:46,841 - app.core.image_processor - INFO - To fix CUDA issues, try:
+2025-06-13 17:42:46,842 - app.core.image_processor - INFO - 1. Install the latest NVIDIA drivers
+2025-06-13 17:42:46,842 - app.core.image_processor - INFO - 2. Install CUDA toolkit compatible with your GPU
+2025-06-13 17:42:46,842 - app.core.image_processor - INFO - 3. Use 'Force enable GPU' option in settings
+2025-06-13 17:42:46,842 - app.core.image_processor - INFO - GPU acceleration available. Enabled: False
+2025-06-13 17:42:46,843 - app.core.image_processor - INFO - Image processor initialized
+2025-06-13 17:42:46,843 - app.utils.file_manager - INFO - File manager initialized
+2025-06-13 17:42:46,871 - app.ui.image_panel - INFO - Image panel initialized
+2025-06-13 17:42:46,888 - app.ui.measurement_panel - INFO - Measurement panel initialized
+2025-06-13 17:42:46,900 - app.ui.image_settings_panel - INFO - Image settings panel initialized
+2025-06-13 17:42:46,902 - app.ui.main_window - INFO - Main window initialized
+2025-06-13 17:42:46,903 - app.rc_analyzer - INFO - RCAnalyzer initialization complete
+2025-06-13 17:42:59,235 - app.ui.main_window - ERROR - Failed to launch calibration wizard
+Traceback (most recent call last):
+  File "C:\Users\Pablo\OneDrive - UAM\2 Proyectos\1 Otros\0 Software_propio_utilidades\RC\analizadorrc\app\ui\main_window.py", line 687, in start_calibration_wizard
+    from app.ui.calibration_wizard import CalibrationWizardWindow
+  File "C:\Users\Pablo\OneDrive - UAM\2 Proyectos\1 Otros\0 Software_propio_utilidades\RC\analizadorrc\app\ui\calibration_wizard.py", line 1
+    """Calibration Wizard wrapper that embeds the already–developed
+    ^^^
+SyntaxError: (unicode error) 'unicodeescape' codec can't decode bytes in position 198-199: truncated \UXXXXXXXX escape
+2025-06-13 17:47:52,439 - __main__ - INFO - Starting Radiochromic Film Analyzer
+2025-06-13 17:47:52,488 - app.rc_analyzer - INFO - Initializing RCAnalyzer application
+2025-06-13 17:47:52,488 - app.rc_analyzer - WARNING - Could not remove log file rc_analyzer.log: [WinError 32] El proceso no tiene acceso al archivo porque está siendo utilizado por otro proceso: 'rc_analyzer.log'
+2025-06-13 17:47:52,491 - app.rc_analyzer - INFO - Cleaned up local temp directory: C:\Users\Pablo\OneDrive - UAM\2 Proyectos\1 Otros\0 Software_propio_utilidades\RC\analizadorrc\temp
+2025-06-13 17:47:52,491 - app.rc_analyzer - INFO - Cleaned up log and temporary files
+2025-06-13 17:47:52,491 - app.utils.config_manager - INFO - Configuration manager initialized
+2025-06-13 17:47:52,491 - app.utils.config_manager - INFO - Configuration loaded from file
+2025-06-13 17:47:52,510 - app.core.image_processor - INFO - System info: {'platform': 'Windows', 'processor': 'AMD64 Family 23 Model 113 Stepping 0, AuthenticAMD', 'cpu_count': 12, 'memory_gb': 31.94003677368164, 'python_version': '3.12.0', 'opencv_version': '4.11.0'}
+2025-06-13 17:47:52,511 - app.core.image_processor - WARNING - CUDA test matrix creation failed: OpenCV(4.11.0) D:\a\opencv-python\opencv-python\opencv\modules\core\include\opencv2/core/private.cuda.hpp:106: error: (-216:No CUDA support) The library is compiled without CUDA support in function 'throw_no_cuda'
+
+2025-06-13 17:47:52,512 - app.core.image_processor - WARNING - Alternative CUDA test failed: OpenCV(4.11.0) :-1: error: (-5:Bad argument) in function 'createGpuMatFromCudaMemory'
+> Overload resolution failed:
+>  - createGpuMatFromCudaMemory() missing required argument 'type' (pos 3)
+>  - createGpuMatFromCudaMemory() missing required argument 'cudaMemoryAddress' (pos 3)
+
+2025-06-13 17:47:52,607 - app.core.image_processor - INFO - NVIDIA GPU detected: nvidia quadro p600
+2025-06-13 17:47:52,607 - app.core.image_processor - INFO - CUDA initialization failed. Setting GPU as available but with warning.
+2025-06-13 17:47:52,607 - app.core.image_processor - INFO - To fix CUDA issues, try:
+2025-06-13 17:47:52,607 - app.core.image_processor - INFO - 1. Install the latest NVIDIA drivers
+2025-06-13 17:47:52,607 - app.core.image_processor - INFO - 2. Install CUDA toolkit compatible with your GPU
+2025-06-13 17:47:52,607 - app.core.image_processor - INFO - 3. Use 'Force enable GPU' option in settings
+2025-06-13 17:47:52,607 - app.core.image_processor - INFO - GPU acceleration available. Enabled: False
+2025-06-13 17:47:52,607 - app.core.image_processor - INFO - Image processor initialized
+2025-06-13 17:47:52,607 - app.utils.file_manager - INFO - File manager initialized
+2025-06-13 17:47:52,645 - app.ui.image_panel - INFO - Image panel initialized
+2025-06-13 17:47:52,665 - app.ui.measurement_panel - INFO - Measurement panel initialized
+2025-06-13 17:47:52,679 - app.ui.image_settings_panel - INFO - Image settings panel initialized
+2025-06-13 17:47:52,683 - app.ui.main_window - INFO - Main window initialized
+2025-06-13 17:47:52,683 - app.rc_analyzer - INFO - RCAnalyzer initialization complete
+2025-06-13 17:48:00,038 - app.ui.main_window - ERROR - Failed to launch calibration wizard
+Traceback (most recent call last):
+  File "C:\Users\Pablo\OneDrive - UAM\2 Proyectos\1 Otros\0 Software_propio_utilidades\RC\analizadorrc\app\ui\main_window.py", line 687, in start_calibration_wizard
+    from app.ui.calibration_wizard import CalibrationWizardWindow
+  File "C:\Users\Pablo\OneDrive - UAM\2 Proyectos\1 Otros\0 Software_propio_utilidades\RC\analizadorrc\app\ui\calibration_wizard.py", line 1
+    """Calibration Wizard wrapper that embeds the already–developed
+    ^^^
+SyntaxError: (unicode error) 'unicodeescape' codec can't decode bytes in position 198-199: truncated \UXXXXXXXX escape
+2025-06-13 17:56:12,857 - app.ui.main_window - INFO - Loading image: C:\Users\Pablo\OneDrive - UAM\4 Protonterapia\1 Experimentos\1 Experimentos\2025_05_06_PT\scans_070525\RC1_2_3.tiff (Size: 14.94 MB)
+2025-06-13 17:56:13,030 - app.core.image_processor - INFO - Loading image: C:\Users\Pablo\OneDrive - UAM\4 Protonterapia\1 Experimentos\1 Experimentos\2025_05_06_PT\scans_070525\RC1_2_3.tiff, size: 2550x3510
+2025-06-13 17:56:13,034 - app.core.image_processor - INFO - Computing integral images for fast statistics
+2025-06-13 17:56:13,165 - app.core.image_processor - INFO - Integral images computed successfully
+2025-06-13 17:56:13,165 - app.core.image_processor - INFO - Loaded image: C:\Users\Pablo\OneDrive - UAM\4 Protonterapia\1 Experimentos\1 Experimentos\2025_05_06_PT\scans_070525\RC1_2_3.tiff
+2025-06-13 17:56:13,171 - app.ui.main_window - INFO - Loaded image: C:\Users\Pablo\OneDrive - UAM\4 Protonterapia\1 Experimentos\1 Experimentos\2025_05_06_PT\scans_070525\RC1_2_3.tiff
+2025-06-13 18:29:18,580 - app.rc_analyzer - INFO - Saving configuration before exit
+2025-06-13 18:29:18,581 - app.utils.config_manager - INFO - Configuration saved to file
+2025-06-13 18:29:18,583 - app.rc_analyzer - WARNING - Could not remove log file rc_analyzer.log: [WinError 32] El proceso no tiene acceso al archivo porque está siendo utilizado por otro proceso: 'rc_analyzer.log'
+2025-06-13 18:29:18,586 - app.rc_analyzer - INFO - Cleaned up local temp directory: C:\Users\Pablo\OneDrive - UAM\2 Proyectos\1 Otros\0 Software_propio_utilidades\RC\analizadorrc\temp
+2025-06-13 18:29:18,586 - app.rc_analyzer - INFO - Cleaned up log and temporary files
