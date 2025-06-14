@@ -363,9 +363,27 @@ class MeasurementPanel:
         # Update labels
         if isinstance(average, tuple) and len(average) == 3:
             # RGB values
-            self.average_label.config(
-                text=f"Average RGB: ({average[0]:.2f}, {average[1]:.2f}, {average[2]:.2f})"
-            )
+            # Determine if dose calibration is active so we can tailor the label
+            if self.image_processor.calibration_applied:
+                # Calculate overall average dose and its standard error
+                avg_dose = sum(average) / 3.0
+                # uncertainty is a tuple when RGB
+                if isinstance(uncertainty, tuple):
+                    import math
+                    se_avg = math.sqrt(sum(u ** 2 for u in uncertainty)) / 3.0
+                else:
+                    se_avg = 0.0
+                self.average_label.config(
+                    text=(
+                        f"Average dose Gy (RGB): ({average[0]:.2f}, {average[1]:.2f}, {average[2]:.2f}) | "
+                        f"Mean: {avg_dose:.2f} | SE: {se_avg:.4f}"
+                    )
+                )
+            else:
+                # No calibration – behave as before
+                self.average_label.config(
+                    text=f"Average RGB: ({average[0]:.2f}, {average[1]:.2f}, {average[2]:.2f})"
+                )
             self.std_dev_label.config(
                 text=f"Standard deviation: ({std_dev[0]:.2f}, {std_dev[1]:.2f}, {std_dev[2]:.2f})"
             )
@@ -421,34 +439,68 @@ class MeasurementPanel:
         
         # Check if we have RGB or grayscale data
         if len(raw_data.shape) > 1 and raw_data.shape[1] == 3:
-            # RGB data
-            ax = self.histogram_fig.add_subplot(111)
-        
-            # Plot histograms for each channel
-            colors = ['r', 'g', 'b']
-            labels = ['Red', 'Green', 'Blue']
-        
-            for i in range(3):
-                # Use bins=50 for a good balance between detail and performance
-                ax.hist(raw_data[:, i], bins=50, alpha=0.5, color=colors[i], label=labels[i], range=(0, 255))
-    
-            ax.set_title('RGB Histogram')
-            ax.legend(loc='upper right')
-    
-            # Set x-axis limits to 0-255 (8-bit RGB)
-            ax.set_xlim(0, 255)
-        else:
-            # Grayscale data
-            ax = self.histogram_fig.add_subplot(111)
-            # Use bins=50 for a good balance between detail and performance
-            ax.hist(raw_data, bins=50, color='gray', range=(0, 255))
-            ax.set_title('Grayscale Histogram')
-    
-            # Set x-axis limits to 0-255 (8-bit grayscale)
-            ax.set_xlim(0, 255)
+            if self.image_processor.calibration_applied:
+                # Dose-calibrated RGB: plot histogram of the per-pixel average dose only
+                averaged = np.mean(raw_data, axis=1)
+                ax = self.histogram_fig.add_subplot(111)
 
-        ax.set_xlabel('Pixel Value')
-        ax.set_ylabel('Frequency')
+                cleaned = averaged[~np.isnan(averaged)]
+                if cleaned.size == 0:
+                    self.histogram_canvas.draw()
+                    return
+
+                data_min = float(np.min(cleaned))
+                data_max = float(np.max(cleaned))
+                if np.isclose(data_min, data_max):
+                    data_min -= 0.5
+                    data_max += 0.5
+
+                ax.hist(cleaned, bins=50, color='gray', range=(data_min, data_max))
+                ax.set_title('Average Dose Histogram')
+                ax.set_xlim(data_min, data_max)
+                ax.set_xlabel('Dose')
+                ax.set_ylabel('Frequency')
+            else:
+                # Standard RGB image – plot per-channel histograms
+                ax = self.histogram_fig.add_subplot(111)
+                colors = ['r', 'g', 'b']
+                labels = ['Red', 'Green', 'Blue']
+                for i in range(3):
+                    # Use bins=50 for a good balance between detail and performance
+                    ax.hist(raw_data[:, i], bins=50, alpha=0.5, color=colors[i], label=labels[i], range=(0, 255))
+                ax.set_title('RGB Histogram')
+                ax.legend(loc='upper right')
+                ax.set_xlim(0, 255)
+                ax.set_xlabel('Pixel Value')
+                ax.set_ylabel('Frequency')
+        else:
+            # Single-channel data: could be standard grayscale or dose-calibrated values
+            ax = self.histogram_fig.add_subplot(111)
+
+            if self.image_processor.calibration_applied:
+                # Dose data – adjust axis to data range
+                cleaned = raw_data[~np.isnan(raw_data)]
+                if cleaned.size == 0:
+                    self.histogram_canvas.draw()
+                    return
+                data_min = float(np.min(cleaned))
+                data_max = float(np.max(cleaned))
+                # Avoid zero range
+                if np.isclose(data_min, data_max):
+                    data_min -= 0.5
+                    data_max += 0.5
+                ax.hist(cleaned, bins=50, color='gray', range=(data_min, data_max))
+                ax.set_title('Dose Histogram')
+                ax.set_xlim(data_min, data_max)
+                ax.set_xlabel('Dose')
+            else:
+                # Standard 8-bit grayscale data (raw_data should be uint8)
+                ax.hist(raw_data[~np.isnan(raw_data)], bins=50, color='gray', range=(0, 255))
+                ax.set_title('Grayscale Histogram')
+                ax.set_xlim(0, 255)
+                ax.set_xlabel('Pixel Value')
+
+            ax.set_ylabel('Frequency')
 
         # Adjust layout and draw
         self.histogram_fig.tight_layout()
@@ -487,51 +539,66 @@ class MeasurementPanel:
         view_window.title("3D RGB Channel View")
         view_window.geometry("900x700")
         
-        # Create a figure with 3 subplots (one for each channel)
+        # Prepare figure
         fig = Figure(figsize=(9, 7), dpi=100)
-        
-        # Get the scattered data points
-        # Get the scattered data points - swap indices to correct coordinate orientation
-        x = coordinates[:, 1]  # X coordinates relative to center
-        y = coordinates[:, 0]  # Y coordinates relative to center
-        
-        # Create a regular grid for the surface plot
+
+        # Coordinates (swap indices to correct orientation)
+        x = coordinates[:, 1]
+        y = coordinates[:, 0]
+
+        # Regular grid for surface plot
         grid_size = 50
         xi = np.linspace(min(x), max(x), grid_size)
         yi = np.linspace(min(y), max(y), grid_size)
         X, Y = np.meshgrid(xi, yi)
-        
-        # Get the selected colormap from config
+
+        # Colormap
         root = self.frame.winfo_toplevel()
         default_cmap = "viridis"
         if hasattr(root, 'main_window'):
             default_cmap = root.main_window.app_config.get("colormap", "viridis")
-        
-        # Create 3D plots for each channel
-        titles = ['Red Channel', 'Green Channel', 'Blue Channel']
+
         axes = []
-        
-        for i in range(3):
-            ax = fig.add_subplot(1, 3, i+1, projection='3d')
+        if self.image_processor.calibration_applied:
+            # Single subplot for average dose
+            titles = ['Average Dose']
+            ax = fig.add_subplot(111, projection='3d')
             axes.append(ax)
-            
-            # Get intensity values for this channel
-            z = raw_data[:, i]
-            
-            # Interpolate scattered data to a grid
-            Z = griddata((x, y), z, (X, Y), method='cubic', fill_value=0)
-            
-            # Create a surface plot using the selected colormap with full opacity (alpha=1.0)
-            surf = ax.plot_surface(X, Y, Z, cmap=default_cmap, 
-                          linewidth=0, antialiased=True, alpha=1.0)
-        
-            ax.set_title(titles[i])
+
+            z_full = np.mean(raw_data, axis=1)
+            Z = griddata((x, y), z_full, (X, Y), method='cubic', fill_value=0)
+            surf = ax.plot_surface(X, Y, Z, cmap=default_cmap,
+                                   linewidth=0, antialiased=True, alpha=1.0)
+            ax.set_title('Average Dose')
             ax.set_xlabel('X (pixels)')
             ax.set_ylabel('Y (pixels)')
-            ax.set_zlabel('Intensity')
-        
-            # Add a color bar
+            ax.set_zlabel('Dose')
             fig.colorbar(surf, ax=ax, shrink=0.5, aspect=5)
+        else:
+            # Three subplots for RGB channels
+            titles = ['Red Channel', 'Green Channel', 'Blue Channel']
+            for i in range(3):
+                ax = fig.add_subplot(1, 3, i+1, projection='3d')
+                axes.append(ax)
+                
+                # Get intensity values for this channel
+                z = raw_data[:, i]
+                
+                # Interpolate scattered data to a grid
+                Z = griddata((x, y), z, (X, Y), method='cubic', fill_value=0)
+                
+                # Create a surface plot using the selected colormap with full opacity (alpha=1.0)
+                surf = ax.plot_surface(X, Y, Z, cmap=default_cmap, 
+                              linewidth=0, antialiased=True, alpha=1.0)
+                
+                ax.set_title(titles[i])
+                ax.set_xlabel('X (pixels)')
+                ax.set_ylabel('Y (pixels)')
+                ax.set_zlabel('Intensity')
+                
+                # Add a color bar
+                fig.colorbar(surf, ax=ax, shrink=0.5, aspect=5)
+            
     
         # Adjust layout
         fig.tight_layout()
@@ -630,9 +697,9 @@ class MeasurementPanel:
         grid_data = []
         titles = []
         
-        # Check if we have RGB or grayscale data
-        if len(raw_data.shape) > 1 and raw_data.shape[1] == 3:
-            # RGB data - create 3 subplots
+        # Determine visualization mode based on calibration status
+        if len(raw_data.shape) > 1 and raw_data.shape[1] == 3 and not self.image_processor.calibration_applied:
+            # RGB data (no dose calibration) - create 3 subplots
             channel_titles = ['Red Channel', 'Green Channel', 'Blue Channel']
             
             for i in range(3):
@@ -669,7 +736,7 @@ class MeasurementPanel:
                 grid_data.append(Z_smooth)
                 
                 # Create a heat map using the selected colormap
-                im = ax.pcolormesh(X, Y, Z_smooth, cmap=default_cmap, shading='gouraud')
+                im = ax.pcolormesh(X, Y, Z_smooth, cmap=default_cmap, shading='auto')
                 ax.set_title(channel_titles[i])
                 ax.set_xlabel('X (pixels)')
                 ax.set_ylabel('Y (pixels)')
@@ -680,13 +747,22 @@ class MeasurementPanel:
                 # Add a color bar
                 fig.colorbar(im, ax=ax, shrink=0.8)
         else:
-            # Grayscale data - create a single plot
+            # Single channel visualization (grayscale or average dose)
             ax = fig.add_subplot(111)
             axes.append(ax)
-            titles.append('Intensity Heat Map')
+            if self.image_processor.calibration_applied:
+                titles.append('Average Dose Heat Map')
+                # Compute average dose across channels if needed
+                if len(raw_data.shape) > 1 and raw_data.shape[1] == 3:
+                    raw_single = np.mean(raw_data, axis=1)
+                else:
+                    raw_single = raw_data
+            else:
+                titles.append('Intensity Heat Map')
+                raw_single = raw_data
             
             # Improved interpolation for better circular representation
-            Z = griddata((x, y), raw_data, (X, Y), method='cubic', fill_value=0)
+            Z = griddata((x, y), raw_single, (X, Y), method='cubic', fill_value=0)
             
             # Apply a circular mask to ensure perfect circular shape
             # Create a mask for circular area
@@ -710,7 +786,7 @@ class MeasurementPanel:
             grid_data.append(Z_smooth)
             
             # Create a heat map using the selected colormap with improved shading
-            im = ax.pcolormesh(X, Y, Z_smooth, cmap=default_cmap, shading='gouraud')
+            im = ax.pcolormesh(X, Y, Z_smooth, cmap=default_cmap, shading='auto')
             ax.set_title('Intensity Heat Map')
             ax.set_xlabel('X (pixels)')
             ax.set_ylabel('Y (pixels)')

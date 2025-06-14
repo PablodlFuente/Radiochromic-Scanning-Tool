@@ -79,8 +79,14 @@ class MainWindow:
         self.menu_bar.add_cascade(label="Calibration", menu=self.calibration_menu)
         self.calibration_menu.add_command(label="Start Calibration Wizard", 
                                          command=self.start_calibration_wizard)
-        self.calibration_menu.add_command(label="Apply Calibration", 
-                                         command=self.apply_calibration)
+        
+        # Toggle for dose calibration (like Negative mode)
+        self.calibration_var = tk.BooleanVar(value=False)
+        self.calibration_menu.add_checkbutton(
+            label="Apply Calibration",
+            variable=self.calibration_var,
+            command=self.apply_calibration
+        )
         
         # Help menu
         self.help_menu = tk.Menu(self.menu_bar, tearoff=0)
@@ -219,8 +225,9 @@ class MainWindow:
             self.file_manager.add_recent_file(file_path)
             self._update_recent_menu()
             
-            # Apply calibration if available
+            # If calibration parameters exist, pre-enable the toggle so user sees dose
             if self.image_processor.has_calibration():
+                self.calibration_var.set(True)
                 self.apply_calibration()
             
             # Update window title
@@ -695,10 +702,30 @@ class MainWindow:
         # No further action for now – the wizard handles its own lifecycle
     
     def apply_calibration(self):
-        """Apply calibration to the current image."""
-        if self.image_processor.has_image() and self.image_processor.has_calibration():
-            self.image_processor.apply_calibration()
-            self.update_status("Applied calibration to current image")
+        """Toggle calibration on/off depending on menu state."""
+        if not self.image_processor.has_image():
+            self.calibration_var.set(False)
+            return
+
+        # If the checkbox is now ON, apply calibration
+        if self.calibration_var.get():
+            if self.image_processor.has_calibration():
+                success = self.image_processor.apply_calibration()
+                if success:
+                    self.image_panel.display_image(is_adjustment=True)
+                    self.update_status("Applied calibration to current image")
+                else:
+                    # Revert checkbox on failure
+                    self.calibration_var.set(False)
+            else:
+                messagebox.showwarning("Calibration", "No calibration parameters available.")
+                self.calibration_var.set(False)
+        else:
+            # Checkbox turned OFF – revert to original RGB
+            if self.image_processor.calibration_applied:
+                self.image_processor.reprocess_current_image()
+                self.image_panel.display_image(is_adjustment=True)
+                self.update_status("Calibration disabled (RGB view)")
     
     def show_about(self):
         """Show the about dialog."""
