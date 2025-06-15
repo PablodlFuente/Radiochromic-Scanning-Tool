@@ -88,6 +88,16 @@ class MainWindow:
             command=self.apply_calibration
         )
         
+        # Plugins menu
+        from app.plugins.plugin_manager import plugin_manager
+        self.plugins_menu = tk.Menu(self.menu_bar, tearoff=0)
+        self.menu_bar.add_cascade(label="Plugins", menu=self.plugins_menu)
+        self.plugins_menu.add_command(label="Load Plugin...", command=self._load_plugin)
+        self.plugins_menu.add_separator()
+
+        # Dynamic list will be populated later
+        self._refresh_plugins_menu()
+
         # Help menu
         self.help_menu = tk.Menu(self.menu_bar, tearoff=0)
         self.menu_bar.add_cascade(label="Help", menu=self.help_menu)
@@ -107,6 +117,7 @@ class MainWindow:
         self.image_panel.set_zoom_callback(self.update_zoom)
         
         # Right panel (controls)
+
         self.controls_frame = ttk.Frame(self.main_panel)
         self.main_panel.add(self.controls_frame, weight=1)
         
@@ -128,6 +139,10 @@ class MainWindow:
             self.update_image_settings
         )
         self.notebook.add(self.image_settings_panel.frame, text="Image")
+
+        # Expose notebook to plugin manager now that it exists
+        from app.plugins.plugin_manager import plugin_manager
+        plugin_manager.init_ui(self, self.notebook, self.image_processor)
         
         # Status bar
         self.status_bar = ttk.Frame(self.parent)
@@ -776,6 +791,33 @@ class MainWindow:
         """Update the zoom level display."""
         self.zoom_label.config(text=f"Zoom: {int(zoom * 100)}%")
     
+    # ------------------------------------------------------------------
+    # Plugins helpers
+    # ------------------------------------------------------------------
+    def _refresh_plugins_menu(self):
+        from app.plugins.plugin_manager import plugin_manager
+        # Clear everything after the first two items (Load + separator)
+        self.plugins_menu.delete(2, tk.END)
+        for name in plugin_manager.plugin_names():
+            var = tk.BooleanVar(value=plugin_manager.is_active(name))
+            def _toggle(n=name, v=var):
+                plugin_manager.set_active(n, v.get())
+            self.plugins_menu.add_checkbutton(label=name, variable=var, command=_toggle)
+
+    def _load_plugin(self):
+        from app.plugins.plugin_manager import plugin_manager
+        file_path = filedialog.askopenfilename(
+            title="Select Python plugin",
+            filetypes=[("Python files", "*.py")])
+        if not file_path:
+            return
+        name = plugin_manager.load_plugin_file(file_path)
+        if name:
+            messagebox.showinfo("Plugin loaded", f"Plugin '{name}' loaded and enabled.")
+            self._refresh_plugins_menu()
+        else:
+            messagebox.showerror("Plugin error", "Failed to load plugin. Check logs for details.")
+
     def get_config(self):
         """Get the current configuration."""
         # Update config with any UI changes

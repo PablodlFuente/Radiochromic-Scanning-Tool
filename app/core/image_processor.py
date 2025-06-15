@@ -1518,12 +1518,16 @@ class ImageProcessor:
                     # CPU resizing
                     image = cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
         
+            # Apply user plugins (if any)
+            from app.plugins.plugin_manager import plugin_manager
+            image = plugin_manager.apply_plugins(image)
+
             # Convert to PIL Image for display
             if len(image.shape) == 3:
                 pil_image = Image.fromarray(image)
             else:
                 pil_image = Image.fromarray(image).convert("L")
-        
+
             # Convert to PhotoImage for Tkinter
             image_tk = ImageTk.PhotoImage(pil_image)
         
