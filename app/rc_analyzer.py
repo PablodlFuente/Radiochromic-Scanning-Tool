@@ -51,14 +51,18 @@ class RCAnalyzer(tk.Tk):
     def _cleanup_files(self):
         """Clean up log and temporary files."""
         try:
-            # Clean up log files
-            log_files = glob.glob("rc_analyzer*.log*")
-            for log_file in log_files:
-                try:
-                    os.remove(log_file)
-                    logger.debug(f"Removed log file: {log_file}")
-                except Exception as e:
-                    logger.warning(f"Could not remove log file {log_file}: {str(e)}")
+            # Clean up log files – keep only the most recent 10
+            logs_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs")
+            if os.path.isdir(logs_dir):
+                log_files = sorted(glob.glob(os.path.join(logs_dir, "rc_analyzer_*.log")))
+                # Remove oldest logs while more than 10 remain
+                while len(log_files) > 10:
+                    old_log = log_files.pop(0)
+                    try:
+                        os.remove(old_log)
+                        logger.debug(f"Removed old log file: {old_log}")
+                    except Exception as e:
+                        logger.warning(f"Could not remove log file {old_log}: {str(e)}")
             
             # Clean up temporary files in system temp directory
             temp_dir = tempfile.gettempdir()

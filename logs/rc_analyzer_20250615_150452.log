@@ -1,0 +1,66 @@
+2025-06-15 15:04:52,549 - __main__ - INFO - Starting Radiochromic Film Analyzer
+2025-06-15 15:04:52,595 - app.rc_analyzer - INFO - Initializing RCAnalyzer application
+2025-06-15 15:04:52,598 - app.rc_analyzer - INFO - Cleaned up local temp directory: C:\Users\Pablo\OneDrive - UAM\2 Proyectos\1 Otros\0 Software_propio_utilidades\RC\analizadorrc\temp
+2025-06-15 15:04:52,599 - app.rc_analyzer - INFO - Cleaned up log and temporary files
+2025-06-15 15:04:52,599 - app.utils.config_manager - INFO - Configuration manager initialized
+2025-06-15 15:04:52,599 - app.utils.config_manager - INFO - Configuration loaded from file
+2025-06-15 15:04:52,618 - app.core.image_processor - INFO - System info: {'platform': 'Windows', 'processor': 'AMD64 Family 23 Model 113 Stepping 0, AuthenticAMD', 'cpu_count': 12, 'memory_gb': 31.94003677368164, 'python_version': '3.12.0', 'opencv_version': '4.11.0'}
+2025-06-15 15:04:52,618 - app.core.image_processor - WARNING - CUDA test matrix creation failed: OpenCV(4.11.0) D:\a\opencv-python\opencv-python\opencv\modules\core\include\opencv2/core/private.cuda.hpp:106: error: (-216:No CUDA support) The library is compiled without CUDA support in function 'throw_no_cuda'
+
+2025-06-15 15:04:52,620 - app.core.image_processor - WARNING - Alternative CUDA test failed: OpenCV(4.11.0) :-1: error: (-5:Bad argument) in function 'createGpuMatFromCudaMemory'
+> Overload resolution failed:
+>  - createGpuMatFromCudaMemory() missing required argument 'type' (pos 3)
+>  - createGpuMatFromCudaMemory() missing required argument 'cudaMemoryAddress' (pos 3)
+
+2025-06-15 15:04:52,713 - app.core.image_processor - INFO - NVIDIA GPU detected: nvidia quadro p600
+2025-06-15 15:04:52,713 - app.core.image_processor - INFO - CUDA initialization failed. Setting GPU as available but with warning.
+2025-06-15 15:04:52,713 - app.core.image_processor - INFO - To fix CUDA issues, try:
+2025-06-15 15:04:52,713 - app.core.image_processor - INFO - 1. Install the latest NVIDIA drivers
+2025-06-15 15:04:52,713 - app.core.image_processor - INFO - 2. Install CUDA toolkit compatible with your GPU
+2025-06-15 15:04:52,714 - app.core.image_processor - INFO - 3. Use 'Force enable GPU' option in settings
+2025-06-15 15:04:52,714 - app.core.image_processor - INFO - GPU acceleration available. Enabled: False
+2025-06-15 15:04:52,714 - app.core.image_processor - INFO - Image processor initialized
+2025-06-15 15:04:52,714 - app.utils.file_manager - INFO - File manager initialized
+2025-06-15 15:04:52,738 - app.ui.image_panel - INFO - Image panel initialized
+2025-06-15 15:04:52,757 - app.ui.measurement_panel - INFO - Measurement panel initialized
+2025-06-15 15:04:52,766 - app.ui.image_settings_panel - INFO - Image settings panel initialized
+2025-06-15 15:04:52,771 - app.ui.main_window - INFO - Main window initialized
+2025-06-15 15:04:52,771 - app.rc_analyzer - INFO - RCAnalyzer initialization complete
+2025-06-15 15:07:16,614 - app.ui.main_window - INFO - Loading image: C:/Users/Pablo/OneDrive - UAM/4 Protonterapia/1 Experimentos/1 Experimentos/2025_05_06_PT/scans_070525/RC14int_14ext.tiff (Size: 14.76 MB)
+2025-06-15 15:07:16,841 - app.core.image_processor - INFO - Loading image: C:/Users/Pablo/OneDrive - UAM/4 Protonterapia/1 Experimentos/1 Experimentos/2025_05_06_PT/scans_070525/RC14int_14ext.tiff, size: 2550x3510
+2025-06-15 15:07:16,850 - app.core.image_processor - INFO - Computing integral images for fast statistics
+2025-06-15 15:07:16,999 - app.core.image_processor - INFO - Integral images computed successfully
+2025-06-15 15:07:17,006 - app.core.image_processor - INFO - Loaded image: C:/Users/Pablo/OneDrive - UAM/4 Protonterapia/1 Experimentos/1 Experimentos/2025_05_06_PT/scans_070525/RC14int_14ext.tiff
+2025-06-15 15:07:17,920 - app.core.image_processor - INFO - Computing integral images for fast statistics
+2025-06-15 15:07:18,091 - app.core.image_processor - INFO - Integral images computed successfully
+2025-06-15 15:07:18,091 - app.core.image_processor - INFO - Calibration applied successfully – dose image ready (3-channel float32)
+2025-06-15 15:07:18,117 - app.ui.main_window - INFO - Loaded image: C:/Users/Pablo/OneDrive - UAM/4 Protonterapia/1 Experimentos/1 Experimentos/2025_05_06_PT/scans_070525/RC14int_14ext.tiff
+2025-06-15 15:07:20,190 - app.core.image_processor - INFO - Computing integral images for fast statistics
+2025-06-15 15:07:20,337 - app.core.image_processor - INFO - Integral images computed successfully
+2025-06-15 15:08:19,425 - app.ui.main_window - INFO - Loading image: C:\Users\Pablo\OneDrive - UAM\4 Protonterapia\1 Experimentos\1 Experimentos\2025_05_06_PT\scans_070525\RC1_2_3.tiff (Size: 14.94 MB)
+2025-06-15 15:08:19,555 - app.core.image_processor - INFO - Loading image: C:\Users\Pablo\OneDrive - UAM\4 Protonterapia\1 Experimentos\1 Experimentos\2025_05_06_PT\scans_070525\RC1_2_3.tiff, size: 2550x3510
+2025-06-15 15:08:19,561 - app.core.image_processor - INFO - Computing integral images for fast statistics
+2025-06-15 15:08:19,716 - app.core.image_processor - INFO - Integral images computed successfully
+2025-06-15 15:08:19,719 - app.core.image_processor - INFO - Loaded image: C:\Users\Pablo\OneDrive - UAM\4 Protonterapia\1 Experimentos\1 Experimentos\2025_05_06_PT\scans_070525\RC1_2_3.tiff
+2025-06-15 15:08:20,531 - app.core.image_processor - INFO - Computing integral images for fast statistics
+2025-06-15 15:08:20,691 - app.core.image_processor - INFO - Integral images computed successfully
+2025-06-15 15:08:20,691 - app.core.image_processor - INFO - Calibration applied successfully – dose image ready (3-channel float32)
+2025-06-15 15:08:20,716 - app.ui.main_window - INFO - Loaded image: C:\Users\Pablo\OneDrive - UAM\4 Protonterapia\1 Experimentos\1 Experimentos\2025_05_06_PT\scans_070525\RC1_2_3.tiff
+2025-06-15 15:08:32,275 - app.core.image_processor - INFO - Computing integral images for fast statistics
+2025-06-15 15:08:32,428 - app.core.image_processor - INFO - Integral images computed successfully
+2025-06-15 15:09:12,413 - app.ui.main_window - INFO - Loading image: C:\Users\Pablo\OneDrive - UAM\4 Protonterapia\1 Experimentos\1 Experimentos\2025_05_06_PT\scans_070525\RC14int_14ext.tiff (Size: 14.76 MB)
+2025-06-15 15:09:12,539 - app.core.image_processor - INFO - Loading image: C:\Users\Pablo\OneDrive - UAM\4 Protonterapia\1 Experimentos\1 Experimentos\2025_05_06_PT\scans_070525\RC14int_14ext.tiff, size: 2550x3510
+2025-06-15 15:09:12,546 - app.core.image_processor - INFO - Computing integral images for fast statistics
+2025-06-15 15:09:12,697 - app.core.image_processor - INFO - Integral images computed successfully
+2025-06-15 15:09:12,698 - app.core.image_processor - INFO - Loaded image: C:\Users\Pablo\OneDrive - UAM\4 Protonterapia\1 Experimentos\1 Experimentos\2025_05_06_PT\scans_070525\RC14int_14ext.tiff
+2025-06-15 15:09:13,507 - app.core.image_processor - INFO - Computing integral images for fast statistics
+2025-06-15 15:09:13,667 - app.core.image_processor - INFO - Integral images computed successfully
+2025-06-15 15:09:13,670 - app.core.image_processor - INFO - Calibration applied successfully – dose image ready (3-channel float32)
+2025-06-15 15:09:13,693 - app.ui.main_window - INFO - Loaded image: C:\Users\Pablo\OneDrive - UAM\4 Protonterapia\1 Experimentos\1 Experimentos\2025_05_06_PT\scans_070525\RC14int_14ext.tiff
+2025-06-15 15:09:14,806 - app.core.image_processor - INFO - Computing integral images for fast statistics
+2025-06-15 15:09:14,957 - app.core.image_processor - INFO - Integral images computed successfully
+2025-06-15 15:09:53,060 - app.rc_analyzer - INFO - Saving configuration before exit
+2025-06-15 15:09:53,060 - app.utils.config_manager - INFO - Configuration saved to file
+2025-06-15 15:09:53,065 - app.rc_analyzer - INFO - Cleaned up local temp directory: C:\Users\Pablo\OneDrive - UAM\2 Proyectos\1 Otros\0 Software_propio_utilidades\RC\analizadorrc\temp
+2025-06-15 15:09:53,065 - app.rc_analyzer - INFO - Cleaned up log and temporary files
+2025-06-15 15:09:53,134 - __main__ - INFO - Application closed normally
