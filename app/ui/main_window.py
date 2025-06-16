@@ -760,32 +760,92 @@ class MainWindow:
         self.coordinates_label.config(text=f"Coordinates: ({x}, {y})")
     
     def update_rgb(self, rgb, std_dev=None):
-        """Update the RGB value display."""
-        if isinstance(rgb, tuple) and len(rgb) == 3:
-            if std_dev is not None and isinstance(std_dev, tuple) and len(std_dev) == 3:
-                # Display RGB with standard deviation
-                self.rgb_label.config(
-                    text=f"RGB: ({rgb[0]:.1f}±{std_dev[0]:.1f}, {rgb[1]:.1f}±{std_dev[1]:.1f}, {rgb[2]:.1f}±{std_dev[2]:.1f})"
-                )
+        """Update the RGB / value display under the cursor.
+
+        When a dose calibration is active, the displayed image represents a
+        dose map instead of raw pixel values.  In that situation we show the
+        dose with two decimal places (matching the precision used elsewhere)
+        instead of the default one-decimal RGB formatting.
+        """
+        is_dose = getattr(self.image_processor, "calibration_applied", False)
+
+        # Handle placeholder or string values (e.g., "--") early to avoid format errors
+        if isinstance(rgb, str) or rgb is None:
+            label = "Dose" if is_dose else "Value"
+            self.rgb_label.config(text=f"{label}: {rgb}")
+            return
+
+        if is_dose:
+            # ----------------------------------------------------------
+            # Dose display (calibration applied) – use two decimals
+            # ----------------------------------------------------------
+            if isinstance(rgb, tuple) and len(rgb) == 3:
+                # Colour dose image
+                if isinstance(rgb[0], tuple) and isinstance(rgb[1], tuple):
+                    # Pattern: ((valR,valG,valB), (devR,devG,devB))
+                    val, dev = rgb
+                    self.rgb_label.config(
+                        text=(
+                            f"Dose: ("  # Per-channel dose
+                            f"{val[0]:.2f}±{dev[0]:.2f}, "
+                            f"{val[1]:.2f}±{dev[1]:.2f}, "
+                            f"{val[2]:.2f}±{dev[2]:.2f})"
+                        )
+                    )
+                elif std_dev is not None and isinstance(std_dev, tuple) and len(std_dev) == 3:
+                    self.rgb_label.config(
+                        text=(
+                            f"Dose: ("
+                            f"{rgb[0]:.2f}±{std_dev[0]:.2f}, "
+                            f"{rgb[1]:.2f}±{std_dev[1]:.2f}, "
+                            f"{rgb[2]:.2f}±{std_dev[2]:.2f})"
+                        )
+                    )
+                else:
+                    self.rgb_label.config(
+                        text=f"Dose: ({rgb[0]:.2f}, {rgb[1]:.2f}, {rgb[2]:.2f})"
+                    )
+            elif isinstance(rgb, tuple) and len(rgb) == 2 and not isinstance(rgb[0], tuple):
+                # Grayscale dose with (value, std_dev)
+                val, dev = rgb
+                self.rgb_label.config(text=f"Dose: {val:.2f}±{dev:.2f}")
+            elif std_dev is not None:
+                self.rgb_label.config(text=f"Dose: {rgb:.2f}±{std_dev:.2f}")
             else:
-                # Display RGB without standard deviation
-                self.rgb_label.config(text=f"RGB: ({rgb[0]}, {rgb[1]}, {rgb[2]})")
-        elif isinstance(rgb, tuple) and len(rgb) == 2 and isinstance(rgb[0], tuple) and isinstance(rgb[1], tuple):
-            # Este es el caso cuando tenemos (valor, std_dev) para RGB
-            val, dev = rgb
-            self.rgb_label.config(
-                text=f"RGB: ({val[0]:.1f}±{dev[0]:.1f}, {val[1]:.1f}±{dev[1]:.1f}, {val[2]:.1f}±{dev[2]:.1f})"
-            )
-        elif std_dev is not None:
-            # Grayscale with standard deviation
-            self.rgb_label.config(text=f"Value: {rgb:.1f}±{std_dev:.1f}")
-        elif isinstance(rgb, tuple) and len(rgb) == 2 and not isinstance(rgb[0], tuple):
-            # Este es el caso cuando tenemos (valor, std_dev) para escala de grises
-            val, dev = rgb
-            self.rgb_label.config(text=f"Value: {val:.1f}±{dev:.1f}")
+                self.rgb_label.config(text=f"Dose: {rgb:.2f}")
         else:
-            # Grayscale or other value
-            self.rgb_label.config(text=f"Value: {rgb}")
+            # ----------------------------------------------------------
+            # Raw pixel display (no calibration) – original behaviour
+            # ----------------------------------------------------------
+            if isinstance(rgb, tuple) and len(rgb) == 3:
+                if std_dev is not None and isinstance(std_dev, tuple) and len(std_dev) == 3:
+                    self.rgb_label.config(
+                        text=(
+                            f"RGB: ("
+                            f"{rgb[0]:.1f}±{std_dev[0]:.1f}, "
+                            f"{rgb[1]:.1f}±{std_dev[1]:.1f}, "
+                            f"{rgb[2]:.1f}±{std_dev[2]:.1f})"
+                        )
+                    )
+                else:
+                    self.rgb_label.config(text=f"RGB: ({rgb[0]}, {rgb[1]}, {rgb[2]})")
+            elif isinstance(rgb, tuple) and len(rgb) == 2 and isinstance(rgb[0], tuple) and isinstance(rgb[1], tuple):
+                val, dev = rgb
+                self.rgb_label.config(
+                    text=(
+                        f"RGB: ("
+                        f"{val[0]:.1f}±{dev[0]:.1f}, "
+                        f"{val[1]:.1f}±{dev[1]:.1f}, "
+                        f"{val[2]:.1f}±{dev[2]:.1f})"
+                    )
+                )
+            elif std_dev is not None:
+                self.rgb_label.config(text=f"Value: {rgb:.1f}±{std_dev:.1f}")
+            elif isinstance(rgb, tuple) and len(rgb) == 2 and not isinstance(rgb[0], tuple):
+                val, dev = rgb
+                self.rgb_label.config(text=f"Value: {val:.1f}±{dev:.1f}")
+            else:
+                self.rgb_label.config(text=f"Value: {rgb}")
     
     def update_zoom(self, zoom):
         """Update the zoom level display."""

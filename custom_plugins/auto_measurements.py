@@ -19,6 +19,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 – needed for 3D
+from math import log10, floor
 
 # Plugin interface ---------------------------------------------------------
 TAB_TITLE = "AutoMeasurements"
@@ -102,6 +103,38 @@ class AutoMeasurementsTab:
         # Refresh display
         self.main_window.update_image()
 
+    def _fmt_sig(self, value: float, sig: int = 2) -> str:
+        """Format number with the given significant figures."""
+        if value == 0 or not np.isfinite(value):
+            return f"{value}"
+        return f"{value:.{sig}g}"
+
+    def _format_val_unc(self, value: float, unc: float, sig: int = 2) -> tuple[str, str]:
+        """Format *value* and its *uncertainty* so that *value* shows the
+        same number of decimal places as the formatted uncertainty.
+
+        The uncertainty is first rendered with *sig* significant figures
+        (using :py:meth:`_fmt_sig`).  If the uncertainty ends up in
+        scientific notation (e-format) we also format the value with the
+        same number of significant figures.  Otherwise, the number of
+        digits that appear after the decimal point in the uncertainty is
+        used for the value as well.  A leading ``"±"`` is prepended to the
+        returned uncertainty string.
+        """
+        unc_fmt = self._fmt_sig(unc, sig)
+
+        # Scientific notation – fall back to significant-figure formatting
+        if "e" in unc_fmt or "E" in unc_fmt:
+            val_fmt = self._fmt_sig(value, sig)
+        else:
+            # Count decimals in uncertainty (0 if integer)
+            if "." in unc_fmt:
+                decimals = len(unc_fmt.split(".")[1])
+                val_fmt = f"{value:.{decimals}f}"
+            else:
+                val_fmt = f"{value:.0f}"
+        return val_fmt, f"±{unc_fmt}"
+
     def __init__(self, main_window, notebook, image_processor):
         self.item_to_shape: dict[str, tuple] = {}  # maps TreeView items to shape info
         self.main_window = main_window
@@ -115,37 +148,33 @@ class AutoMeasurementsTab:
         btn_frame.pack(fill=tk.X, padx=10)
         ttk.Button(btn_frame, text="Start", command=self.start_detection).pack(side=tk.LEFT)
         ttk.Button(btn_frame, text="Clear", command=self._clear_all).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="Add Film", command=self._add_manual_film).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Add RC", command=self._add_manual_film).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Add Circle", command=self._add_manual_circle).pack(side=tk.LEFT)
         ttk.Button(btn_frame, text="Export to CSV", command=self.export_csv).pack(side=tk.LEFT, padx=5)
 
         # ----------------- Detection Parameter Panels -----------------
         # Bind selection event for highlighting
-        # TreeView columns – add avg columns if calibration active
-        cols = ["dose", "sigma"]
-        if image_processor.calibration_applied:
-            cols.extend(["avg", "avg_unc"])
+        # TreeView columns – always show channel data + global averages
+        cols = ["dose", "sigma", "avg", "avg_unc"]
 
         self.tree = ttk.Treeview(self.frame, columns=tuple(cols), show="tree headings")
         self.tree.heading("dose", text="Dose")
         self.tree.heading("sigma", text="Uncertainty")
+        self.tree.heading("avg", text="Avg")
+        self.tree.heading("avg_unc", text="Avg uncert.")
         self.tree.column("dose", width=80, anchor=tk.CENTER)
         self.tree.column("sigma", width=100, anchor=tk.CENTER)
-        if "avg" in cols:
-            self.tree.heading("avg", text="Avg")
-            self.tree.heading("avg_unc", text="±Avg")
-            self.tree.column("avg", width=80, anchor=tk.CENTER)
-            self.tree.column("avg_unc", width=80, anchor=tk.CENTER)
+        self.tree.column("avg", width=80, anchor=tk.CENTER)
+        self.tree.column("avg_unc", width=80, anchor=tk.CENTER)
         self.tree.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
         self.tree.bind("<Delete>", self._on_delete_key)
         self.tree.bind("<Button-3>", self._on_right_click)
         self.tree.bind("<Double-1>", self._on_edit_label)
-
         # Film detection parameters
         self.rc_thresh_var = tk.IntVar(value=180)
         self.rc_min_area_var = tk.IntVar(value=5000)
-        film_frame = ttk.LabelFrame(self.frame, text="Film Detection")
+        film_frame = ttk.LabelFrame(self.frame, text="RC Detection")
         film_frame.pack(fill=tk.X, padx=10, pady=5)
         ttk.Label(film_frame, text="Threshold (0-255):").grid(row=0, column=0, sticky=tk.W, pady=2)
         ttk.Entry(film_frame, textvariable=self.rc_thresh_var, width=6).grid(row=0, column=1, sticky=tk.W)
@@ -153,12 +182,12 @@ class AutoMeasurementsTab:
         ttk.Entry(film_frame, textvariable=self.rc_min_area_var, width=8).grid(row=1, column=1, sticky=tk.W)
 
         # Circle detection parameters
-        self.min_circle_var = tk.IntVar(value=100)
-        self.max_circle_var = tk.IntVar(value=300)
+        self.min_circle_var = tk.IntVar(value=200)
+        self.max_circle_var = tk.IntVar(value=400)
         # Minimum distance between detected circle centers
-        self.min_dist_var = tk.IntVar(value=30)
-        self.param1_var = tk.IntVar(value=50)  # Canny high threshold
-        self.param2_var = tk.IntVar(value=30)  # Accumulator threshold
+        self.min_dist_var = tk.IntVar(value=200)
+        self.param1_var = tk.IntVar(value=20)  # Canny high threshold
+        self.param2_var = tk.IntVar(value=50)  # Accumulator threshold
         circle_frame = ttk.LabelFrame(self.frame, text="Circle Detection")
         circle_frame.pack(fill=tk.X, padx=10, pady=5)
         ttk.Label(circle_frame, text="Min radius:").grid(row=0, column=0, sticky=tk.W)
@@ -167,14 +196,31 @@ class AutoMeasurementsTab:
         ttk.Entry(circle_frame, textvariable=self.max_circle_var, width=6).grid(row=0, column=3)
         ttk.Label(circle_frame, text="MinDist:").grid(row=1, column=0, sticky=tk.W)
         ttk.Entry(circle_frame, textvariable=self.min_dist_var, width=6).grid(row=1, column=1)
-        ttk.Label(circle_frame, text="Param1:").grid(row=2, column=0, sticky=tk.W)
+        ttk.Label(circle_frame, text="Param1 (Canny high thr):").grid(row=2, column=0, sticky=tk.W)
         ttk.Entry(circle_frame, textvariable=self.param1_var, width=6).grid(row=2, column=1)
-        ttk.Label(circle_frame, text="Param2:").grid(row=2, column=2, sticky=tk.W)
+        ttk.Label(circle_frame, text="Param2 (Accumulator thr):").grid(row=2, column=2, sticky=tk.W)
         ttk.Entry(circle_frame, textvariable=self.param2_var, width=6).grid(row=2, column=3)
 
         # Enable inline editing of item text (film/circle names)
         # Storage
         self.results = []  # List[Dict]
+
+        # ---------- Interactive drawing mode state ----------
+        # ``draw_mode``: None | 'film' | 'circle'
+        self.draw_mode: str | None = None
+        # ``draw_dims``: current dimensions – (w, h) for film or radius for circle
+        self.draw_dims: tuple | int | None = None
+        # Dynamic dimension window and variables
+        self._dims_window: tk.Toplevel | None = None
+        self._dim_vars: list[tk.StringVar] = []
+        # Last cursor position while in draw mode (for live preview)
+        self._last_cursor: tuple[float, float] | None = None
+        # Canvas preview tag
+        self.preview_tag: str = "draw_preview"
+        # Reference to the image canvas for convenience
+        self._canvas = (
+            self.main_window.image_panel.canvas if hasattr(self.main_window, "image_panel") else None
+        )
 
     # ---------------------------------------------------------------
     def _on_edit_label(self, event):
@@ -187,8 +233,24 @@ class AutoMeasurementsTab:
         entry.insert(0, self.tree.item(item_id, "text"))
         entry.focus()
 
+        old_text = self.tree.item(item_id, "text")
+        item_type = self.item_to_shape.get(item_id, (None,))[0]
+
         def save_edit(event=None):
-            self.tree.item(item_id, text=entry.get())
+            new_text = entry.get()
+            # Update TreeView
+            self.tree.item(item_id, text=new_text)
+            # Update cached results so CSV export reflects the rename
+            if item_type == "film":
+                for rec in self.results:
+                    if rec["film"] == old_text:
+                        rec["film"] = new_text
+            elif item_type == "circle":
+                parent_id = self.tree.parent(item_id)
+                film_name = self.tree.item(parent_id, "text") if parent_id else None
+                for rec in self.results:
+                    if rec["film"] == film_name and rec["circle"] == old_text:
+                        rec["circle"] = new_text
             entry.destroy()
         entry.bind("<Return>", save_edit)
         entry.bind("<FocusOut>", save_edit)
@@ -228,12 +290,14 @@ class AutoMeasurementsTab:
 
         for idx, (x, y, w, h) in enumerate(films, 1):
             film_roi = gray[y : y + h, x : x + w]
-            film_name = f"Film_{idx}"
-            film_id = self.tree.insert("", "end", text=film_name, values=("", ""))
+            film_name = f"RC_{idx}"
+            film_id = self.tree.insert("", "end", text=film_name, values=("", "", "", ""))
             self.item_to_shape[film_id] = ("film", (x, y, w, h))
 
             # 2. Detect circles inside film
             circles = self._detect_circles(film_roi)
+            # Order circles top->bottom, left->right
+            circles = sorted(circles, key=lambda c: (c[1], c[0]))
             for jdx, (cx, cy, r) in enumerate(circles, 1):
                 abs_cx = x + cx
                 abs_cy = y + cy
@@ -244,29 +308,41 @@ class AutoMeasurementsTab:
                 dose, _, unc, _ = res  # mean(s), std, uncertainty
                 circ_name = f"C{jdx}"
 
-                # Format numbers for display; handle RGB tuples or scalars
+                # ------------------------------------------------------------------
+                # Format dose / uncertainty so that values have the same number of
+                # decimal places as their corresponding uncertainties.  We keep two
+                # significant figures for the uncertainty by default.
+                # ------------------------------------------------------------------
                 if isinstance(dose, tuple):
-                    dose_str = ", ".join(f"{v:.2f}" for v in dose)
+                    dose_parts: list[str] = []
+                    unc_parts: list[str] = []
+                    for v, u in zip(dose, unc):
+                        v_str, u_str = self._format_val_unc(v, u, 2)
+                        dose_parts.append(v_str)
+                        unc_parts.append(u_str)
+                    dose_str = ", ".join(dose_parts)
+                    unc_str = ", ".join(unc_parts)
+                    avg_val = float(np.mean(dose))
+                    avg_unc = float(np.mean(unc))
                 else:
-                    dose_str = f"{dose:.2f}"
+                    dose_str, unc_str = self._format_val_unc(dose, unc, 2)
+                    avg_val = float(dose)
+                    avg_unc = float(unc)
 
-                if isinstance(unc, tuple):
-                    unc_str = ", ".join(f"±{v:.2f}" for v in unc)
-                else:
-                    unc_str = f"±{unc:.2f}"
+                # Average strings
+                avg_str, avg_unc_str = self._format_val_unc(avg_val, avg_unc, 2)
 
-                if self.image_processor.calibration_applied and isinstance(dose, tuple):
-                    avg_val = np.mean(dose)
-                    avg_unc = np.mean(unc) if isinstance(unc, tuple) else unc
-                    avg_str = f"{avg_val:.2f}"
-                    avg_unc_str = f"±{avg_unc:.2f}"
-                    val_tuple = (dose_str, unc_str, avg_str, avg_unc_str)
-                else:
-                    val_tuple = (dose_str, unc_str)
-
+                val_tuple = (dose_str, unc_str, avg_str, avg_unc_str)
                 circle_id = self.tree.insert(film_id, "end", text=circ_name, values=val_tuple)
                 self.item_to_shape[circle_id] = ("circle", (abs_cx, abs_cy, r))
-                self.results.append({"film": film_name, "circle": circ_name, "dose": dose_str, "unc": unc_str})
+                self.results.append({
+                    "film": film_name,
+                    "circle": circ_name,
+                    "dose": dose_str,
+                    "unc": unc_str,
+                    "avg": avg_str,
+                    "avg_unc": avg_unc_str,
+                })
                 _OVERLAY["circles"].append((abs_cx, abs_cy, r))
 
         # Open all film nodes
@@ -353,6 +429,7 @@ class AutoMeasurementsTab:
         result = []
         if circles is not None:
             circles = np.uint16(np.around(circles[0]))
+            circles = circles.astype(int)  # avoid uint16 overflow when computing distances
             # Remove overlaps similar to reference code
             circles = sorted(circles, key=lambda c: c[2], reverse=True)
             valid = []
@@ -382,9 +459,16 @@ class AutoMeasurementsTab:
         try:
             with open(file_path, "w", newline="") as f:
                 writer = csv.writer(f)
-                writer.writerow(["Film", "Circle", "Dose", "Uncertainty"])
+                writer.writerow(["RC", "Circle", "Dose", "Uncertainty", "Avg", "Avg uncert."])
                 for rec in self.results:
-                    writer.writerow([rec["film"], rec["circle"], rec["dose"], rec["unc"]])
+                    writer.writerow([
+                        rec["film"],
+                        rec["circle"],
+                        rec["dose"],
+                        rec["unc"],
+                        rec["avg"],
+                        rec["avg_unc"],
+                    ])
             messagebox.showinfo("AutoMeasurements", "CSV exported.")
         except Exception as exc:
             messagebox.showerror("AutoMeasurements", str(exc))
@@ -446,12 +530,23 @@ class AutoMeasurementsTab:
             self._show_circle_3d(cx, cy, r)
 
     def _show_circle_3d(self, cx: int, cy: int, r: int):
-        """Open matplotlib window with 3-D surface of circle RGB intensities (or dose)."""
-        img = (
-            self.image_processor.original_image
-            if getattr(self.image_processor, "original_image", None) is not None
-            else self.image_processor.current_image
-        )
+        """Open matplotlib window with 3-D surface of circle dose or intensity."""
+        # Prefer calibrated dose data for plotting when available
+        if (
+            self.image_processor.calibration_applied
+            and getattr(self.image_processor, "dose_channels", None) is not None
+        ):
+            img = self.image_processor.dose_channels
+            plot_title = "3D Dose Map"
+            z_label = "Dose"
+        else:
+            img = (
+                self.image_processor.original_image
+                if getattr(self.image_processor, "original_image", None) is not None
+                else self.image_processor.current_image
+            )
+            plot_title = "3D Intensity Map"
+            z_label = "Value"
         if img is None:
             messagebox.showwarning("3D View", "No image loaded.")
             return
@@ -470,75 +565,311 @@ class AutoMeasurementsTab:
         fig = plt.figure(figsize=(6, 4))
         ax = fig.add_subplot(111, projection="3d")
 
-        if roi.ndim == 3 and roi.shape[2] == 3:
-            # Average intensity or dose if calibrated
+        if roi.ndim == 3 and roi.shape[2] >= 3:
+            # Average across channels (RGB dose/intensity)
             Z = np.mean(roi, axis=2)
         else:
             Z = roi.copy()
 
+        # Clip outliers (2nd–98th percentiles) to avoid extreme peaks
+        lo, hi = np.percentile(Z, [2, 98])
+        Z = np.clip(Z, lo, hi)
+
         ax.plot_surface(X, Y, Z, cmap="viridis", edgecolor="none")
-        ax.set_title("3D View Circle")
+        ax.set_title(plot_title)
         ax.set_xlabel("X")
         ax.set_ylabel("Y")
-        ax.set_zlabel("Value")
+        ax.set_zlabel(z_label)
 
         plt.show()
 
     # Manual addition ------------------------------------------------------
     def _add_manual_film(self):
+        """Open dynamic dimension window and start film draw mode (no dialogs)."""
+        # sensible defaults
+        self._start_draw_mode("film", (300, 200))
+        """Begin interactive drawing mode to add an RC rectangle (film)."""
         from tkinter import simpledialog
-        ans = simpledialog.askstring("Add Film", "Enter rectangle x,y,w,h:")
+
+        # Ask for rectangle dimensions (in original image pixels)
+        w = simpledialog.askinteger("Add RC", "Enter rectangle width (pixels):", minvalue=1)
+        if w is None:
+            return
+        h = simpledialog.askinteger("Add RC", "Enter rectangle height (pixels):", minvalue=1)
+        if h is None:
+            return
+
+        self._start_draw_mode("film", (w, h))
+        return  # Exit early to skip deprecated manual-add code
+        from tkinter import simpledialog
+        ans = simpledialog.askstring("Add RC", "Enter rectangle x,y,w,h:")
         if not ans:
             return
         try:
             x, y, w, h = map(int, ans.replace(" ", "").split(","))
         except Exception:
-            messagebox.showerror("Add Film", "Invalid input. Use: x,y,w,h")
+            messagebox.showerror("Add RC", "Invalid input. Use: x,y,w,h")
             return
 
         global _OVERLAY
         if _OVERLAY is None:
             _OVERLAY = {"films": [], "circles": [], "_shape": self.image_processor.current_image.shape[:2]}
 
-        film_name = f"Film_{len(_OVERLAY['films'])+1}M"
-        film_id = self.tree.insert("", "end", text=film_name, values=("", ""))
+        film_name = f"RC_{len(_OVERLAY['films'])+1}M"
+        film_id = self.tree.insert("", "end", text=film_name, values=("", "", "", ""))
         self.item_to_shape[film_id] = ("film", (x, y, w, h))
         _OVERLAY["films"].append((x, y, w, h))
         self.tree.item(film_id, open=True)
         self.main_window.update_image()
 
     def _add_manual_circle(self):
+        """Open dynamic dimension window and start circle draw mode (no dialogs)."""
+        self._start_draw_mode("circle", 100)
+        """Begin interactive drawing mode to add a circle ROI."""
         from tkinter import simpledialog
-        ans = simpledialog.askstring("Add Circle", "Enter circle cx,cy,r:")
-        if not ans:
-            return
-        try:
-            cx, cy, r = map(int, ans.replace(" ", "").split(","))
-        except Exception:
-            messagebox.showerror("Add Circle", "Invalid input. Use: cx,cy,r")
+
+        r = simpledialog.askinteger("Add Circle", "Enter circle radius (pixels):", minvalue=1)
+        if r is None:
             return
 
-        # Ensure circle does not overlap existing ones
-        for _, (scx, scy, sr) in [v for k, v in self.item_to_shape.items() if v[0] == "circle"]:
+        self._start_draw_mode("circle", r)
+
+    # ------------------------------------------------------------------
+    # Interactive drawing helpers
+    # ------------------------------------------------------------------
+    def _start_draw_mode(self, shape_type: str, dims):
+        """Activate drawing mode on the image canvas.
+
+        Parameters
+        ----------
+        shape_type : str
+            'film' or 'circle'.
+        dims : tuple | int
+            (w, h) for film or radius for circle.
+        """
+        if self._canvas is None or not self.image_processor.has_image():
+            messagebox.showwarning("Draw", "No image loaded or canvas unavailable.")
+            return
+
+        # If we were already in a drawing mode, cancel it first
+        self._cancel_draw()
+
+        self.draw_mode = shape_type
+        self.draw_dims = dims
+
+        # Open a small dynamic window to tweak dimensions live
+        self._open_dims_window()
+
+        # Configure canvas for drawing
+        self._canvas.config(cursor="crosshair")
+        # Remove any previous preview remains
+        self._canvas.delete(self.preview_tag)
+        # Bind events
+        self._canvas.bind("<Motion>", self._on_draw_move)
+        self._canvas.bind("<Button-1>", self._on_draw_click)
+        # Bind ESC on the top-level window
+        self.frame.winfo_toplevel().bind("<Escape>", self._cancel_draw)
+
+    def _open_dims_window(self):
+        """Create a small top-level window with live-update dimension entries."""
+        # Destroy previous if exists
+        if self._dims_window is not None:
+            self._dims_window.destroy()
+        self._dims_window = tk.Toplevel(self.frame)
+        self._dims_window.title("Dimensions")
+        self._dims_window.resizable(False, False)
+        self._dims_window.attributes("-topmost", True)
+        # Clear vars list
+        self._dim_vars.clear()
+
+        def on_var_change(*_):
+            """Callback when user edits dimension entries – update draw_dims and preview."""
+            try:
+                if self.draw_mode == "film" and len(self._dim_vars) == 2:
+                    w = int(self._dim_vars[0].get())
+                    h = int(self._dim_vars[1].get())
+                    if w > 0 and h > 0:
+                        self.draw_dims = (w, h)
+                elif self.draw_mode == "circle" and self._dim_vars:
+                    r = int(self._dim_vars[0].get())
+                    if r > 0:
+                        self.draw_dims = r
+            except ValueError:
+                # Ignore non-numeric inputs while typing
+                pass
+            self._update_preview()
+
+        if self.draw_mode == "film":
+            w, h = self.draw_dims  # type: ignore[misc]
+            w_var = tk.StringVar(value=str(w))
+            h_var = tk.StringVar(value=str(h))
+            self._dim_vars.extend([w_var, h_var])
+            tk.Label(self._dims_window, text="Width:").grid(row=0, column=0, padx=4, pady=2)
+            tk.Entry(self._dims_window, textvariable=w_var, width=6).grid(row=0, column=1, pady=2)
+            tk.Label(self._dims_window, text="Height:").grid(row=1, column=0, padx=4, pady=2)
+            tk.Entry(self._dims_window, textvariable=h_var, width=6).grid(row=1, column=1, pady=2)
+        elif self.draw_mode == "circle":
+            r = self.draw_dims  # type: ignore[assignment]
+            r_var = tk.StringVar(value=str(r))
+            self._dim_vars.append(r_var)
+            tk.Label(self._dims_window, text="Radius:").grid(row=0, column=0, padx=4, pady=2)
+            tk.Entry(self._dims_window, textvariable=r_var, width=6).grid(row=0, column=1, pady=2)
+
+        for var in self._dim_vars:
+            var.trace_add("write", on_var_change)
+
+    def _update_preview(self):
+        """Redraw preview using last known cursor position."""
+        if self.draw_mode is None or self._last_cursor is None:
+            return
+        dummy_evt = type("_e", (), {"x": self._last_cursor[0], "y": self._last_cursor[1]})()
+        self._on_draw_move(dummy_evt)
+
+    def _on_draw_move(self, event):
+        """Update dynamic preview while the cursor moves."""
+        if self.draw_mode is None:
+            return
+
+        canvas = self._canvas
+        canvas.delete(self.preview_tag)
+
+        # Current canvas coordinates
+        x = canvas.canvasx(event.x)
+        y = canvas.canvasy(event.y)
+        zoom = self.image_processor.zoom or 1.0
+
+        if self.draw_mode == "film":
+            w, h = self.draw_dims  # type: ignore[misc]
+            dx = (w * zoom) / 2
+            dy = (h * zoom) / 2
+            canvas.create_rectangle(
+                x - dx,
+                y - dy,
+                x + dx,
+                y + dy,
+                outline="yellow",
+                dash=(4, 2),
+                tags=self.preview_tag,
+            )
+        elif self.draw_mode == "circle":
+            r = self.draw_dims  # type: ignore[assignment]
+            dr = r * zoom
+            canvas.create_oval(
+                x - dr,
+                y - dr,
+                x + dr,
+                y + dr,
+                outline="yellow",
+                dash=(4, 2),
+                tags=self.preview_tag,
+            )
+
+    def _on_draw_click(self, event):
+        """Finalize placement of the current previewed shape on left click."""
+        if self.draw_mode is None:
+            return
+
+        canvas = self._canvas
+        # Canvas coordinates where the user clicked (display coords)
+        x_canvas = canvas.canvasx(event.x)
+        y_canvas = canvas.canvasy(event.y)
+        zoom = self.image_processor.zoom or 1.0
+
+        if self.draw_mode == "film":
+            # Rectangle drawn centred at click position
+            w, h = self.draw_dims  # type: ignore[misc]
+            x_top = int(x_canvas / zoom - w / 2)
+            y_top = int(y_canvas / zoom - h / 2)
+            self._insert_film(x_top, y_top, w, h)
+        elif self.draw_mode == "circle":
+            r = self.draw_dims  # type: ignore[assignment]
+            cx = int(x_canvas / zoom)
+            cy = int(y_canvas / zoom)
+            self._insert_circle(cx, cy, r)
+
+        # Clean-up drawing state
+        self._cancel_draw()
+
+    def _cancel_draw(self, event=None):
+        """Cancel current drawing operation and clean up UI bindings."""
+        canvas = getattr(self, "_canvas", None)
+        if canvas is not None:
+            canvas.delete(self.preview_tag)
+            canvas.config(cursor="")
+            canvas.unbind("<Motion>")
+            canvas.unbind("<Button-1>")
+
+        # Unbind ESC key
+        try:
+            self.frame.winfo_toplevel().unbind("<Escape>")
+        except Exception:
+            pass
+
+        # Close dimension window if open
+        if getattr(self, "_dims_window", None) is not None:
+            self._dims_window.destroy()
+            self._dims_window = None
+        # Reset helpers
+        self._dim_vars.clear()
+        self._last_cursor = None
+        self.draw_mode = None
+        self.draw_dims = None
+
+    # ---------------- Insertion helpers -------------------
+    def _insert_film(self, x: int, y: int, w: int, h: int):
+        """Insert a film rectangle into overlay and TreeView."""
+        global _OVERLAY
+        if _OVERLAY is None:
+            _OVERLAY = {
+                "films": [],
+                "circles": [],
+                "_shape": self.image_processor.current_image.shape[:2],
+            }
+
+        # Determine next index for naming
+        film_idx = len([v for v in self.item_to_shape.values() if v[0] == "film"]) + 1
+        film_name = f"RC_{film_idx}M"
+        film_id = self.tree.insert("", "end", text=film_name, values=("", "", "", ""))
+        self.item_to_shape[film_id] = ("film", (x, y, w, h))
+        _OVERLAY["films"].append((x, y, w, h))
+        self.tree.item(film_id, open=True)
+        self.main_window.update_image()
+
+    def _insert_circle(self, cx: int, cy: int, r: int):
+        """Insert a circle ROI, ensuring no overlap with existing ones."""
+        # Overlap check – iterate safely over stored shapes
+        for item_type, coords in self.item_to_shape.values():
+            if item_type != "circle":
+                continue
+            scx, scy, sr = coords
             if np.hypot(cx - scx, cy - scy) < (r + sr):
                 messagebox.showwarning("Add Circle", "Circle overlaps with existing circle.")
                 return
 
         global _OVERLAY
         if _OVERLAY is None:
-            _OVERLAY = {"films": [], "circles": [], "_shape": self.image_processor.current_image.shape[:2]}
+            _OVERLAY = {
+                "films": [],
+                "circles": [],
+                "_shape": self.image_processor.current_image.shape[:2],
+            }
 
-        # Link to nearest film if any
+        # Find parent film that contains the circle centre
         parent_id = ""
-        for fid, (ftype, (fx, fy, fw, fh)) in self.item_to_shape.items():
-            if ftype == "film" and (fx <= cx <= fx + fw) and (fy <= cy <= fy + fh):
+        for fid, (item_type, coords) in self.item_to_shape.items():
+            if item_type != "film":
+                continue
+            fx, fy, fw, fh = coords
+            if (fx <= cx <= fx + fw) and (fy <= cy <= fy + fh):
                 parent_id = fid
                 break
 
         circ_idx = len([v for v in self.item_to_shape.values() if v[0] == "circle"]) + 1
         circ_name = f"C{circ_idx}M"
-        circ_id = self.tree.insert(parent_id, "end", text=circ_name, values=("", ""))
+        circ_id = self.tree.insert(parent_id, "end", text=circ_name, values=("", "", "", ""))
         self.item_to_shape[circ_id] = ("circle", (cx, cy, r))
         _OVERLAY["circles"].append((cx, cy, r))
-        self.tree.item(parent_id, open=True)
+        if parent_id:
+            self.tree.item(parent_id, open=True)
         self.main_window.update_image()
+        return  # Exit early to skip deprecated manual-add code

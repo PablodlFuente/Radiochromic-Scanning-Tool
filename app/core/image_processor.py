@@ -921,7 +921,10 @@ class ImageProcessor:
                 # Get pixel value
                 if len(self.current_image.shape) == 3:
                     # Color image
-                    rgb = tuple(map(int, self.current_image[img_y, img_x]))
+                    if self.calibration_applied:
+                        rgb = tuple(map(float, self.current_image[img_y, img_x]))
+                    else:
+                        rgb = tuple(map(int, self.current_image[img_y, img_x]))
                     
                     # If we have binned data with standard deviation, include it
                     if self.binned_image is not None and 'std_dev' in self.binned_image:
@@ -931,7 +934,10 @@ class ImageProcessor:
                     return img_x, img_y, rgb
                 else:
                     # Grayscale image
-                    value = int(self.current_image[img_y, img_x])
+                    if self.calibration_applied:
+                        value = float(self.current_image[img_y, img_x])
+                    else:
+                        value = int(self.current_image[img_y, img_x])
                     
                     # If we have binned data with standard deviation, include it
                     if self.binned_image is not None and 'std_dev' in self.binned_image:

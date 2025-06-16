@@ -8,7 +8,8 @@ The Radiochromic Film Analyzer is a specialized application designed for the ana
 
 - **Image Processing**: Open, view, and analyze radiochromic film images
 - **Measurement Tools**: Circular and square measurement regions with adjustable size
-- **Statistical Analysis**: Calculate average RGB values, standard deviation, and uncertainty
+- **Statistical Analysis**: Calculate average RGB values, standard deviation, uncertainty, and calibrated dose
+- **Consistent Formatting**: Dose and uncertainty values are automatically formatted with matching decimal precision both in the UI (including the quick display under the cursor) and CSV export
 - **Visualization**: 
   - Real-time RGB histograms
   - 2D heat maps of intensity distribution
