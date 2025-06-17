@@ -6,17 +6,20 @@ The Radiochromic Film Analyzer is a specialized application designed for the ana
 
 ## Features
 
-- **Image Processing**: Open, view, and analyze radiochromic film images
-- **Measurement Tools**: Circular and square measurement regions with adjustable size
-- **Statistical Analysis**: Calculate average RGB values, standard deviation, uncertainty, and calibrated dose
-- **Consistent Formatting**: Dose and uncertainty values are automatically formatted with matching decimal precision both in the UI (including the quick display under the cursor) and CSV export
-- **Visualization**: 
-  - Real-time RGB histograms
-  - 2D heat maps of intensity distribution
-  - 3D surface plots of RGB channels
-- **Calibration**: Calibrate measurements against known dose values
-- **Image Enhancement**: Adjust contrast, brightness, saturation, and negative mode
-- **Configuration**: Save and load application settings
+- **Image Processing**: Open, view, and analyse radiochromic film images.
+- **Measurement Tools**: Circular, rectangular and line-profile regions with adjustable size; instant numeric preview under the cursor.
+- **Auto-Measurements**: Built-in plugin that automatically detects circular ROIs, computes dose & uncertainty and exports results to CSV in one click.
+- **Statistical Analysis**: Average pixel / dose values, standard deviation and fully propagated uncertainty, both per-channel and averaged.
+- **Consistent Formatting**: Values and uncertainties share matching precision (two decimals for calibrated dose) across the UI and CSV export.
+- **Visualization**:
+  - Real-time RGB / dose histograms
+  - 2-D heat maps of intensity or dose distribution
+  - 3-D surface plots of RGB channels or dose
+- **Calibration**: Non-linear calibration against reference doses with full uncertainty propagation; toggle on/off instantly.
+- **Performance**: Multithreading, optional GPU acceleration (CuPy) and on-the-fly binning (2×, 4×…) for large images.
+- **Plugins & Extensibility**: Load/unload external Python plugins directly from the GUI for custom workflows.
+- **Image Enhancement**: Contrast, brightness, saturation and negative mode.
+- **Configuration**: All settings are saved automatically between sessions.
 
 ## Installation
 
@@ -24,11 +27,15 @@ The Radiochromic Film Analyzer is a specialized application designed for the ana
 
 - Python 3.7 or higher
 - Required Python packages:
-  - tkinter
+  - tkinter (included with standard Python on Windows/macOS)
   - numpy
   - matplotlib
   - pillow (PIL)
-  - scipy (for 2D/3D visualization)
+  - scipy (for 2-D/3-D visualisation)
+  - opencv-python (CV2 image processing & fast statistics)
+  - pandas (CSV export)
+  - scikit-image (auto-measurement helpers)
+  - cupy-cuda** (optional, for GPU acceleration – choose the build matching your CUDA version)
 
 ### Installation Steps
 

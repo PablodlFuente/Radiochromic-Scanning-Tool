@@ -17,6 +17,7 @@ import cv2
 import numpy as np
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
+import tkinter.font as tkfont
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 – needed for 3D
 from math import log10, floor
@@ -87,7 +88,7 @@ def process(image: np.ndarray):
 
 # -------------------------------------------------------------------------
 
-class AutoMeasurementsTab:
+class AutoMeasurementsTab(ttk.Frame):
     # ---------------------------------------------------------------
     def _on_tree_select(self, event):
         """Highlight selected film or circle on the image."""
@@ -141,6 +142,11 @@ class AutoMeasurementsTab:
         self.image_processor = image_processor
         self.frame = ttk.Frame(notebook)
 
+        # Reference to the image canvas for manual drawing
+        self._canvas = (
+            self.main_window.image_panel.canvas if hasattr(self.main_window, "image_panel") else None
+        )
+
         # UI
         ttk.Label(self.frame, text="Auto Measurements", font=("Arial", 12, "bold")).pack(anchor=tk.W, padx=10, pady=(10, 5))
 
@@ -171,6 +177,8 @@ class AutoMeasurementsTab:
         self.tree.bind("<Delete>", self._on_delete_key)
         self.tree.bind("<Button-3>", self._on_right_click)
         self.tree.bind("<Double-1>", self._on_edit_label)
+        # Auto-adjust initial column widths
+        self._autosize_columns()
         # Film detection parameters
         self.rc_thresh_var = tk.IntVar(value=180)
         self.rc_min_area_var = tk.IntVar(value=5000)
@@ -184,10 +192,10 @@ class AutoMeasurementsTab:
         # Circle detection parameters
         self.min_circle_var = tk.IntVar(value=200)
         self.max_circle_var = tk.IntVar(value=400)
-        # Minimum distance between detected circle centers
         self.min_dist_var = tk.IntVar(value=200)
-        self.param1_var = tk.IntVar(value=20)  # Canny high threshold
-        self.param2_var = tk.IntVar(value=50)  # Accumulator threshold
+        self.param1_var = tk.IntVar(value=15)  # Canny high threshold
+        self.param2_var = tk.IntVar(value=40)  # Accumulator threshold
+        self.default_diameter_var = tk.IntVar(value=300)  # New default diameter variable
         circle_frame = ttk.LabelFrame(self.frame, text="Circle Detection")
         circle_frame.pack(fill=tk.X, padx=10, pady=5)
         ttk.Label(circle_frame, text="Min radius:").grid(row=0, column=0, sticky=tk.W)
@@ -200,27 +208,143 @@ class AutoMeasurementsTab:
         ttk.Entry(circle_frame, textvariable=self.param1_var, width=6).grid(row=2, column=1)
         ttk.Label(circle_frame, text="Param2 (Accumulator thr):").grid(row=2, column=2, sticky=tk.W)
         ttk.Entry(circle_frame, textvariable=self.param2_var, width=6).grid(row=2, column=3)
-
+        ttk.Label(circle_frame, text="Default diameter:").grid(row=3, column=0, sticky=tk.W)
+        ttk.Entry(circle_frame, textvariable=self.default_diameter_var, width=6).grid(row=3, column=1)
+        # Add a checkbox for restricting diameter
+        self.restrict_diameter_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            circle_frame,
+            text="Use default diameter for all circles",
+            variable=self.restrict_diameter_var,
+            command=self._apply_diameter_restriction,
+        ).grid(row=4, column=0, columnspan=4, sticky=tk.W)
+        # Recalculate when default diameter value changes
+        self.default_diameter_var.trace_add("write", lambda *args: self._apply_diameter_restriction())
         # Enable inline editing of item text (film/circle names)
         # Storage
         self.results = []  # List[Dict]
+        self.original_radii = {}  # Store original radii for circle items
+        
+        # Drawing attributes
+        self.draw_mode = None
+        self.draw_dims = None
+        self._dims_window = None
+        self._dim_vars = []
+        self._last_cursor = None
+        self.preview_tag = "draw_preview"  # Unique tag for canvas preview items
 
-        # ---------- Interactive drawing mode state ----------
-        # ``draw_mode``: None | 'film' | 'circle'
-        self.draw_mode: str | None = None
-        # ``draw_dims``: current dimensions – (w, h) for film or radius for circle
-        self.draw_dims: tuple | int | None = None
-        # Dynamic dimension window and variables
-        self._dims_window: tk.Toplevel | None = None
-        self._dim_vars: list[tk.StringVar] = []
-        # Last cursor position while in draw mode (for live preview)
-        self._last_cursor: tuple[float, float] | None = None
-        # Canvas preview tag
-        self.preview_tag: str = "draw_preview"
-        # Reference to the image canvas for convenience
-        self._canvas = (
-            self.main_window.image_panel.canvas if hasattr(self.main_window, "image_panel") else None
-        )
+    def _apply_diameter_restriction(self, *args):
+        """Adjust circle diameters based on checkbox state"""
+        global _OVERLAY
+        if not _OVERLAY or "circles" not in _OVERLAY or not _OVERLAY["circles"]:
+            return
+
+        if self.restrict_diameter_var.get():
+            # Apply default diameter restriction
+            default_diameter = max(1, self.default_diameter_var.get())
+            default_radius = max(1, int(round(default_diameter / 2)))
+            
+            new_circles = []
+            for item_id, (stype, shape_data) in list(self.item_to_shape.items()):
+                if stype != "circle":
+                    continue
+                x_px, y_px, _ = shape_data
+                new_circles.append((x_px, y_px, default_radius))
+                
+                # Recalculate measurements
+                prev_size = self.image_processor.measurement_size
+                try:
+                    self.image_processor.measurement_size = default_radius
+                    res = self.image_processor.measure_area(
+                        x_px * self.image_processor.zoom,
+                        y_px * self.image_processor.zoom
+                    )
+                finally:
+                    self.image_processor.measurement_size = prev_size
+                
+                if res is None:
+                    continue
+                
+                # Update tree view
+                dose, std_dev, unc, _ = res
+                if isinstance(dose, tuple):
+                    dose_parts, unc_parts = [], []
+                    for v, u in zip(dose, unc):
+                        v_str, u_str = self._format_val_unc(v, u, 2)
+                        dose_parts.append(v_str)
+                        unc_parts.append(u_str)
+                    dose_str = ", ".join(dose_parts)
+                    unc_str = ", ".join(unc_parts)
+                    avg_val = float(np.mean(dose))
+                    avg_unc = float(np.mean(unc))
+                else:
+                    dose_str, unc_str = self._format_val_unc(dose, unc, 2)
+                    avg_val = float(dose)
+                    avg_unc = float(unc)
+                avg_str, avg_unc_str = self._format_val_unc(avg_val, avg_unc, 2)
+
+                val_tuple = (dose_str, unc_str, avg_str, avg_unc_str)
+                self.tree.item(item_id, values=val_tuple)
+                self.item_to_shape[item_id] = ("circle", (x_px, y_px, default_radius))
+
+            _OVERLAY["circles"] = new_circles
+        else:
+            # Restore originally detected diameters
+            new_circles = []
+            for item_id, (stype, shape_data) in list(self.item_to_shape.items()):
+                if stype != "circle":
+                    continue
+                x, y, _ = shape_data
+                original_r = int(self.original_radii.get(item_id, _))
+                # Update stored shape to original radius
+                self.item_to_shape[item_id] = ("circle", (x, y, original_r))
+                new_circles.append((x, y, original_r))
+            
+            _OVERLAY["circles"] = new_circles
+            # Recalculate measurements with original radii
+            for item_id, (stype, shape_data) in list(self.item_to_shape.items()):
+                if stype != "circle":
+                    continue
+                x_px, y_px, r = shape_data
+                
+                # Recalculate measurements
+                prev_size = self.image_processor.measurement_size
+                try:
+                    self.image_processor.measurement_size = r
+                    res = self.image_processor.measure_area(
+                        x_px * self.image_processor.zoom,
+                        y_px * self.image_processor.zoom
+                    )
+                finally:
+                    self.image_processor.measurement_size = prev_size
+                
+                if res is None:
+                    continue
+                
+                # Update tree view
+                dose, std_dev, unc, _ = res
+                if isinstance(dose, tuple):
+                    dose_parts, unc_parts = [], []
+                    for v, u in zip(dose, unc):
+                        v_str, u_str = self._format_val_unc(v, u, 2)
+                        dose_parts.append(v_str)
+                        unc_parts.append(u_str)
+                    dose_str = ", ".join(dose_parts)
+                    unc_str = ", ".join(unc_parts)
+                    avg_val = float(np.mean(dose))
+                    avg_unc = float(np.mean(unc))
+                else:
+                    dose_str, unc_str = self._format_val_unc(dose, unc, 2)
+                    avg_val = float(dose)
+                    avg_unc = float(unc)
+                avg_str, avg_unc_str = self._format_val_unc(avg_val, avg_unc, 2)
+
+                val_tuple = (dose_str, unc_str, avg_str, avg_unc_str)
+                self.tree.item(item_id, values=val_tuple)
+                self.item_to_shape[item_id] = ("circle", (x_px, y_px, r))
+
+        self.main_window.update_image()
+        self._autosize_columns()
 
     # ---------------------------------------------------------------
     def _on_edit_label(self, event):
@@ -252,6 +376,7 @@ class AutoMeasurementsTab:
                     if rec["film"] == film_name and rec["circle"] == old_text:
                         rec["circle"] = new_text
             entry.destroy()
+            self._autosize_columns()
         entry.bind("<Return>", save_edit)
         entry.bind("<FocusOut>", save_edit)
 
@@ -295,14 +420,42 @@ class AutoMeasurementsTab:
             self.item_to_shape[film_id] = ("film", (x, y, w, h))
 
             # 2. Detect circles inside film
-            circles = self._detect_circles(film_roi)
-            # Order circles top->bottom, left->right
-            circles = sorted(circles, key=lambda c: (c[1], c[0]))
-            for jdx, (cx, cy, r) in enumerate(circles, 1):
+            min_radius = self.min_circle_var.get()
+            max_radius = self.max_circle_var.get()
+            min_dist = self.min_dist_var.get()
+            param1 = self.param1_var.get()
+            param2 = self.param2_var.get()
+            restrict_diameter = self.restrict_diameter_var.get()
+            default_diameter = self.default_diameter_var.get()
+
+            # Detect circles and sort them (top → bottom, left → right)
+            detected_circles = self._detect_circles(film_roi)
+            detected_circles = sorted(detected_circles, key=lambda c: (c[1], c[0]))
+
+            # Keep copy of original radii for later restoration
+            original_circles = detected_circles.copy()
+
+            # Apply diameter restriction if requested
+            circles = detected_circles
+            if restrict_diameter and circles:
+                default_radius = max(1, int(round(default_diameter / 2)))  # integer radius
+                circles = [(cx, cy, default_radius) for (cx, cy, _r) in detected_circles]
+            for jdx, (cx, cy, adj_r) in enumerate(circles, 1):
                 abs_cx = x + cx
                 abs_cy = y + cy
-                # Use existing measure_area
-                res = self.image_processor.measure_area(abs_cx * self.image_processor.zoom, abs_cy * self.image_processor.zoom)
+                r_int = int(round(adj_r))  # radius used for measurement/drawing
+                orig_r_int = int(round(original_circles[jdx - 1][2]))
+
+                # Temporarily set measurement size to current radius
+                prev_size = self.image_processor.measurement_size
+                try:
+                    self.image_processor.measurement_size = r_int
+                    res = self.image_processor.measure_area(
+                        abs_cx * self.image_processor.zoom,
+                        abs_cy * self.image_processor.zoom,
+                    )
+                finally:
+                    self.image_processor.measurement_size = prev_size
                 if res is None:
                     continue
                 dose, _, unc, _ = res  # mean(s), std, uncertainty
@@ -334,7 +487,8 @@ class AutoMeasurementsTab:
 
                 val_tuple = (dose_str, unc_str, avg_str, avg_unc_str)
                 circle_id = self.tree.insert(film_id, "end", text=circ_name, values=val_tuple)
-                self.item_to_shape[circle_id] = ("circle", (abs_cx, abs_cy, r))
+                self.item_to_shape[circle_id] = ("circle", (abs_cx, abs_cy, r_int))
+                self.original_radii[circle_id] = orig_r_int  # Store original detected radius
                 self.results.append({
                     "film": film_name,
                     "circle": circ_name,
@@ -343,7 +497,7 @@ class AutoMeasurementsTab:
                     "avg": avg_str,
                     "avg_unc": avg_unc_str,
                 })
-                _OVERLAY["circles"].append((abs_cx, abs_cy, r))
+                _OVERLAY["circles"].append((abs_cx, abs_cy, r_int))
 
         # Open all film nodes
         for child in self.tree.get_children():
@@ -351,6 +505,7 @@ class AutoMeasurementsTab:
 
         # Force refresh of image to show overlays
         self.main_window.update_image()
+        self._autosize_columns()
 
     # ---------------------------------------------------------------
     def _ensure_uint8(self, img: np.ndarray) -> np.ndarray:
@@ -430,18 +585,8 @@ class AutoMeasurementsTab:
         if circles is not None:
             circles = np.uint16(np.around(circles[0]))
             circles = circles.astype(int)  # avoid uint16 overflow when computing distances
-            # Remove overlaps similar to reference code
-            circles = sorted(circles, key=lambda c: c[2], reverse=True)
-            valid = []
-            for cx, cy, r in circles:
-                overlap = False
-                for vx, vy, vr in valid:
-                    if np.hypot(cx - vx, cy - vy) < (r + vr):
-                        overlap = True
-                        break
-                if not overlap:
-                    valid.append((cx, cy, r))
-            result = valid
+            # Keep all detected circles – allow overlaps
+            result = [tuple(c) for c in circles]
         return result
 
     # ---------------------------------------------------------------
@@ -588,6 +733,7 @@ class AutoMeasurementsTab:
         """Open dynamic dimension window and start film draw mode (no dialogs)."""
         # sensible defaults
         self._start_draw_mode("film", (300, 200))
+        return  # Skip additional dialogs; dimensions can be edited live in the popup
         """Begin interactive drawing mode to add an RC rectangle (film)."""
         from tkinter import simpledialog
 
@@ -625,6 +771,7 @@ class AutoMeasurementsTab:
     def _add_manual_circle(self):
         """Open dynamic dimension window and start circle draw mode (no dialogs)."""
         self._start_draw_mode("circle", 100)
+        return  # Skip additional dialogs; radius can be edited live in the popup
         """Begin interactive drawing mode to add a circle ROI."""
         from tkinter import simpledialog
 
@@ -836,15 +983,7 @@ class AutoMeasurementsTab:
         self.main_window.update_image()
 
     def _insert_circle(self, cx: int, cy: int, r: int):
-        """Insert a circle ROI, ensuring no overlap with existing ones."""
-        # Overlap check – iterate safely over stored shapes
-        for item_type, coords in self.item_to_shape.values():
-            if item_type != "circle":
-                continue
-            scx, scy, sr = coords
-            if np.hypot(cx - scx, cy - scy) < (r + sr):
-                messagebox.showwarning("Add Circle", "Circle overlaps with existing circle.")
-                return
+        """Insert a circle ROI. Overlap allowed – previous restriction removed."""
 
         global _OVERLAY
         if _OVERLAY is None:
@@ -873,3 +1012,40 @@ class AutoMeasurementsTab:
             self.tree.item(parent_id, open=True)
         self.main_window.update_image()
         return  # Exit early to skip deprecated manual-add code
+
+    # ---------------------------------------------------------------
+    def _autosize_columns(self):
+        """Resize TreeView columns so they fit their widest cell contents."""
+        # Fonts for measurement
+        try:
+            heading_font = tkfont.nametofont("TkHeadingFont")
+        except Exception:
+            heading_font = tkfont.nametofont("TkDefaultFont")
+        body_font = tkfont.nametofont("TkDefaultFont")
+
+        # Start with the width of the header texts
+        widths: dict[str, int] = {
+            "#0": heading_font.measure(self.tree.heading("#0", "text") or "")
+        }
+        for col in self.tree["columns"]:
+            widths[col] = heading_font.measure(self.tree.heading(col, "text"))
+
+        # Recursive traversal to measure each cell
+        def measure_item(item_id: str):
+            # Tree text
+            widths["#0"] = max(widths["#0"], body_font.measure(self.tree.item(item_id, "text")))
+            # Other columns
+            for col in self.tree["columns"]:
+                val = self.tree.set(item_id, col)
+                widths[col] = max(widths[col], body_font.measure(val))
+            # Children
+            for child in self.tree.get_children(item_id):
+                measure_item(child)
+
+        for root in self.tree.get_children(""):
+            measure_item(root)
+
+        # Apply widths with a bit of padding
+        padding = 16  # pixels
+        for col, w in widths.items():
+            self.tree.column(col, width=w + padding)
