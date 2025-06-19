@@ -747,6 +747,8 @@ class MainWindow:
         messagebox.showinfo(
             "About Radiochromic Film Analyzer",
             "Radiochromic Film Analyzer\n\n"
+            "Created by Pablo de la Fuente Fernández\n"
+            "Licensed under the MIT License\n\n"
             "A tool for analyzing radiochromic films and calculating dose.\n\n"
             "Version 1.0.0"
         )
