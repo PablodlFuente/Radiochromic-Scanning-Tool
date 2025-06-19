@@ -1,7 +1,6 @@
-1- pon una chekbox que restrinja todos los ciruclos al mismo diámetro
-2-cuando añado un circulo manual no me calcula los resultados de ese area
-3-en la treeview si pulso sobre el nombre de la columna avg me ordena la lista por avg , lo mismo para avg uncertatie y si pulso en la columna del nombre me lo ordena por coordenadas del centro delos circulos dentro de la RC order by x asc, y asc y si poincho de nuevo pues me los ordena por orden alfabetico 
+
 3 - ahora las medidas de diametro de los ciruclos están en pixeles pero estaría bien ponerlo en mm sabiendo el factor de corrección de que las radiocrímcas , el lado largo siempre mide 18cm
-2- añadir utilidad para detectar fondo y restarlo  por rc y prohibir valores negativos de dosis , eso es 0
+2- 
 3- añadir utilidad de sacar dosis por pocillo y crear un csv con : plate, well, date, LET, SIGMA_LET,dose, sigma dose . los tres primeros son primary key futuras para enlazarlo con el software de lectrura de plates.
 4 hacer un mejor README 
+5- vamos a centrarnos ahora en detectar las radiocrómicas pero teniendo en cuenta de que podrían tener un angulo de rotación , es decir es un rectangulo pero rotado . De esta manera tienes un nuevo grado de libertad tambien para add manually rc
