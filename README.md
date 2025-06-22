@@ -33,27 +33,26 @@ The Radiochromic Film Analyzer is a specialized application designed for the ana
   - pillow (PIL)
   - scipy (for 2-D/3-D visualisation)
   - opencv-python (CV2 image processing & fast statistics)
-  - pandas (CSV export)
-  - scikit-image (auto-measurement helpers)
+  - scikit-image (required for auto-measurements plugin)
   - cupy-cuda** (optional, for GPU acceleration – choose the build matching your CUDA version)
 
 ### Installation Steps
 
 1. Clone the repository or download the source code:
-   \`\`\`
+   ```
    git clone https://github.com/yourusername/radiochromic-film-analyzer.git
    cd radiochromic-film-analyzer
-   \`\`\`
+   ```
 
 2. Install the required dependencies:
-   \`\`\`
+   ```
    pip install -r requirements.txt
-   \`\`\`
+   ```
 
 3. Run the application:
-   \`\`\`
+   ```
    python main.py
-   \`\`\`
+   ```
 
 ## Usage Guide
 

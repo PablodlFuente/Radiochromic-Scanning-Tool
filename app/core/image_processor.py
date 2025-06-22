@@ -82,11 +82,15 @@ class ImageProcessor:
         self.system_info = self._get_system_info()
         
         # GPU acceleration
+        self.cuda_available = self._check_cuda_support()  # Add CUDA availability flag
         self.gpu_available = False
         self.gpu_enabled = False
         self.gpu_devices = {}
         self.gpu_force_enabled = config.get("gpu_force_enabled", False)
-        self._init_gpu()
+        if self.cuda_available:
+            self._init_gpu()
+        else:
+            logger.warning("CUDA not available, skipping GPU initialization")
         
         # Multi-threading
         self.use_multithreading = config.get("use_multithreading", True)
@@ -117,6 +121,17 @@ class ImageProcessor:
         
         logger.info(f"System info: {info}")
         return info
+    
+    def _check_cuda_support(self):
+        """Check if OpenCV was built with CUDA support."""
+        try:
+            # Check CUDA device count
+            if cv2.cuda.getCudaEnabledDeviceCount() > 0:
+                logger.info("CUDA support detected")
+                return True
+        except Exception as e:
+            logger.warning(f"CUDA check failed: {str(e)}")
+        return False
     
     def set_progress_callback(self, callback):
         """Set the progress callback function."""
@@ -350,7 +365,7 @@ class ImageProcessor:
                 logger.info(f"Downsampling large image to {new_width}x{new_height}")
                 
                 # Use GPU for downsampling if available
-                if self.gpu_available and self.gpu_enabled:
+                if self.cuda_available:
                     try:
                         # Upload image to GPU
                         gpu_image = cv2.cuda_GpuMat()
@@ -530,7 +545,7 @@ class ImageProcessor:
         memory_gb = self.system_info["memory_gb"]
         
         # For GPU processing, use larger tiles to reduce overhead
-        if self.gpu_available and self.gpu_enabled:
+        if self.cuda_available and self.gpu_enabled:
             # GPU processing benefits from larger tiles due to transfer overhead
             if memory_gb < 4:
                 max_tile_size = 1024
@@ -861,6 +876,107 @@ class ImageProcessor:
     def get_zoom(self):
         """Get the current zoom level."""
         return self.zoom
+
+    # ------------------------------------------------------------------
+    # Metadata helpers expected by external plugins (e.g. auto_measurements)
+    # ------------------------------------------------------------------
+    def get_all_metadata(self):
+        """Return a dictionary with all metadata that can be extracted from the current image file.
+
+        The *auto_measurements* plugin expects this method to exist. We try a
+        best-effort extraction of metadata using Pillow so that the plugin can
+        access DPI information and any EXIF fields available. If no image is
+        loaded or metadata cannot be retrieved, an empty dict is returned so
+        that the caller can safely proceed to other fallback methods.
+        """
+        if self.current_file is None or not os.path.exists(self.current_file):
+            return {}
+
+        try:
+            from PIL import Image, ExifTags
+
+            metadata: dict[str, object] = {}
+            with Image.open(self.current_file) as img:
+                # Basic info dictionary (may include dpi amongst others)
+                if img.info:
+                    metadata.update({f"PIL_{k}": v for k, v in img.info.items()})
+
+                # Explicitly store DPI if available (convenience key)
+                if "dpi" in img.info:
+                    metadata["PIL_dpi_direct"] = img.info["dpi"]
+
+                # Try to read EXIF data (JPEG/TIFF mainly)
+                exif = img.getexif()
+                if exif:
+                    for tag_id, value in exif.items():
+                        tag = ExifTags.TAGS.get(tag_id, tag_id)
+                        metadata[f"EXIF_{tag}"] = value
+            return metadata
+        except Exception as e:
+            logger.warning(f"Could not extract metadata from image: {e}")
+            return {}
+
+    def get_dpi(self):
+        """Return the DPI (dots-per-inch) of the currently loaded image if available.
+
+        Several fallback strategies are attempted:
+        1. Use Pillow's *info["dpi"]* entry (most common for PNG/TIFF).
+        2. Inspect EXIF XResolution/YResolution tags.
+        3. Resort to the configured default DPI (if set) or *None*.
+        """
+        if self.current_file is None or not os.path.exists(self.current_file):
+            return None
+
+        try:
+            from PIL import Image, ExifTags
+
+            with Image.open(self.current_file) as img:
+                # 1. Direct dpi tuple (horizontal, vertical)
+                dpi_tuple = img.info.get("dpi")
+                if dpi_tuple and dpi_tuple[0] > 0:
+                    return float(dpi_tuple[0])  # assume square pixels → use X dpi
+
+                # 2. EXIF tags
+                exif = img.getexif()
+                if exif:
+                    x_res_tag = None
+                    y_res_tag = None
+                    for tag_id, name in ExifTags.TAGS.items():
+                        if name == "XResolution":
+                            x_res_tag = tag_id
+                        elif name == "YResolution":
+                            y_res_tag = tag_id
+                    if x_res_tag in exif and exif[x_res_tag]:
+                        # EXIF resolutions can be (num, den) tuples – convert to float
+                        x_val = exif[x_res_tag]
+                        if isinstance(x_val, tuple) and len(x_val) == 2 and x_val[1] != 0:
+                            return float(x_val[0]) / float(x_val[1])
+                        elif isinstance(x_val, (int, float)):
+                            return float(x_val)
+                # 3. Config default
+                default_dpi = self.config.get("default_dpi")
+                return float(default_dpi) if default_dpi else None
+        except Exception as e:
+            logger.warning(f"Could not determine DPI for image: {e}")
+            return None
+
+    # ------------------------------------------------------------------
+    # Path aliases for backward compatibility with older plugins
+    # ------------------------------------------------------------------
+    @property
+    def original_image_path(self):
+        """Alias for the path to the originally loaded image file."""
+        return self.current_file
+
+    @property
+    def image_path(self):
+        """Alias preserved for backward compatibility (same as original_image_path)."""
+        return self.current_file
+
+    @property
+    def current_file_path(self):
+        """Another alias for external plugins that expect this attribute."""
+        return self.current_file
     
     def set_zoom(self, zoom):
         """Set the zoom level."""
@@ -1423,7 +1539,10 @@ class ImageProcessor:
     
         # Update GPU settings
         self.gpu_force_enabled = config.get("gpu_force_enabled", False)
-        self._init_gpu()
+        if self.cuda_available:
+            self._init_gpu()
+        else:
+            logger.warning("CUDA not available, skipping GPU initialization")
         self.gpu_enabled = config.get("use_gpu", False) and (self.gpu_available or self.gpu_force_enabled)
     
         # Update threading settings
@@ -1505,7 +1624,7 @@ class ImageProcessor:
                 new_width = int(width * self.zoom)
             
                 # Use GPU for resizing if available
-                if self.gpu_available and self.gpu_enabled:
+                if self.cuda_available:
                     try:
                         # Upload image to GPU
                         gpu_image = cv2.cuda_GpuMat()

@@ -1,0 +1,30 @@
+2025-06-22 22:20:32,809 - __main__ - INFO - Starting Radiochromic Film Analyzer
+2025-06-22 22:20:32,858 - app.rc_analyzer - INFO - Initializing RCAnalyzer application
+2025-06-22 22:20:32,863 - app.rc_analyzer - INFO - Cleaned up local temp directory: C:\Users\Pablo\OneDrive - UAM\2 Proyectos\1 Otros\0 Software_propio_utilidades\RC\analizadorrc\temp
+2025-06-22 22:20:32,863 - app.rc_analyzer - INFO - Cleaned up log and temporary files
+2025-06-22 22:20:32,863 - app.utils.config_manager - INFO - Configuration manager initialized
+2025-06-22 22:20:32,863 - app.utils.config_manager - INFO - Configuration loaded from file
+2025-06-22 22:20:32,881 - app.core.image_processor - INFO - System info: {'platform': 'Windows', 'processor': 'AMD64 Family 23 Model 113 Stepping 0, AuthenticAMD', 'cpu_count': 12, 'memory_gb': 31.94003677368164, 'python_version': '3.12.0', 'opencv_version': '4.11.0'}
+2025-06-22 22:20:32,881 - app.core.image_processor - WARNING - CUDA not available, skipping GPU initialization
+2025-06-22 22:20:32,882 - app.core.image_processor - INFO - Image processor initialized
+2025-06-22 22:20:32,883 - app.utils.file_manager - INFO - File manager initialized
+2025-06-22 22:20:32,920 - app.plugins.plugin_manager - INFO - Loaded plugin 'auto_measurements'
+2025-06-22 22:20:32,939 - app.ui.image_panel - INFO - Image panel initialized
+2025-06-22 22:20:32,956 - app.ui.measurement_panel - INFO - Measurement panel initialized
+2025-06-22 22:20:32,967 - app.ui.image_settings_panel - INFO - Image settings panel initialized
+2025-06-22 22:20:33,165 - app.ui.main_window - INFO - Main window initialized
+2025-06-22 22:20:33,165 - app.rc_analyzer - INFO - RCAnalyzer initialization complete
+2025-06-22 22:20:38,102 - app.ui.main_window - INFO - Loading image: C:\Users\Pablo\OneDrive - UAM\4 Protonterapia\1 Experimentos\1 Experimentos\2025_05_06_PT\scans_070525\RC1_2_3.tiff (Size: 14.94 MB)
+2025-06-22 22:20:38,238 - app.core.image_processor - INFO - Loading image: C:\Users\Pablo\OneDrive - UAM\4 Protonterapia\1 Experimentos\1 Experimentos\2025_05_06_PT\scans_070525\RC1_2_3.tiff, size: 2550x3510
+2025-06-22 22:20:38,244 - app.core.image_processor - INFO - Computing integral images for fast statistics
+2025-06-22 22:20:38,381 - app.core.image_processor - INFO - Integral images computed successfully
+2025-06-22 22:20:38,383 - app.core.image_processor - INFO - Loaded image: C:\Users\Pablo\OneDrive - UAM\4 Protonterapia\1 Experimentos\1 Experimentos\2025_05_06_PT\scans_070525\RC1_2_3.tiff
+2025-06-22 22:20:39,302 - app.core.image_processor - INFO - Computing integral images for fast statistics
+2025-06-22 22:20:39,496 - app.core.image_processor - INFO - Integral images computed successfully
+2025-06-22 22:20:39,499 - app.core.image_processor - INFO - Calibration applied successfully – dose image ready (3-channel float32)
+2025-06-22 22:20:39,529 - app.ui.main_window - INFO - Loaded image: C:\Users\Pablo\OneDrive - UAM\4 Protonterapia\1 Experimentos\1 Experimentos\2025_05_06_PT\scans_070525\RC1_2_3.tiff
+2025-06-22 23:04:40,427 - app.rc_analyzer - INFO - Saving configuration before exit
+2025-06-22 23:04:40,429 - app.utils.config_manager - INFO - Configuration saved to file
+2025-06-22 23:04:40,434 - app.rc_analyzer - INFO - Cleaned up local temp directory: C:\Users\Pablo\OneDrive - UAM\2 Proyectos\1 Otros\0 Software_propio_utilidades\RC\analizadorrc\temp
+2025-06-22 23:04:40,434 - app.rc_analyzer - INFO - Cleaned up log and temporary files
+2025-06-22 23:04:40,538 - __main__ - INFO - Application closed normally

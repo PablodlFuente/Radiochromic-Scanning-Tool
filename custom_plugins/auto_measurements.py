@@ -1,8 +1,9 @@
-"""AutoMeasurements plugin - Versión mejorada con funcionalidad CTR completa
+"""AutoMeasurements plugin - Versión mejorada con funcionalidad CTR completa y selección manual de metadatos
 
 Detects rectangular radiochromic films and circular ROIs inside them,
 computes dose and uncertainty, and shows results in a TreeView with export.
 Includes complete CTR (Control) circle functionality for background subtraction.
+Includes manual metadata selection when resolution is not found automatically.
 
 TAB_TITLE = "AutoMeasurements"
 """
@@ -142,7 +143,7 @@ class AutoMeasurementsTab(ttk.Frame):
         self.main_window = main_window
         self.image_processor = image_processor
         self.frame = ttk.Frame(notebook)
-
+        
         # Reference to the image canvas for manual drawing
         self._canvas = (
             self.main_window.image_panel.canvas if hasattr(self.main_window, "image_panel") else None
@@ -158,6 +159,8 @@ class AutoMeasurementsTab(ttk.Frame):
         self.ctr_map: dict[str, str] = {}
         # Store original measurements before CTR subtraction
         self.original_measurements: dict[str, dict] = {}
+        # Store original values for unit conversion
+        self.original_values = {}  # key: item_id, value: dict of numeric values
         
         # Drawing attributes
         self.draw_mode = None
@@ -171,9 +174,45 @@ class AutoMeasurementsTab(ttk.Frame):
         self.sort_column = None
         self.sort_reverse = False
         self.name_sort_mode = "coords"  # 'coords' or 'name'
+        
+        # Session storage for manual metadata selection
+        self.session_metadata_key = None  # Store selected metadata key for session
+        
+        # Storage for original parameter values (for unit conversion)
+        self.original_parameters = {}
+        self.parameters_converted = False
 
     def _setup_ui(self):
         """Setup the user interface."""
+        # Metadata section
+        metadata_frame = ttk.Frame(self.frame)
+        metadata_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        self.use_metadata_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(metadata_frame, text="Usar metadatos", variable=self.use_metadata_var,
+                        command=self._update_unit_conversion).pack(side=tk.LEFT)
+
+        # Frame for resolution and conversion factor labels
+        info_frame = ttk.Frame(self.frame)
+        info_frame.pack(fill=tk.X, padx=20, pady=(0, 5))
+        
+        # Label to show detected resolution (DPI)
+        self.resolution_label = ttk.Label(info_frame, text="Resolution: -", font=("Arial", 9, "italic"))
+        self.resolution_label.pack(side=tk.LEFT, anchor=tk.W)
+        
+        # Label to show conversion factor
+        self.conversion_label = ttk.Label(info_frame, text="", font=("Arial", 9, "italic"), foreground="gray")
+        self.conversion_label.pack(side=tk.LEFT, padx=(10, 0), anchor=tk.W)
+        
+        # Add button for manual metadata selection
+        ttk.Button(metadata_frame, text="Seleccionar metadatos", 
+                   command=self._manual_metadata_selection).pack(side=tk.LEFT, padx=(10, 0))
+        
+        # Add info button
+        ttk.Button(metadata_frame, text="ℹ️ Info", 
+                   command=self._show_metadata_info).pack(side=tk.LEFT, padx=(5, 0))
+        
+        # Title label
         ttk.Label(self.frame, text="Auto Measurements", font=("Arial", 12, "bold")).pack(anchor=tk.W, padx=10, pady=(10, 5))
 
         # Main button frame
@@ -246,7 +285,10 @@ class AutoMeasurementsTab(ttk.Frame):
         film_frame.pack(fill=tk.X, padx=10, pady=5)
         ttk.Label(film_frame, text="Umbral (0-255):").grid(row=0, column=0, sticky=tk.W, pady=2)
         ttk.Entry(film_frame, textvariable=self.rc_thresh_var, width=6).grid(row=0, column=1, sticky=tk.W)
-        ttk.Label(film_frame, text="Área mín (px):").grid(row=1, column=0, sticky=tk.W, pady=2)
+        
+        # Store reference to area label for unit updates
+        self.area_label = ttk.Label(film_frame, text="Área mín (px²):")
+        self.area_label.grid(row=1, column=0, sticky=tk.W, pady=2)
         ttk.Entry(film_frame, textvariable=self.rc_min_area_var, width=8).grid(row=1, column=1, sticky=tk.W)
 
         # Circle detection parameters
@@ -259,18 +301,27 @@ class AutoMeasurementsTab(ttk.Frame):
         
         circle_frame = ttk.LabelFrame(self.frame, text="Detección Círculos")
         circle_frame.pack(fill=tk.X, padx=10, pady=5)
-        ttk.Label(circle_frame, text="Radio mín:").grid(row=0, column=0, sticky=tk.W)
+        
+        # Store references to labels for unit updates
+        self.min_radius_label = ttk.Label(circle_frame, text="Radio mín (px):")
+        self.min_radius_label.grid(row=0, column=0, sticky=tk.W)
         ttk.Entry(circle_frame, textvariable=self.min_circle_var, width=6).grid(row=0, column=1)
-        ttk.Label(circle_frame, text="Radio máx:").grid(row=0, column=2, sticky=tk.W)
+        
+        self.max_radius_label = ttk.Label(circle_frame, text="Radio máx (px):")
+        self.max_radius_label.grid(row=0, column=2, sticky=tk.W)
         ttk.Entry(circle_frame, textvariable=self.max_circle_var, width=6).grid(row=0, column=3)
-        ttk.Label(circle_frame, text="Distancia mín:").grid(row=1, column=0, sticky=tk.W)
+        
+        self.min_dist_label = ttk.Label(circle_frame, text="Distancia mín (px):")
+        self.min_dist_label.grid(row=1, column=0, sticky=tk.W)
         ttk.Entry(circle_frame, textvariable=self.min_dist_var, width=6).grid(row=1, column=1)
+        
         ttk.Label(circle_frame, text="Param1:").grid(row=2, column=0, sticky=tk.W)
         ttk.Entry(circle_frame, textvariable=self.param1_var, width=6).grid(row=2, column=1)
         ttk.Label(circle_frame, text="Param2:").grid(row=2, column=2, sticky=tk.W)
         ttk.Entry(circle_frame, textvariable=self.param2_var, width=6).grid(row=2, column=3)
         
-        ttk.Label(circle_frame, text="Diámetro por defecto:").grid(row=3, column=0, sticky=tk.W)
+        self.default_diameter_label = ttk.Label(circle_frame, text="Diámetro por defecto (px):")
+        self.default_diameter_label.grid(row=3, column=0, sticky=tk.W)
         ttk.Entry(circle_frame, textvariable=self.default_diameter_var, width=6).grid(row=3, column=1)
         
         # Add diameter restriction checkbox
@@ -284,6 +335,694 @@ class AutoMeasurementsTab(ttk.Frame):
         
         # Recalculate when default diameter value changes
         self.default_diameter_var.trace_add("write", lambda *args: self._apply_diameter_restriction())
+
+    # ---------------------------------------------------------------
+    # Metadata handling functionality
+    # ---------------------------------------------------------------
+    
+    def _get_image_metadata(self):
+        """Get all metadata from the current image using multiple methods."""
+        all_metadata = {}
+        
+        try:
+            # Method 1: Try to get metadata from image processor
+            if hasattr(self.image_processor, 'get_all_metadata'):
+                processor_metadata = self.image_processor.get_all_metadata()
+                if processor_metadata:
+                    all_metadata.update(processor_metadata)
+            
+            # Method 2: Get image path
+            img_path = None
+            if hasattr(self.image_processor, 'original_image_path'):
+                img_path = self.image_processor.original_image_path
+            elif hasattr(self.image_processor, 'image_path'):
+                img_path = self.image_processor.image_path
+            elif hasattr(self.image_processor, 'current_file_path'):
+                img_path = self.image_processor.current_file_path
+            
+            if img_path and os.path.exists(img_path):
+                # Method 3: PIL/Pillow - EXIF and basic info
+                try:
+                    from PIL import Image
+                    from PIL.ExifTags import TAGS, GPSTAGS
+                    
+                    with Image.open(img_path) as img:
+                        # Get EXIF data
+                        exifdata = img.getexif()
+                        for tag_id, value in exifdata.items():
+                            tag = TAGS.get(tag_id, f"Unknown_EXIF_{tag_id}")
+                            all_metadata[f"EXIF_{tag}"] = value
+                        
+                        # Get image info (including DPI) - this is crucial for DPI detection
+                        if hasattr(img, 'info') and img.info:
+                            for key, value in img.info.items():
+                                all_metadata[f"PIL_{key}"] = value
+                        
+                        # Also try to get DPI directly from PIL
+                        try:
+                            if hasattr(img, 'info') and 'dpi' in img.info:
+                                all_metadata['PIL_dpi_direct'] = img.info['dpi']
+                        except:
+                            pass
+                        
+                        # Get format-specific info
+                        if hasattr(img, 'format'):
+                            all_metadata['Format'] = img.format
+                        if hasattr(img, 'mode'):
+                            all_metadata['Mode'] = img.mode
+                        if hasattr(img, 'size'):
+                            all_metadata['Size'] = img.size
+                
+                except Exception as e:
+                    print(f"PIL metadata extraction failed: {e}")
+                
+                # Method 4: Try exifread library (if available)
+                try:
+                    import exifread
+                    with open(img_path, 'rb') as f:
+                        tags = exifread.process_file(f, details=True)
+                        for tag, value in tags.items():
+                            if tag not in ['JPEGThumbnail', 'TIFFThumbnail', 'Filename', 'EXIF MakerNote']:
+                                all_metadata[f"ExifRead_{tag}"] = str(value)
+                except ImportError:
+                    # Try to install exifread
+                    all_metadata['_info_exifread'] = "ExifRead no instalado - puede proporcionar más metadatos"
+                except Exception as e:
+                    print(f"ExifRead metadata extraction failed: {e}")
+                
+                # Method 5: Try to read Windows properties using subprocess (Windows only)
+                try:
+                    import platform
+                    import subprocess
+                    import json
+                    
+                    if platform.system() == "Windows":
+                        # Use PowerShell to get file properties
+                        ps_command = f'''
+                        $file = Get-Item "{img_path}"
+                        $props = @{{}}
+                        $file.PSObject.Properties | ForEach-Object {{
+                            if ($_.Value -ne $null) {{
+                                $props[$_.Name] = $_.Value.ToString()
+                            }}
+                        }}
+                        $props | ConvertTo-Json
+                        '''
+                        
+                        result = subprocess.run(['powershell', '-Command', ps_command], 
+                                              capture_output=True, text=True, timeout=10)
+                        if result.returncode == 0 and result.stdout.strip():
+                            try:
+                                windows_props = json.loads(result.stdout)
+                                for key, value in windows_props.items():
+                                    all_metadata[f"Windows_{key}"] = value
+                            except json.JSONDecodeError:
+                                pass
+                except Exception as e:
+                    print(f"Windows properties extraction failed: {e}")
+                
+                # Method 6: Manual EXIF parsing for common resolution tags
+                try:
+                    with open(img_path, 'rb') as f:
+                        # Try to find resolution info manually in common EXIF tags
+                        content = f.read(8192)  # Read first 8KB
+                        
+                        # Look for common DPI/resolution patterns
+                        import re
+                        dpi_patterns = [
+                            rb'(\d+)\s*dpi',
+                            rb'(\d+)\s*dots per inch',
+                            rb'resolution[^\d]*(\d+)',
+                        ]
+                        
+                        for pattern in dpi_patterns:
+                            matches = re.findall(pattern, content, re.IGNORECASE)
+                            if matches:
+                                all_metadata['Manual_DPI_Detection'] = [int(m) for m in matches if m.isdigit()]
+                except Exception as e:
+                    print(f"Manual EXIF parsing failed: {e}")
+            
+            # Add debug information
+            all_metadata['_debug_total_keys'] = len(all_metadata)
+            all_metadata['_debug_image_path'] = img_path if img_path else "No path found"
+            
+            return all_metadata
+                        
+        except Exception as e:
+            print(f"Error getting metadata: {e}")
+            return {}
+    
+    def _extract_resolution_from_metadata(self, metadata_key, metadata_value):
+        """Extract resolution/DPI value from a metadata entry."""
+        try:
+            # Handle different metadata formats
+            if isinstance(metadata_value, (tuple, list)) and len(metadata_value) >= 1:
+                # DPI as tuple (x_dpi, y_dpi) or list
+                if len(metadata_value) >= 2:
+                    return float(metadata_value[0])  # Use X resolution
+                else:
+                    return float(metadata_value[0])
+            elif isinstance(metadata_value, (int, float)):
+                # Direct DPI value
+                return float(metadata_value)
+            elif isinstance(metadata_value, str):
+                # Try to parse string representations
+                import re
+                
+                # Remove common units and clean the string
+                cleaned = metadata_value.replace(',', '.').lower()
+                
+                # Look for common DPI/resolution patterns
+                patterns = [
+                    r'(\d+\.?\d*)\s*dpi',
+                    r'(\d+\.?\d*)\s*dots per inch',
+                    r'(\d+\.?\d*)\s*pixels per inch',
+                    r'(\d+\.?\d*)\s*ppi',
+                    r'(\d+\.?\d*)\s*/\s*1',  # Rational format like "300/1"
+                    r'(\d+\.?\d*)\s*x\s*\d+',  # Format like "300 x 300"
+                    r'(\d+\.?\d*)',  # Just extract first number
+                ]
+                
+                for pattern in patterns:
+                    matches = re.findall(pattern, cleaned)
+                    if matches:
+                        value = float(matches[0])
+                        # Reasonable DPI range check
+                        if 10 <= value <= 10000:
+                            return value
+                
+                # Special handling for fractions (like "300/1")
+                if '/' in cleaned:
+                    parts = cleaned.split('/')
+                    if len(parts) == 2:
+                        try:
+                            numerator = float(parts[0].strip())
+                            denominator = float(parts[1].strip())
+                            if denominator != 0:
+                                value = numerator / denominator
+                                if 10 <= value <= 10000:
+                                    return value
+                        except ValueError:
+                            pass
+            
+            # Handle manual DPI detection results
+            if metadata_key == 'Manual_DPI_Detection' and isinstance(metadata_value, list):
+                # Return the first reasonable DPI value
+                for val in metadata_value:
+                    if 10 <= val <= 10000:
+                        return float(val)
+            
+            return None
+        except (ValueError, TypeError, IndexError, ZeroDivisionError):
+            return None
+
+    def _manual_metadata_selection(self):
+        """Open dialog for manual metadata selection."""
+        if not self.image_processor.has_image():
+            messagebox.showwarning("Metadatos", "Carga una imagen primero.")
+            return
+        
+        # Get all metadata from the current image
+        metadata = self._get_image_metadata()
+        
+        if not metadata or len(metadata) <= 2:  # Only debug keys
+            # Show debug information and offer manual input
+            debug_info = self._get_debug_info()
+            result = messagebox.askyesno(
+                "Metadatos No Encontrados", 
+                f"No se encontraron metadatos en la imagen actual.\n\n"
+                f"Información de debug:\n{debug_info}\n\n"
+                f"Sugerencias:\n"
+                f"• Verifica que la imagen tenga metadatos EXIF\n"
+                f"• Prueba con una imagen diferente\n"
+                f"• Algunos formatos (PNG, BMP) pueden no tener DPI en metadatos\n\n"
+                f"¿Quieres introducir el DPI manualmente?"
+            )
+            
+            if result:
+                self._manual_dpi_input()
+            return
+        
+        # Create selection dialog
+        self._show_metadata_selection_dialog(metadata)
+    
+    def _get_debug_info(self):
+        """Get debug information about the current image."""
+        debug_lines = []
+        
+        # Image path
+        img_path = None
+        if hasattr(self.image_processor, 'original_image_path'):
+            img_path = self.image_processor.original_image_path
+        elif hasattr(self.image_processor, 'image_path'):
+            img_path = self.image_processor.image_path
+        elif hasattr(self.image_processor, 'current_file_path'):
+            img_path = self.image_processor.current_file_path
+        
+        debug_lines.append(f"Ruta: {img_path if img_path else 'No disponible'}")
+        
+        if img_path and os.path.exists(img_path):
+            debug_lines.append(f"Archivo existe: Sí")
+            debug_lines.append(f"Tamaño: {os.path.getsize(img_path)} bytes")
+            debug_lines.append(f"Extensión: {os.path.splitext(img_path)[1]}")
+            
+            # Try to get basic image info
+            try:
+                from PIL import Image
+                with Image.open(img_path) as img:
+                    debug_lines.append(f"Formato PIL: {img.format}")
+                    debug_lines.append(f"Modo: {img.mode}")
+                    debug_lines.append(f"Dimensiones: {img.size}")
+                    debug_lines.append(f"Info keys: {list(img.info.keys()) if img.info else 'Ninguna'}")
+            except Exception as e:
+                debug_lines.append(f"Error PIL: {e}")
+        else:
+            debug_lines.append("Archivo no existe o no accesible")
+        
+        return "\n".join(debug_lines)
+    
+    def _show_metadata_info(self):
+        """Show information about metadata handling."""
+        info_text = """Información sobre Metadatos y Resolución
+
+📋 TIPOS DE METADATOS SOPORTADOS:
+• EXIF - Datos estándar de cámaras
+• PIL Info - Información básica de imagen  
+• Windows Properties - Propiedades del sistema
+• Manual Detection - Búsqueda de patrones
+
+🔍 FORMATOS DE RESOLUCIÓN DETECTADOS:
+• DPI directo (ej: 300)
+• Tuplas (ej: (300, 300))
+• Texto con unidades (ej: "300 DPI")
+• Fracciones (ej: "300/1")
+
+⚠️ PROBLEMAS COMUNES:
+• PNG/BMP pueden no tener DPI en metadatos
+• Algunos editores eliminan metadatos
+• Archivos escaneados pueden usar formatos propietarios
+
+💡 SOLUCIONES:
+• Usa "Seleccionar metadatos" para ver todos disponibles
+• Busca campos con ⭐ (prioritarios para resolución)
+• Si no hay metadatos, introduce manualmente el DPI conocido
+
+🛠️ MEJORAS DISPONIBLES:
+• Instala 'exifread' para más metadatos: pip install exifread
+• Usa imágenes con metadatos EXIF completos"""
+        
+        messagebox.showinfo("Información de Metadatos", info_text)
+    
+    def _manual_dpi_input(self):
+        """Allow manual DPI input when metadata is not available."""
+        # Crear diálogo personalizado para mantenerlo enfocado
+        dialog = tk.Toplevel(self.frame)
+        dialog.title("Introducir DPI Manualmente")
+        dialog.transient(self.frame)  # Mantener sobre la ventana principal
+        dialog.grab_set()  # Hacer modal
+        
+        # Centrar diálogo
+        dialog.geometry("400x300")
+        dialog.resizable(False, False)
+        
+        # Título
+        ttk.Label(dialog, text="Introduce el DPI (puntos por pulgada) de la imagen:", 
+                 font=('Arial', 10, 'bold')).pack(pady=(10, 5))
+        
+        # Texto informativo
+        info_text = (
+            "Valores comunes:\n\n"
+            "• 72 DPI - Pantalla estándar\n"
+            "• 96 DPI - Pantalla Windows\n"
+            "• 150 DPI - Impresión básica\n"
+            "• 300 DPI - Impresión de calidad\n"
+            "• 600+ DPI - Impresión profesional"
+        )
+        ttk.Label(dialog, text=info_text, justify=tk.LEFT).pack(pady=5)
+        
+        # Entrada de DPI
+        dpi_var = tk.StringVar()
+        entry_frame = ttk.Frame(dialog)
+        entry_frame.pack(pady=10)
+        ttk.Label(entry_frame, text="DPI:").pack(side=tk.LEFT, padx=5)
+        dpi_entry = ttk.Entry(entry_frame, textvariable=dpi_var, width=10)
+        dpi_entry.pack(side=tk.LEFT, padx=5)
+        dpi_entry.focus_set()
+        
+        # Botones
+        btn_frame = ttk.Frame(dialog)
+        btn_frame.pack(pady=10)
+        
+        def on_ok():
+            try:
+                dpi_input = float(dpi_var.get().replace(',', '.'))
+                if not (10.0 <= dpi_input <= 10000.0):
+                    raise ValueError("El valor debe estar entre 10 y 10000")
+                
+                # Store this as a manual selection for the session
+                self.session_metadata_key = "_manual_dpi"
+                self._manual_dpi_value = dpi_input
+                
+                # Enable metadata usage
+                self.use_metadata_var.set(True)
+                
+                # Apply the conversion
+                conversion_factor = 25.4 / dpi_input  # mm per pixel
+                self._apply_conversion(conversion_factor)
+                self._convert_parameters_to_mm(conversion_factor)
+                
+                # Actualizar etiquetas de resolución y conversión
+                if hasattr(self, 'resolution_label'):
+                    self.resolution_label.config(text=f"Resolution: {dpi_input:.3f} DPI")
+                    self.conversion_label.config(text=f"({conversion_factor:.6f} mm/px)")
+                
+                dialog.destroy()
+                
+                messagebox.showinfo(
+                    "DPI Manual Aplicado", 
+                    f"DPI introducido manualmente: {dpi_input}\n"
+                    f"Factor de conversión: {conversion_factor:.6f} mm/píxel\n\n"
+                    f"Esta configuración se mantendrá para la sesión actual."
+                )
+                
+            except ValueError as e:
+                messagebox.showerror("Error", f"Valor de DPI no válido: {e}")
+                dpi_entry.focus_set()
+        
+        ttk.Button(btn_frame, text="Aceptar", command=on_ok).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Cancelar", command=dialog.destroy).pack(side=tk.LEFT, padx=5)
+        
+        # Manejar tecla Enter
+        def on_enter(event):
+            on_ok()
+        
+        dpi_entry.bind('<Return>', on_enter)
+        
+        # Centrar diálogo
+        dialog.update_idletasks()
+        width = dialog.winfo_width()
+        height = dialog.winfo_height()
+        x = (dialog.winfo_screenwidth() // 2) - (width // 2)
+        y = (dialog.winfo_screenheight() // 2) - (height // 2)
+        dialog.geometry(f'{width}x{height}+{x}+{y}')
+    
+    def _convert_parameters_to_mm(self, conversion_factor):
+        """Convert detection parameters from pixels to millimeters."""
+        if self.parameters_converted:
+            return  # Already converted
+        
+        # Store original values only once
+        self.original_parameters = {
+            'rc_min_area': self.rc_min_area_var.get(),
+            'min_circle': self.min_circle_var.get(),
+            'max_circle': self.max_circle_var.get(),
+            'min_dist': self.min_dist_var.get(),
+            'default_diameter': self.default_diameter_var.get()
+        }
+        
+        # Convert area (pixels² to mm²)
+        original_area = self.original_parameters['rc_min_area']
+        converted_area = original_area * (conversion_factor ** 2)
+        self.rc_min_area_var.set(round(converted_area, 2))
+        
+        # Convert linear measurements (pixels to mm), manteniendo decimales
+        self.min_circle_var.set(round(self.original_parameters['min_circle'] * conversion_factor, 2))
+        self.max_circle_var.set(round(self.original_parameters['max_circle'] * conversion_factor, 2))
+        self.min_dist_var.set(round(self.original_parameters['min_dist'] * conversion_factor, 2))
+        self.default_diameter_var.set(round(self.original_parameters['default_diameter'] * conversion_factor, 2))
+        
+        self.parameters_converted = True
+        
+        # Update UI labels to show units
+        self._update_parameter_labels(True)
+    
+    def _restore_original_parameters(self):
+        """Restore original parameter values in pixels."""
+        if not self.parameters_converted or not self.original_parameters:
+            return
+        
+        # Restore original values
+        self.rc_min_area_var.set(self.original_parameters['rc_min_area'])
+        self.min_circle_var.set(self.original_parameters['min_circle'])
+        self.max_circle_var.set(self.original_parameters['max_circle'])
+        self.min_dist_var.set(self.original_parameters['min_dist'])
+        self.default_diameter_var.set(self.original_parameters['default_diameter'])
+        
+        self.parameters_converted = False
+        
+        # Update UI labels to show original units
+        self._update_parameter_labels(False)
+    
+    def _update_parameter_labels(self, show_mm):
+        """Update parameter labels to show current units."""
+        if show_mm:
+            # Update labels to show mm units
+            self.area_label.config(text="Área mín (mm²):")
+            self.min_radius_label.config(text="Radio mín (mm):")
+            self.max_radius_label.config(text="Radio máx (mm):")
+            self.min_dist_label.config(text="Distancia mín (mm):")
+            self.default_diameter_label.config(text="Diámetro por defecto (mm):")
+        else:
+            # Update labels to show pixel units
+            self.area_label.config(text="Área mín (px²):")
+            self.min_radius_label.config(text="Radio mín (px):")
+            self.max_radius_label.config(text="Radio máx (px):")
+            self.min_dist_label.config(text="Distancia mín (px):")
+            self.default_diameter_label.config(text="Diámetro por defecto (px):")
+    
+    def _show_metadata_selection_dialog(self, metadata):
+        """Show dialog for selecting metadata key for DPI/resolution."""
+        dialog = tk.Toplevel(self.frame)
+        dialog.title("Seleccionar Metadato de Resolución")
+        dialog.geometry("600x400")
+        dialog.resizable(True, True)
+        dialog.grab_set()  # Make dialog modal
+        
+        # Center the dialog
+        dialog.transient(self.frame.winfo_toplevel())
+        
+        # Instructions
+        instruction_label = ttk.Label(
+            dialog, 
+            text="Selecciona el metadato que contiene la información de resolución (DPI):",
+            font=("Arial", 10, "bold")
+        )
+        instruction_label.pack(pady=10, padx=10, anchor=tk.W)
+        
+        # Create treeview for metadata display
+        metadata_frame = ttk.Frame(dialog)
+        metadata_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        # Treeview with scrollbars
+        tree_frame = ttk.Frame(metadata_frame)
+        tree_frame.pack(fill=tk.BOTH, expand=True)
+        
+        metadata_tree = ttk.Treeview(tree_frame, columns=("value",), show="tree headings")
+        metadata_tree.heading("#0", text="Clave de Metadato")
+        metadata_tree.heading("value", text="Valor")
+        
+        # Configure column widths
+        metadata_tree.column("#0", width=200)
+        metadata_tree.column("value", width=300)
+        
+        # Add scrollbars
+        v_scrollbar = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=metadata_tree.yview)
+        h_scrollbar = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL, command=metadata_tree.xview)
+        metadata_tree.configure(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
+        
+        # Pack treeview and scrollbars
+        metadata_tree.grid(row=0, column=0, sticky="nsew")
+        v_scrollbar.grid(row=0, column=1, sticky="ns")
+        h_scrollbar.grid(row=1, column=0, sticky="ew")
+        
+        tree_frame.grid_rowconfigure(0, weight=1)
+        tree_frame.grid_columnconfigure(0, weight=1)
+        
+        # Populate metadata tree with prioritized order
+        metadata_items = {}
+        
+        # First add likely resolution-related entries
+        resolution_keywords = ['dpi', 'resolution', 'density', 'inch', 'pixel', 'ppi']
+        priority_items = []
+        regular_items = []
+        
+        for key, value in metadata.items():
+            # Skip debug entries for the main list
+            if key.startswith('_debug'):
+                continue
+                
+            # Format value for display
+            display_value = str(value)
+            if len(display_value) > 100:
+                display_value = display_value[:97] + "..."
+            
+            # Check if this looks like a resolution-related field
+            key_lower = str(key).lower()
+            is_resolution_related = any(keyword in key_lower for keyword in resolution_keywords)
+            
+            item_data = (key, value, display_value, is_resolution_related)
+            
+            if is_resolution_related:
+                priority_items.append(item_data)
+            else:
+                regular_items.append(item_data)
+        
+        # Add priority items first (likely resolution-related)
+        for key, value, display_value, _ in sorted(priority_items, key=lambda x: x[0]):
+            item_id = metadata_tree.insert("", "end", text=f"⭐ {key}", values=(display_value,))
+            metadata_items[item_id] = (key, value)
+        
+        # Add separator if we have both types
+        if priority_items and regular_items:
+            separator_id = metadata_tree.insert("", "end", text="─── Otros metadatos ───", values=("",))
+            # Don't add to metadata_items so it can't be selected
+        
+        # Add regular items
+        for key, value, display_value, _ in sorted(regular_items, key=lambda x: x[0]):
+            item_id = metadata_tree.insert("", "end", text=str(key), values=(display_value,))
+            metadata_items[item_id] = (key, value)
+        
+        # Add info items at the end
+        info_items = [(k, v) for k, v in metadata.items() if k.startswith('_info')]
+        if info_items:
+            separator_id = metadata_tree.insert("", "end", text="─── Información adicional ───", values=("",))
+            for key, value in info_items:
+                display_value = str(value)
+                if len(display_value) > 100:
+                    display_value = display_value[:97] + "..."
+                item_id = metadata_tree.insert("", "end", text=f"ℹ️ {key[6:]}", values=(display_value,))  # Remove '_info_' prefix
+                # Don't add to metadata_items so it can't be selected
+        
+        # Selection tracking
+        selected_key = None
+        selected_value = None
+        
+        def on_tree_select(event):
+            nonlocal selected_key, selected_value
+            selection = metadata_tree.selection()
+            if selection:
+                item_id = selection[0]
+                if item_id in metadata_items:
+                    selected_key, selected_value = metadata_items[item_id]
+        
+        metadata_tree.bind("<<TreeviewSelect>>", on_tree_select)
+        
+        # Buttons frame
+        button_frame = ttk.Frame(dialog)
+        button_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        def on_accept():
+            if selected_key is None:
+                messagebox.showwarning("Selección", "Por favor selecciona un metadato.")
+                return
+            
+            # Try to extract resolution from selected metadata
+            resolution = self._extract_resolution_from_metadata(selected_key, selected_value)
+            
+            if resolution is None or resolution <= 0:
+                messagebox.showerror(
+                    "Error", 
+                    f"No se pudo extraer un valor de resolución válido del metadato '{selected_key}'.\n"
+                    f"Valor: {selected_value}"
+                )
+                return
+            
+            # Store the selected metadata key for the session
+            self.session_metadata_key = selected_key
+            
+            # Enable metadata usage
+            self.use_metadata_var.set(True)
+            
+            # Apply the conversion
+            conversion_factor = 25.4 / resolution  # mm per pixel DESDE dpi
+            self._apply_conversion(conversion_factor)
+            self._convert_parameters_to_mm(conversion_factor)
+            # Update the resolution and conversion labels in the main UI
+            if hasattr(self, 'resolution_label'):
+                self.resolution_label.config(text=f"Resolution: {resolution:.3f} DPI")
+                conversion_factor = 25.4 / resolution
+                self.conversion_label.config(text=f"({conversion_factor:.6f} mm/px)")
+            
+            messagebox.showinfo(
+                "Éxito", 
+                f"Metadato '{selected_key}' seleccionado exitosamente.\n"
+                f"Resolución: {resolution:.2f} DPI\n"
+                f"Factor de conversión: {conversion_factor:.6f} mm/píxel\n\n"
+                f"Esta selección se mantendrá para la sesión actual."
+            )
+            
+            dialog.destroy()
+        
+        def on_cancel():
+            dialog.destroy()
+        
+        def on_manual_input():
+            """Allow manual DPI input."""
+            dialog.destroy()
+            self._manual_dpi_input()
+        
+        ttk.Button(button_frame, text="Aceptar", command=on_accept).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(button_frame, text="Introducir DPI manualmente", command=on_manual_input).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(button_frame, text="Cancelar", command=on_cancel).pack(side=tk.RIGHT)
+        
+        # Handle dialog close
+        def on_dialog_close():
+            dialog.destroy()
+        
+        dialog.protocol("WM_DELETE_WINDOW", on_dialog_close)
+
+    def _get_resolution_from_metadata(self):
+        """Get resolution from metadata, using session key if available."""
+        try:
+            # First try the session metadata key if available
+            if self.session_metadata_key:
+                # Handle manual DPI input
+                if self.session_metadata_key == "_manual_dpi":
+                    # For manual DPI, we need to store the value separately
+                    if hasattr(self, '_manual_dpi_value'):
+                        return self._manual_dpi_value
+                    return None
+                
+                # Handle metadata selection
+                metadata = self._get_image_metadata()
+                if self.session_metadata_key in metadata:
+                    resolution = self._extract_resolution_from_metadata(
+                        self.session_metadata_key, 
+                        metadata[self.session_metadata_key]
+                    )
+                    if resolution and resolution > 0:
+                        return resolution
+            
+            # Auto-detect from common metadata fields
+            metadata = self._get_image_metadata()
+            
+            # Priority order for automatic detection
+            priority_fields = [
+                'PIL_dpi',
+                'PIL_dpi_direct', 
+                'EXIF_XResolution',
+                'EXIF_YResolution',
+                'PIL_resolution',
+                'ExifRead_Image XResolution',
+                'ExifRead_Image YResolution'
+            ]
+            
+            for field in priority_fields:
+                if field in metadata:
+                    resolution = self._extract_resolution_from_metadata(field, metadata[field])
+                    if resolution and resolution > 0:
+                        print(f"Auto-detected resolution from {field}: {resolution} DPI")
+                        return resolution
+            
+            # Fallback to default DPI method
+            dpi = self.image_processor.get_dpi() if hasattr(self.image_processor, "get_dpi") else None
+            if dpi and dpi > 0:
+                return dpi
+            
+            return None
+        except Exception as e:
+            print(f"Error getting resolution from metadata: {e}")
+            return None
 
     # ---------------------------------------------------------------
     # Event handlers
@@ -423,14 +1162,14 @@ class AutoMeasurementsTab(ttk.Frame):
                 old_text = self.tree.item(old_ctr_id, "text")
                 if "(CTR)" in old_text:
                     self.tree.item(old_ctr_id, text=old_text.replace(" (CTR)", ""))
-                self.tree.item(old_ctr_id, tags=())
+                self.tree.item(old_ctr_id, tags=())  # Remove CTR tag
             
             # Set new CTR
             self.ctr_map[film_name] = item_id
             current_text = self.tree.item(item_id, "text")
             if "(CTR)" not in current_text:
                 self.tree.item(item_id, text=f"{current_text} (CTR)")
-            self.tree.item(item_id, tags=("ctr",))
+            self.tree.item(item_id, tags=("ctr",))  # Apply CTR tag
         
         # Update CTR subtraction
         self._update_ctr_subtraction()
@@ -542,7 +1281,7 @@ class AutoMeasurementsTab(ttk.Frame):
     # ---------------------------------------------------------------
     # Detection functionality
     # ---------------------------------------------------------------
-
+    
     def start_detection(self):
         """Start automatic detection of films and circles."""
         if not self.image_processor.has_image():
@@ -563,16 +1302,54 @@ class AutoMeasurementsTab(ttk.Frame):
             img_rgb = cv2.cvtColor(img_rgb, cv2.COLOR_GRAY2BGR)
         gray = cv2.cvtColor(img_rgb, cv2.COLOR_BGR2GRAY)
 
+        # Check if parameters are converted to mm and need conversion to pixels
+        restore_params = False
+        if self.use_metadata_var.get() and self.parameters_converted:
+            # Get resolution
+            resolution = self._get_resolution_from_metadata()
+            if resolution is None or resolution <= 0:
+                messagebox.showerror("Error", "Resolución no disponible para conversión de unidades.")
+                return
+            
+            conversion_factor = 25.4 / resolution
+            
+            # Convert parameters from mm to pixels
+            # Area is mm² to pixels²
+            rc_min_area_px = self.rc_min_area_var.get() / (conversion_factor ** 2)
+            # Linear parameters are mm to pixels
+            min_circle_px = self.min_circle_var.get() / conversion_factor
+            max_circle_px = self.max_circle_var.get() / conversion_factor
+            min_dist_px = self.min_dist_var.get() / conversion_factor
+            default_diameter_px = self.default_diameter_var.get() / conversion_factor
+            
+            # Save original values
+            self.orig_rc_min_area = self.rc_min_area_var.get()
+            self.orig_min_circle = self.min_circle_var.get()
+            self.orig_max_circle = self.max_circle_var.get()
+            self.orig_min_dist = self.min_dist_var.get()
+            self.orig_default_diameter = self.default_diameter_var.get()
+            
+            # Set to pixel values
+            self.rc_min_area_var.set(int(round(rc_min_area_px)))
+            self.min_circle_var.set(int(round(min_circle_px)))
+            self.max_circle_var.set(int(round(max_circle_px)))
+            self.min_dist_var.set(int(round(min_dist_px)))
+            self.default_diameter_var.set(int(round(default_diameter_px)))
+            restore_params = True
+
         # 1. Detect films
         films = self._detect_films(gray)
         if not films:
             messagebox.showinfo("AutoMeasurements", "No se detectaron radiocromías.")
+            if restore_params:
+                self._restore_detection_params()
             return
 
         # Clear previous results
         self.tree.delete(*self.tree.get_children())
         self.results.clear()
         self.original_measurements.clear()
+        self.original_values.clear()  # Clear previous original values
         self.ctr_map.clear()
         
         global _OVERLAY
@@ -683,8 +1460,12 @@ class AutoMeasurementsTab(ttk.Frame):
                     "y": abs_cy,
                 })
 
-            # 3. Automatic CTR detection
+            # Automatically detect CTR circle
             self._detect_ctr_automatically(film_name, film_circles)
+
+        # After detection, restore parameters if they were converted
+        if restore_params:
+            self._restore_detection_params()
 
         # Open all film nodes
         for child in self.tree.get_children():
@@ -696,6 +1477,124 @@ class AutoMeasurementsTab(ttk.Frame):
         # Update display
         self.main_window.update_image()
         self._autosize_columns()
+
+    def _restore_detection_params(self):
+        """Restore original detection parameters in mm."""
+        if hasattr(self, 'orig_rc_min_area'):
+            self.rc_min_area_var.set(self.orig_rc_min_area)
+            self.min_circle_var.set(self.orig_min_circle)
+            self.max_circle_var.set(self.orig_max_circle)
+            self.min_dist_var.set(self.orig_min_dist)
+            self.default_diameter_var.set(self.orig_default_diameter)
+            # Clean up temporary attributes
+            delattr(self, 'orig_rc_min_area')
+            delattr(self, 'orig_min_circle')
+            delattr(self, 'orig_max_circle')
+            delattr(self, 'orig_min_dist')
+            delattr(self, 'orig_default_diameter')
+    
+    # ---------------------------------------------------------------
+    # Unit conversion functionality
+    # ---------------------------------------------------------------
+
+    def _update_unit_conversion(self):
+        """Handle checkbox state change for unit conversion."""
+        resolution = None
+        source = None
+        if self.use_metadata_var.get():
+            # Check if metadata is valid
+            resolution = self._get_resolution_from_metadata()
+            source = getattr(self, 'session_metadata_key', None)
+            if source == '_manual_dpi':
+                source = 'Manual DPI'
+            if resolution is None or resolution <= 0:
+                # Show metadata selection dialog
+                metadata = self._get_image_metadata()
+                if metadata:
+                    self.resolution_label.config(text="")
+                    messagebox.showinfo(
+                        "Resolución no encontrada", 
+                        "No se encontró información de resolución válida en los metadatos automáticamente.\n\n"
+                        "Puedes seleccionar manualmente el campo de resolución (DPI) o introducirlo manualmente.")
+                    self.use_metadata_var.set(False)  # Reset checkbox
+                    self._show_metadata_selection_dialog(metadata)
+                else:
+                    self.resolution_label.config(text="")
+                    messagebox.showinfo("Metadatos", "No se encontró información de resolución en los metadatos.")
+                    self.use_metadata_var.set(False)
+                return
+            
+            conversion_factor = 25.4 / resolution  # mm per pixel
+            self._apply_conversion(conversion_factor)
+            self._convert_parameters_to_mm(conversion_factor)
+        else:
+            self.resolution_label.config(text="")
+            self._restore_original_values()
+            self._restore_original_parameters()
+        # Update the resolution and conversion labels
+        if resolution is not None and resolution > 0:
+            self.resolution_label.config(text=f"Resolution: {resolution:.3f} DPI")
+            conversion_factor = 25.4 / resolution
+            self.conversion_label.config(text=f"({conversion_factor:.6f} mm/px)")
+        else:
+            self.resolution_label.config(text="Resolution: -")
+            self.conversion_label.config(text="")
+
+    def _apply_conversion(self, factor):
+        """Convert displayed values to millimeters."""
+        for film_id in self.tree.get_children(''):
+            for circle_id in self.tree.get_children(film_id):
+                if circle_id not in self.original_values:
+                    continue
+                orig_data = self.original_values[circle_id]
+                # Convert values
+                converted_dose = [v * factor for v in orig_data["dose"]]
+                converted_sigma = [u * factor for u in orig_data["sigma"]]
+                converted_avg = orig_data["avg"] * factor
+                converted_avg_unc = orig_data["avg_unc"] * factor
+
+                # Format
+                if len(converted_dose) > 1:
+                    dose_str_parts = []
+                    sigma_str_parts = []
+                    for v, u in zip(converted_dose, converted_sigma):
+                        v_str, u_str = self._format_val_unc(v, u, 2, force_decimals=True)
+                        dose_str_parts.append(v_str)
+                        sigma_str_parts.append(u_str)
+                    dose_str = ", ".join(dose_str_parts)
+                    sigma_str = ", ".join(sigma_str_parts)
+                else:
+                    dose_str, sigma_str = self._format_val_unc(converted_dose[0], converted_sigma[0], 2, force_decimals=True)
+                
+                avg_str, avg_unc_str = self._format_val_unc(converted_avg, converted_avg_unc, 2, force_decimals=True)
+                
+                # Update TreeView
+                self.tree.item(circle_id, values=(dose_str, sigma_str, avg_str, avg_unc_str))
+
+    def _restore_original_values(self):
+        """Restore original displayed values in pixels."""
+        for film_id in self.tree.get_children(''):
+            for circle_id in self.tree.get_children(film_id):
+                if circle_id not in self.original_values:
+                    continue
+                orig_data = self.original_values[circle_id]
+                # Re-format original values
+                if len(orig_data["dose"]) > 1:
+                    dose_str_parts = []
+                    sigma_str_parts = []
+                    for v, u in zip(orig_data["dose"], orig_data["sigma"]):
+                        v_str, u_str = self._format_val_unc(v, u, 2, force_decimals=self.parameters_converted)
+                        dose_str_parts.append(v_str)
+                        sigma_str_parts.append(u_str)
+                    dose_str = ", ".join(dose_str_parts)
+                    sigma_str = ", ".join(sigma_str_parts)
+                else:
+                    dose_str, sigma_str = self._format_val_unc(orig_data["dose"][0], orig_data["sigma"][0], 2, force_decimals=self.parameters_converted)
+                
+                avg_str, avg_unc_str = self._format_val_unc(orig_data["avg"], orig_data["avg_unc"], 2, force_decimals=self.parameters_converted)
+                
+                # Update TreeView
+                self.tree.item(circle_id, values=(dose_str, sigma_str, avg_str, avg_unc_str))
 
     # ---------------------------------------------------------------
     # Helper methods
@@ -716,8 +1615,8 @@ class AutoMeasurementsTab(ttk.Frame):
         except (ValueError, TypeError):
             return 0.0
 
-    def _format_val_unc(self, value: float, unc: float, sig: int = 2) -> tuple[str, str]:
-        """Format value and uncertainty with consistent decimal places."""
+    def _format_val_unc(self, value: float, unc: float, sig: int = 2, force_decimals: bool = False) -> tuple[str, str]:
+        """Format value and uncertainty with consistent decimal places. Si force_decimals=True, siempre muestra 2 decimales."""
         unc_fmt = self._fmt_sig(unc, sig)
 
         # Scientific notation – fall back to significant-figure formatting
@@ -725,7 +1624,9 @@ class AutoMeasurementsTab(ttk.Frame):
             val_fmt = self._fmt_sig(value, sig)
         else:
             # Count decimals in uncertainty (0 if integer)
-            if "." in unc_fmt:
+            if force_decimals:
+                val_fmt = f"{value:.2f}"
+            elif "." in unc_fmt:
                 decimals = len(unc_fmt.split(".")[1])
                 val_fmt = f"{value:.{decimals}f}"
             else:
@@ -803,6 +1704,14 @@ class AutoMeasurementsTab(ttk.Frame):
         if self.restrict_diameter_var.get():
             # Apply default diameter restriction
             default_diameter = max(1, self.default_diameter_var.get())
+            
+            # Convert default diameter to pixels if in mm
+            if self.use_metadata_var.get() and self.parameters_converted:
+                resolution = self._get_resolution_from_metadata()
+                if resolution is not None and resolution > 0:
+                    conversion_factor = 25.4 / resolution
+                    default_diameter = default_diameter / conversion_factor
+            
             default_radius = max(1, int(round(default_diameter / 2)))  # integer radius
             
             new_circles = []
@@ -830,12 +1739,12 @@ class AutoMeasurementsTab(ttk.Frame):
                     continue
                 
                 # Update tree view with new measurements
-                dose, std_dev, unc, _ = res
+                dose, _, unc, _ = res  # mean(s), std, uncertainty
                 if isinstance(dose, tuple):
                     dose_parts: list[str] = []
                     unc_parts: list[str] = []
                     for v, u in zip(dose, unc):
-                        v_str, u_str = self._format_val_unc(v, u, 2)
+                        v_str, u_str = self._format_val_unc(v, u, 2, force_decimals=self.parameters_converted)
                         dose_parts.append(v_str)
                         unc_parts.append(u_str)
                     dose_str = ", ".join(dose_parts)
@@ -843,11 +1752,11 @@ class AutoMeasurementsTab(ttk.Frame):
                     avg_val = float(np.mean(dose))
                     avg_unc = float(np.mean(unc))
                 else:
-                    dose_str, unc_str = self._format_val_unc(dose, unc, 2)
+                    dose_str, unc_str = self._format_val_unc(dose, unc, 2, force_decimals=self.parameters_converted)
                     avg_val = float(dose)
                     avg_unc = float(unc)
                 
-                avg_str, avg_unc_str = self._format_val_unc(avg_val, avg_unc, 2)
+                avg_str, avg_unc_str = self._format_val_unc(avg_val, avg_unc, 2, force_decimals=self.parameters_converted)
                 
                 # Update original measurements
                 self._store_original_measurement(item_id, dose_str, unc_str, avg_str, avg_unc_str)
@@ -902,7 +1811,7 @@ class AutoMeasurementsTab(ttk.Frame):
                     dose_parts: list[str] = []
                     unc_parts: list[str] = []
                     for v, u in zip(dose, unc):
-                        v_str, u_str = self._format_val_unc(v, u, 2)
+                        v_str, u_str = self._format_val_unc(v, u, 2, force_decimals=self.parameters_converted)
                         dose_parts.append(v_str)
                         unc_parts.append(u_str)
                     dose_str = ", ".join(dose_parts)
@@ -910,11 +1819,11 @@ class AutoMeasurementsTab(ttk.Frame):
                     avg_val = float(np.mean(dose))
                     avg_unc = float(np.mean(unc))
                 else:
-                    dose_str, unc_str = self._format_val_unc(dose, unc, 2)
+                    dose_str, unc_str = self._format_val_unc(dose, unc, 2, force_decimals=self.parameters_converted)
                     avg_val = float(dose)
                     avg_unc = float(unc)
                     
-                avg_str, avg_unc_str = self._format_val_unc(avg_val, avg_unc, 2)
+                avg_str, avg_unc_str = self._format_val_unc(avg_val, avg_unc, 2, force_decimals=self.parameters_converted)
                 
                 # Update original measurements
                 self._store_original_measurement(item_id, dose_str, unc_str, avg_str, avg_unc_str)
@@ -947,7 +1856,13 @@ class AutoMeasurementsTab(ttk.Frame):
         self.tree.delete(*self.tree.get_children())
         self.results.clear()
         self.original_measurements.clear()
+        self.original_values.clear()  # Clear stored original values
         self.ctr_map.clear()
+        
+        # Reset parameter conversion state
+        if self.parameters_converted:
+            self._restore_original_parameters()
+        
         self._clear_overlay()
         self.main_window.update_image()
 
@@ -983,6 +1898,7 @@ class AutoMeasurementsTab(ttk.Frame):
 
         # Clean up stored data
         self.original_measurements.pop(item_id, None)
+        self.original_values.pop(item_id, None)  # Remove from stored values
         self.original_radii.pop(item_id, None)
 
         # Remove from results
@@ -1157,15 +2073,15 @@ class AutoMeasurementsTab(ttk.Frame):
             h_var = tk.StringVar(value=str(h))
             self._dim_vars.extend([w_var, h_var])
             tk.Label(self._dims_window, text="Ancho:").grid(row=0, column=0, padx=4, pady=2)
-            tk.Entry(self._dims_window, textvariable=w_var, width=6).grid(row=0, column=1, pady=2)
+            tk.Entry(self._dims_window, textvariable=w_var, width=6).grid(row=0, column=1, padx=4, pady=2)
             tk.Label(self._dims_window, text="Alto:").grid(row=1, column=0, padx=4, pady=2)
-            tk.Entry(self._dims_window, textvariable=h_var, width=6).grid(row=1, column=1, pady=2)
+            tk.Entry(self._dims_window, textvariable=h_var, width=6).grid(row=1, column=1, padx=4, pady=2)
         elif self.draw_mode == "circle":
             r = self.draw_dims
             r_var = tk.StringVar(value=str(r))
             self._dim_vars.append(r_var)
             tk.Label(self._dims_window, text="Radio:").grid(row=0, column=0, padx=4, pady=2)
-            tk.Entry(self._dims_window, textvariable=r_var, width=6).grid(row=0, column=1, pady=2)
+            tk.Entry(self._dims_window, textvariable=r_var, width=6).grid(row=0, column=1, padx=4, pady=2)
 
         for var in self._dim_vars:
             var.trace_add("write", on_var_change)
@@ -1258,7 +2174,7 @@ class AutoMeasurementsTab(ttk.Frame):
         if _OVERLAY is None:
             _OVERLAY = {
                 "films": [], "circles": [], "_shape": self.image_processor.current_image.shape[:2],
-                "ctr_map": {}, "item_to_shape": {}
+                "scale": 1.0, "ctr_map": {}, "item_to_shape": {}
             }
 
         film_idx = len([v for v in _OVERLAY["item_to_shape"].values() if v[0] == "film"]) + 1
@@ -1275,7 +2191,7 @@ class AutoMeasurementsTab(ttk.Frame):
         if _OVERLAY is None:
             _OVERLAY = {
                 "films": [], "circles": [], "_shape": self.image_processor.current_image.shape[:2],
-                "ctr_map": {}, "item_to_shape": {}
+                "scale": 1.0, "ctr_map": {}, "item_to_shape": {}
             }
 
         # Find parent film
@@ -1304,11 +2220,13 @@ class AutoMeasurementsTab(ttk.Frame):
 
         if res:
             dose, _, unc, _ = res
+            
+            # Format measurements
             if isinstance(dose, tuple):
                 dose_parts = []
                 unc_parts = []
                 for v, u in zip(dose, unc):
-                    v_str, u_str = self._format_val_unc(v, u, 2)
+                    v_str, u_str = self._format_val_unc(v, u, 2, force_decimals=self.parameters_converted)
                     dose_parts.append(v_str)
                     unc_parts.append(u_str)
                 dose_str = ", ".join(dose_parts)
@@ -1316,28 +2234,58 @@ class AutoMeasurementsTab(ttk.Frame):
                 avg_val = float(np.mean(dose))
                 avg_unc = float(np.mean(unc))
             else:
-                dose_str, unc_str = self._format_val_unc(dose, unc, 2)
+                dose_str, unc_str = self._format_val_unc(dose, unc, 2, force_decimals=self.parameters_converted)
                 avg_val = float(dose)
                 avg_unc = float(unc)
             
-            avg_str, avg_unc_str = self._format_val_unc(avg_val, avg_unc, 2)
+            avg_str, avg_unc_str = self._format_val_unc(avg_val, avg_unc, 2, force_decimals=self.parameters_converted)
         else:
             dose_str = unc_str = avg_str = avg_unc_str = ""
             avg_val = avg_unc = 0.0
 
         circ_id = self.tree.insert(parent_id, "end", text=circ_name, 
                                  values=(dose_str, unc_str, avg_str, avg_unc_str))
-        _OVERLAY["item_to_shape"][circ_id] = ("circle", (cx, cy, r))
-        _OVERLAY["circles"].append((cx, cy, r))
         
-        # Store original measurement
+        # Store mapping and original measurements
+        _OVERLAY["item_to_shape"][circ_id] = ("circle", (cx, cy, r))
+        self.original_radii[circ_id] = r
         self._store_original_measurement(circ_id, dose_str, unc_str, avg_str, avg_unc_str)
         
+        # Add to overlay circles
+        _OVERLAY["circles"].append((cx, cy, r))
+
+        # Store for CTR detection and results
+        film_name = self.tree.item(parent_id, "text") if parent_id else None
+        self.results.append({
+            "film": film_name,
+            "circle": circ_name,
+            "dose": dose_str,
+            "unc": unc_str,
+            "avg": avg_str,
+            "avg_unc": avg_unc_str,
+            "x": cx,
+            "y": cy,
+        })
+
+        # Store original values for unit conversion
+        if isinstance(dose, tuple):
+            dose_values = list(dose)
+            sigma_values = list(unc)
+        else:
+            dose_values = [dose]
+            sigma_values = [unc]
+        
+        self.original_values[circ_id] = {
+            "dose": dose_values,
+            "sigma": sigma_values,
+            "avg": avg_val,
+            "avg_unc": avg_unc,
+        }
+
         if parent_id:
             self.tree.item(parent_id, open=True)
 
         # Add to results
-        film_name = self.tree.item(parent_id, "text") if parent_id else None
         self.results.append({
             "film": film_name,
             "circle": circ_name,
@@ -1371,7 +2319,7 @@ class AutoMeasurementsTab(ttk.Frame):
 
     def _sort_by_coordinates(self):
         """Sort circles by coordinates within each film."""
-        for film_id in self.tree.get_children(''):
+        for film_id in self.tree.get_children():
             circles = list(self.tree.get_children(film_id))
             
             circle_data = []
@@ -1388,7 +2336,7 @@ class AutoMeasurementsTab(ttk.Frame):
 
     def _sort_alphabetically(self):
         """Sort items alphabetically."""
-        films = list(self.tree.get_children(''))
+        films = list(self.tree.get_children())
         films.sort(key=lambda film_id: self.tree.item(film_id, "text"))
         for index, film_id in enumerate(films):
             self.tree.move(film_id, '', index)
@@ -1400,7 +2348,7 @@ class AutoMeasurementsTab(ttk.Frame):
 
     def _sort_by_value(self, col, reverse=False):
         """Sort circles by column value."""
-        for film_id in self.tree.get_children(''):
+        for film_id in self.tree.get_children():
             circles = list(self.tree.get_children(film_id))
             
             circle_data = []
@@ -1479,8 +2427,8 @@ class AutoMeasurementsTab(ttk.Frame):
                     original_unc = orig_data.get("unc", rec["unc"])
                     
                     # Calculate CTR-corrected values
-                    ctr_corrected_avg = ""
-                    ctr_corrected_unc = ""
+                    ctr_corrected_avg = "" if not self.subtract_ctr_var.get() else ""
+                    ctr_corrected_unc = "" if not self.subtract_ctr_var.get() else ""
                     
                     if film_name in self.ctr_map and item_id:
                         ctr_id = self.ctr_map[film_name]
@@ -1493,7 +2441,7 @@ class AutoMeasurementsTab(ttk.Frame):
                             orig_unc_num = self._clean_numeric_string(original_avg_unc)
                             
                             if item_id == ctr_id:
-                                # This is the CTR circle
+                                # CTR circle: set to 0 ± uncertainty
                                 corrected_avg = 0.0
                                 corrected_unc = ctr_unc
                             else:
@@ -1511,7 +2459,6 @@ class AutoMeasurementsTab(ttk.Frame):
                     writer.writerow([
                         rec["film"] or "",
                         circle_display_name,
-                        
                         rec.get("x", ""),
                         rec.get("y", ""),
                         original_dose,

@@ -1,6 +1,12 @@
-
 3 - ahora las medidas de diametro de los ciruclos están en pixeles pero estaría bien ponerlo en mm sabiendo el factor de corrección de que las radiocrímcas , el lado largo siempre mide 18cm
-2- 
+2- usar interpolación como calibracion
 3- añadir utilidad de sacar dosis por pocillo y crear un csv con : plate, well, date, LET, SIGMA_LET,dose, sigma dose . los tres primeros son primary key futuras para enlazarlo con el software de lectrura de plates.
 4 hacer un mejor README 
-5- vamos a centrarnos ahora en detectar las radiocrómicas pero teniendo en cuenta de que podrían tener un angulo de rotación , es decir es un rectangulo pero rotado . De esta manera tienes un nuevo grado de libertad tambien para add manually rc
+5 quenching
+
+## Future Improvements (suggested by AI)
+
+3. Improve the documentation for developing custom plugins.
+4. Add support for more image formats.
+6. Optimize the performance for very large images.
+7. Add a dark mode for the UI.

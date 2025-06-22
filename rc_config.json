@@ -9,5 +9,9 @@
     "use_gpu": false,
     "gpu_force_enabled": false,
     "use_multithreading": true,
-    "num_threads": 9
+    "num_threads": 9,
+    "max_memory_percent": 75,
+    "max_cache_mb": 512,
+    "log_level": "INFO",
+    "detailed_logging": false
 }
