@@ -58,8 +58,8 @@ The Radiochromic Film Analyzer is a specialized application designed for the ana
 
 ### Opening an Image
 
-1. Click on "File" → "Open" or press Ctrl+O
-2. Select a radiochromic film image file (supported formats: PNG, JPEG, TIFF)
+1. Click on "File" → "Open" 
+2. Select a radiochromic film image file (supported formats: TIFF)
 3. The image will be displayed in the main window
 
 ### Taking Measurements
@@ -97,15 +97,7 @@ The Radiochromic Film Analyzer is a specialized application designed for the ana
 ## Keyboard Shortcuts
 
 - **Ctrl+Mouse Wheel**: Adjust measurement size
-- **+/-**: Zoom in/out
-
-## Troubleshooting
-
-### Common Issues
-
-- **Application fails to start**: Ensure all dependencies are installed correctly
-- **Image doesn't load**: Check if the image format is supported
-- **Visualization is slow**: Reduce the measurement size for faster performance
+- **Mouse Wheel**: Zoom in/out
 
 ### Error Logs
 
@@ -114,7 +106,7 @@ The Radiochromic Film Analyzer is a specialized application designed for the ana
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the GNU GPL v3 - see the LICENSE file for details.
 
 ## Acknowledgments
 
