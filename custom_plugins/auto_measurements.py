@@ -18,6 +18,10 @@ from typing import List, Tuple
 import cv2
 import numpy as np
 import tkinter as tk
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 from tkinter import ttk, filedialog, messagebox, simpledialog
 import tkinter.font as tkfont
 import matplotlib.pyplot as plt
@@ -181,6 +185,7 @@ class AutoMeasurementsTab(ttk.Frame):
         # Storage for original parameter values (for unit conversion)
         self.original_parameters = {}
         self.parameters_converted = False
+        self.updating_parameters_programmatically = False  # New flag
 
     def _setup_ui(self):
         """Setup the user interface."""
@@ -335,6 +340,10 @@ class AutoMeasurementsTab(ttk.Frame):
         
         # Recalculate when default diameter value changes
         self.default_diameter_var.trace_add("write", lambda *args: self._apply_diameter_restriction())
+        # Update original_parameters when user manually changes detection parameters
+        for name in ('rc_min_area', 'min_circle', 'max_circle', 'min_dist', 'default_diameter'):
+            var = getattr(self, f'{name}_var')
+            var.trace_add("write", lambda *args, n=name, v=var: self._on_param_change(n, v))
 
     # ---------------------------------------------------------------
     # Metadata handling functionality
@@ -790,6 +799,30 @@ class AutoMeasurementsTab(ttk.Frame):
             self.min_dist_label.config(text="Distancia mín (px):")
             self.default_diameter_label.config(text="Diámetro por defecto (px):")
     
+
+
+    def _on_param_change(self, name, var):
+        """Update original_parameters dict when user changes a parameter."""
+        try:
+            val = float(var.get())
+        except (ValueError, tk.TclError):
+            return
+        if not hasattr(self, 'original_parameters'):
+            return
+        if hasattr(self, 'updating_parameters_programmatically') and self.updating_parameters_programmatically:  # Ignore if updating programmatically
+            return
+
+        # If metadata is in use, convert the manually entered value (which is in mm) back to pixels
+        if self.use_metadata_var.get() and hasattr(self, 'stored_resolution') and self.stored_resolution is not None:
+            conversion_factor = 25.4 / self.stored_resolution
+            if 'area' in name: # Area is factor squared
+                self.original_parameters[name] = val / (conversion_factor ** 2)
+            else:
+                self.original_parameters[name] = val / conversion_factor
+        else:
+            # Otherwise, store the value directly (it's already in pixels)
+            self.original_parameters[name] = val
+
     def _show_metadata_selection_dialog(self, metadata):
         """Show dialog for selecting metadata key for DPI/resolution."""
         dialog = tk.Toplevel(self.frame)
@@ -1011,7 +1044,7 @@ class AutoMeasurementsTab(ttk.Frame):
                 if field in metadata:
                     resolution = self._extract_resolution_from_metadata(field, metadata[field])
                     if resolution and resolution > 0:
-                        print(f"Auto-detected resolution from {field}: {resolution} DPI")
+                        logging.info(f"Auto-detected resolution from {field}: {resolution} DPI")
                         return resolution
             
             # Fallback to default DPI method
@@ -1021,7 +1054,7 @@ class AutoMeasurementsTab(ttk.Frame):
             
             return None
         except Exception as e:
-            print(f"Error getting resolution from metadata: {e}")
+            logging.error(f"Error getting resolution from metadata: {e}")
             return None
 
     # ---------------------------------------------------------------
@@ -1498,47 +1531,98 @@ class AutoMeasurementsTab(ttk.Frame):
     # ---------------------------------------------------------------
 
     def _update_unit_conversion(self):
-        """Handle checkbox state change for unit conversion."""
+        """Handle checkbox state change for unit conversion with debug prints."""
+        logging.info("Unit Conversion Update initiated.")
+
+        self.updating_parameters_programmatically = True  # Set flag to True
+
+        # Disable checkbox if no image
+        if not self.image_processor.has_image() and self.use_metadata_var.get():
+            logging.warning("No image loaded - forcing checkbox OFF")
+            messagebox.showwarning("No Image", "Load an image first.")
+            self.use_metadata_var.set(False)
+            return
+
         resolution = None
-        source = None
         if self.use_metadata_var.get():
-            # Check if metadata is valid
-            resolution = self._get_resolution_from_metadata()
-            source = getattr(self, 'session_metadata_key', None)
-            if source == '_manual_dpi':
-                source = 'Manual DPI'
-            if resolution is None or resolution <= 0:
-                # Show metadata selection dialog
-                metadata = self._get_image_metadata()
-                if metadata:
-                    self.resolution_label.config(text="")
-                    messagebox.showinfo(
-                        "Resolución no encontrada", 
-                        "No se encontró información de resolución válida en los metadatos automáticamente.\n\n"
-                        "Puedes seleccionar manualmente el campo de resolución (DPI) o introducirlo manualmente.")
-                    self.use_metadata_var.set(False)  # Reset checkbox
-                    self._show_metadata_selection_dialog(metadata)
-                else:
-                    self.resolution_label.config(text="")
-                    messagebox.showinfo("Metadatos", "No se encontró información de resolución en los metadatos.")
+            logging.info("Metadata usage enabled.")
+            if not hasattr(self, 'stored_resolution') or self.stored_resolution is None:
+                logging.info("No stored resolution found, attempting to detect new.")
+                resolution = self._get_resolution_from_metadata()
+                if resolution is None or resolution <= 0:
+                    logging.error(f"Invalid resolution detected: {resolution}")
+                    messagebox.showerror("Error", "Resolución no disponible para conversión de unidades.")
                     self.use_metadata_var.set(False)
-                return
-            
-            conversion_factor = 25.4 / resolution  # mm per pixel
-            self._apply_conversion(conversion_factor)
-            self._convert_parameters_to_mm(conversion_factor)
-        else:
-            self.resolution_label.config(text="")
-            self._restore_original_values()
-            self._restore_original_parameters()
-        # Update the resolution and conversion labels
-        if resolution is not None and resolution > 0:
-            self.resolution_label.config(text=f"Resolution: {resolution:.3f} DPI")
-            conversion_factor = 25.4 / resolution
+                    return
+                self.stored_resolution = resolution
+                logging.info(f"New resolution stored: {resolution:.2f} DPI")
+            else:
+                logging.info(f"Using stored resolution: {self.stored_resolution:.2f} DPI")
+
+            # Calculate conversion factor
+            conversion_factor = 25.4 / self.stored_resolution
+            logging.debug(f"Conversion factor: {conversion_factor:.6f} mm/px")
+
+            # Store original parameters as floats
+            if not getattr(self, 'original_parameters', {}):
+                self.original_parameters = {
+                    'rc_min_area': float(self.rc_min_area_var.get()),
+                    'min_circle': float(self.min_circle_var.get()),
+                    'max_circle': float(self.max_circle_var.get()),
+                    'min_dist': float(self.min_dist_var.get()),
+                    'default_diameter': float(self.default_diameter_var.get())
+                }
+
+            # Apply conversion to UI using exact values
+            self.rc_min_area_var.set(self.original_parameters['rc_min_area'] * (conversion_factor ** 2))
+            self.min_circle_var.set(self.original_parameters['min_circle'] * conversion_factor)
+            self.max_circle_var.set(self.original_parameters['max_circle'] * conversion_factor)
+            self.min_dist_var.set(self.original_parameters['min_dist'] * conversion_factor)
+            self.default_diameter_var.set(self.original_parameters['default_diameter'] * conversion_factor)
+
+        
+            # Update labels
+            self.resolution_label.config(text=f"Resolution: {self.stored_resolution:.3f} DPI")
             self.conversion_label.config(text=f"({conversion_factor:.6f} mm/px)")
+            self._update_parameter_labels(True)
+
         else:
+            logging.info("Metadata usage disabled.")
+            # Convert current mm values back to pixels using stored resolution
+            if hasattr(self, 'stored_resolution') and self.stored_resolution is not None:
+                logging.debug(f"Using stored resolution: {self.stored_resolution:.2f} DPI")
+                conversion_factor = 25.4 / self.stored_resolution
+
+                # Use stored original parameters
+                if hasattr(self, 'original_parameters'):
+                    # Convert back to pixels using original_parameters (which are in pixels)
+                    # No need to divide by conversion_factor here, as original_parameters already stores pixel values
+                    self.rc_min_area_var.set(self.original_parameters['rc_min_area'])
+                    self.min_circle_var.set(self.original_parameters['min_circle'])
+                    self.max_circle_var.set(self.original_parameters['max_circle'])
+                    self.min_dist_var.set(self.original_parameters['min_dist'])
+                    self.default_diameter_var.set(self.original_parameters['default_diameter'])
+
+                    # Update labels
+                    self._update_parameter_labels(False)
+                    self.parameters_converted = False
+                    self.stored_resolution = None
+                    logging.info("Stored resolution cleared.")
+                else:
+                    logging.info("No stored parameters, restoring defaults.")
+                    self._restore_original_parameters()
+            else:
+                logging.info("No stored resolution, restoring original parameters.")
+                self._restore_original_parameters()
+
+            # Restore original values display
+            self._restore_original_values()
             self.resolution_label.config(text="Resolution: -")
             self.conversion_label.config(text="")
+
+        self.updating_parameters_programmatically = False  # Reset flag to False
+        logging.info("Unit Conversion Update complete.\n")
+        logging.info("Unit Conversion Update complete.\n")
 
     def _apply_conversion(self, factor):
         """Convert displayed values to millimeters."""
