@@ -1,11 +1,9 @@
-"""AutoMeasurements plugin - Versión mejorada con funcionalidad CTR completa y selección manual de metadatos
+"""AutoMeasurements plugin - Improved version with full CTR functionality and manual metadata selection
 
 Detects rectangular radiochromic films and circular ROIs inside them,
 computes dose and uncertainty, and shows results in a TreeView with export.
 Includes complete CTR (Control) circle functionality for background subtraction.
 Includes manual metadata selection when resolution is not found automatically.
-
-TAB_TITLE = "AutoMeasurements"
 """
 
 from __future__ import annotations
@@ -19,6 +17,7 @@ import cv2
 import numpy as np
 import tkinter as tk
 import logging
+import datetime
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -27,6 +26,23 @@ import tkinter.font as tkfont
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 – needed for 3D
 from math import log10, floor, sqrt
+
+# Import tkcalendar - may need to install with pip install tkcalendar
+try:
+    from tkcalendar import Calendar
+except ImportError:
+    # Define a fallback calendar
+    class Calendar:
+        def __init__(self, master=None, **kw):
+            self.toplevel = tk.Toplevel(master)
+            self.toplevel.title("Calendar (Not Available)")
+            tk.Label(self.toplevel, text="tkcalendar package not installed.", pady=20, padx=20).pack()
+            tk.Label(self.toplevel, text="Please install with: pip install tkcalendar", pady=10).pack()
+            tk.Button(self.toplevel, text="Close", command=self.toplevel.destroy).pack(pady=20)
+        
+        def selection_get(self):
+            today = datetime.date.today()
+            return today
 
 # Plugin interface ---------------------------------------------------------
 TAB_TITLE = "AutoMeasurements"
@@ -43,8 +59,8 @@ _OVERLAY: dict | None = None  # Holds last detection for drawing
 #   "circles": list[(cx, cy, r)]
 #   "_shape": (h, w) of detection image
 #   "highlight": ("film"|"circle", coords) – optional highlighted shape
-#   "ctr_map": dict[film_name, circle_id] - mapa de círculos de control
-#   "item_to_shape": dict[item_id, (type, coords)] - mapeo de items a formas
+#   "ctr_map": dict[film_name, circle_id] - map of control circles
+#   "item_to_shape": dict[item_id, (type, coords)] - map of items to shapes
 
 # Dose (Gy) threshold below which a circle is considered a control (background) region
 CTR_DOSE_THRESHOLD = 0.05
@@ -181,6 +197,7 @@ class AutoMeasurementsTab(ttk.Frame):
         
         # Session storage for manual metadata selection
         self.session_metadata_key = None  # Store selected metadata key for session
+        self.metadata_date = None  # Store date from metadata
         
         # Storage for original parameter values (for unit conversion)
         self.original_parameters = {}
@@ -194,7 +211,7 @@ class AutoMeasurementsTab(ttk.Frame):
         metadata_frame.pack(fill=tk.X, padx=10, pady=5)
         
         self.use_metadata_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(metadata_frame, text="Usar metadatos", variable=self.use_metadata_var,
+        ttk.Checkbutton(metadata_frame, text="Use Metadata", variable=self.use_metadata_var,
                         command=self._update_unit_conversion).pack(side=tk.LEFT)
 
         # Frame for resolution and conversion factor labels
@@ -205,17 +222,95 @@ class AutoMeasurementsTab(ttk.Frame):
         self.resolution_label = ttk.Label(info_frame, text="Resolution: -", font=("Arial", 9, "italic"))
         self.resolution_label.pack(side=tk.LEFT, anchor=tk.W)
         
+        # Create a new frame for date
+        date_frame = ttk.Frame(self.frame)
+        date_frame.pack(fill=tk.X, padx=20, pady=(0, 5))
+        
+        # Date label and entries for YYYY-MM-DD
+        ttk.Label(date_frame, text="Date:", font=("Arial", 9)).pack(side=tk.LEFT, anchor=tk.W)
+        
+        # Create a frame for the date inputs
+        date_inputs_frame = ttk.Frame(date_frame)
+        date_inputs_frame.pack(side=tk.LEFT, padx=(5, 0))
+        
+        # Year entry
+        self.year_var = tk.StringVar()
+        self.year_entry = ttk.Entry(date_inputs_frame, textvariable=self.year_var, width=5)
+        self.year_entry.pack(side=tk.LEFT)
+        ttk.Label(date_inputs_frame, text="-").pack(side=tk.LEFT)
+        
+        # Month entry
+        self.month_var = tk.StringVar()
+        self.month_entry = ttk.Entry(date_inputs_frame, textvariable=self.month_var, width=3)
+        self.month_entry.pack(side=tk.LEFT)
+        ttk.Label(date_inputs_frame, text="-").pack(side=tk.LEFT)
+        
+        # Day entry
+        self.day_var = tk.StringVar()
+        self.day_entry = ttk.Entry(date_inputs_frame, textvariable=self.day_var, width=3)
+        self.day_entry.pack(side=tk.LEFT)
+        
+        # Combined date variable (for compatibility with existing code)
+        self.date_var = tk.StringVar()
+        
+        # Update the combined date_var when any component changes
+        def update_combined_date(*args):
+            try:
+                year = self.year_var.get().strip()
+                month = self.month_var.get().strip()
+                day = self.day_var.get().strip()
+                
+                if year and month and day:
+                    self.date_var.set(f"{year}-{month.zfill(2)}-{day.zfill(2)}")
+                else:
+                    self.date_var.set("")
+                    
+                # Hide metadata label if user has entered a date
+                if self.date_var.get():
+                    self.metadata_date_label.config(text="")
+                elif hasattr(self, "metadata_date") and self.metadata_date:
+                    self.metadata_date_label.config(text=f"(Metadata: {self.metadata_date})")
+            except Exception:
+                pass
+        
+        self.year_var.trace_add("write", update_combined_date)
+        self.month_var.trace_add("write", update_combined_date)
+        self.day_var.trace_add("write", update_combined_date)
+        
+        # Calendar button for date selection
+        def show_calendar():
+            from tkcalendar import Calendar
+            
+            top = tk.Toplevel(self.frame)
+            top.title("Select Date")
+            
+            today = datetime.date.today()
+            cal = Calendar(top, selectmode="day", year=today.year, month=today.month, day=today.day)
+            cal.pack(pady=10)
+            
+            def set_date():
+                selected_date = cal.selection_get()
+                self.year_var.set(str(selected_date.year))
+                self.month_var.set(str(selected_date.month).zfill(2))
+                self.day_var.set(str(selected_date.day).zfill(2))
+                top.destroy()
+            
+            ttk.Button(top, text="Select", command=set_date).pack(pady=10)
+        
+        calendar_button = ttk.Button(date_frame, text="📅", width=3, command=show_calendar)
+        calendar_button.pack(side=tk.LEFT, padx=(5, 0))
+        
+        # Placeholder for metadata date
+        self.metadata_date_label = ttk.Label(date_frame, text="", font=("Arial", 9, "italic"), foreground="gray")
+        self.metadata_date_label.pack(side=tk.LEFT, padx=(10, 0))
+        
         # Label to show conversion factor
         self.conversion_label = ttk.Label(info_frame, text="", font=("Arial", 9, "italic"), foreground="gray")
         self.conversion_label.pack(side=tk.LEFT, padx=(10, 0), anchor=tk.W)
         
         # Add button for manual metadata selection
-        ttk.Button(metadata_frame, text="Seleccionar metadatos", 
+        ttk.Button(metadata_frame, text="Select DPI from Metadata", 
                    command=self._manual_metadata_selection).pack(side=tk.LEFT, padx=(10, 0))
-        
-        # Add info button
-        ttk.Button(metadata_frame, text="ℹ️ Info", 
-                   command=self._show_metadata_info).pack(side=tk.LEFT, padx=(5, 0))
         
         # Title label
         ttk.Label(self.frame, text="Auto Measurements", font=("Arial", 12, "bold")).pack(anchor=tk.W, padx=10, pady=(10, 5))
@@ -223,20 +318,20 @@ class AutoMeasurementsTab(ttk.Frame):
         # Main button frame
         btn_frame = ttk.Frame(self.frame)
         btn_frame.pack(fill=tk.X, padx=10)
-        ttk.Button(btn_frame, text="Iniciar Detección", command=self.start_detection).pack(side=tk.LEFT)
-        ttk.Button(btn_frame, text="Limpiar", command=self._clear_all).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="Añadir RC", command=self._add_manual_film).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="Añadir Círculo", command=self._add_manual_circle).pack(side=tk.LEFT)
-        ttk.Button(btn_frame, text="Exportar CSV", command=self.export_csv).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Start Detection", command=self.start_detection).pack(side=tk.LEFT)
+        ttk.Button(btn_frame, text="Clear", command=self._clear_all).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Add RC", command=self._add_manual_film).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Add Circle", command=self._add_manual_circle).pack(side=tk.LEFT)
+        ttk.Button(btn_frame, text="Export CSV", command=self.export_csv).pack(side=tk.LEFT, padx=5)
 
         # CTR control frame
         ctr_frame = ttk.Frame(self.frame)
         ctr_frame.pack(fill=tk.X, padx=10, pady=5)
-        ttk.Button(ctr_frame, text="Marcar/Desmarcar CTR", command=self._toggle_ctr_manual).pack(side=tk.LEFT)
+        ttk.Button(ctr_frame, text="Toggle CTR", command=self._toggle_ctr_manual).pack(side=tk.LEFT)
         
         # Add CTR subtraction checkbox
         self.subtract_ctr_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(ctr_frame, text="Restar fondo CTR", variable=self.subtract_ctr_var,
+        ttk.Checkbutton(ctr_frame, text="Subtract CTR Background", variable=self.subtract_ctr_var,
                         command=self._update_ctr_subtraction).pack(side=tk.LEFT, padx=(10, 0))
 
         # TreeView setup
@@ -251,11 +346,11 @@ class AutoMeasurementsTab(ttk.Frame):
         cols = ["dose", "sigma", "avg", "avg_unc"]
 
         self.tree = ttk.Treeview(self.frame, columns=tuple(cols), show="tree headings")
-        self.tree.heading("#0", text="Elemento")
-        self.tree.heading("dose", text="Dosis")
-        self.tree.heading("sigma", text="Incertidumbre")
-        self.tree.heading("avg", text="Promedio")
-        self.tree.heading("avg_unc", text="Inc. Promedio")
+        self.tree.heading("#0", text="Element")
+        self.tree.heading("dose", text="Dose")
+        self.tree.heading("sigma", text="Uncertainty")
+        self.tree.heading("avg", text="Average")
+        self.tree.heading("avg_unc", text="Avg. Uncertainty")
         
         # Column widths
         self.tree.column("#0", width=120, anchor=tk.W)
@@ -286,13 +381,13 @@ class AutoMeasurementsTab(ttk.Frame):
         # Film detection parameters
         self.rc_thresh_var = tk.IntVar(value=180)
         self.rc_min_area_var = tk.IntVar(value=5000)
-        film_frame = ttk.LabelFrame(self.frame, text="Detección RC")
+        film_frame = ttk.LabelFrame(self.frame, text="RC Detection")
         film_frame.pack(fill=tk.X, padx=10, pady=5)
-        ttk.Label(film_frame, text="Umbral (0-255):").grid(row=0, column=0, sticky=tk.W, pady=2)
+        ttk.Label(film_frame, text="Threshold (0-255):").grid(row=0, column=0, sticky=tk.W, pady=2)
         ttk.Entry(film_frame, textvariable=self.rc_thresh_var, width=6).grid(row=0, column=1, sticky=tk.W)
         
         # Store reference to area label for unit updates
-        self.area_label = ttk.Label(film_frame, text="Área mín (px²):")
+        self.area_label = ttk.Label(film_frame, text="Min Area (px²):")
         self.area_label.grid(row=1, column=0, sticky=tk.W, pady=2)
         ttk.Entry(film_frame, textvariable=self.rc_min_area_var, width=8).grid(row=1, column=1, sticky=tk.W)
 
@@ -304,19 +399,19 @@ class AutoMeasurementsTab(ttk.Frame):
         self.param2_var = tk.IntVar(value=40)
         self.default_diameter_var = tk.IntVar(value=300)
         
-        circle_frame = ttk.LabelFrame(self.frame, text="Detección Círculos")
+        circle_frame = ttk.LabelFrame(self.frame, text="Circle Detection")
         circle_frame.pack(fill=tk.X, padx=10, pady=5)
         
         # Store references to labels for unit updates
-        self.min_radius_label = ttk.Label(circle_frame, text="Radio mín (px):")
+        self.min_radius_label = ttk.Label(circle_frame, text="Min Radius (px):")
         self.min_radius_label.grid(row=0, column=0, sticky=tk.W)
         ttk.Entry(circle_frame, textvariable=self.min_circle_var, width=6).grid(row=0, column=1)
         
-        self.max_radius_label = ttk.Label(circle_frame, text="Radio máx (px):")
+        self.max_radius_label = ttk.Label(circle_frame, text="Max Radius (px):")
         self.max_radius_label.grid(row=0, column=2, sticky=tk.W)
         ttk.Entry(circle_frame, textvariable=self.max_circle_var, width=6).grid(row=0, column=3)
         
-        self.min_dist_label = ttk.Label(circle_frame, text="Distancia mín (px):")
+        self.min_dist_label = ttk.Label(circle_frame, text="Min Distance (px):")
         self.min_dist_label.grid(row=1, column=0, sticky=tk.W)
         ttk.Entry(circle_frame, textvariable=self.min_dist_var, width=6).grid(row=1, column=1)
         
@@ -325,7 +420,7 @@ class AutoMeasurementsTab(ttk.Frame):
         ttk.Label(circle_frame, text="Param2:").grid(row=2, column=2, sticky=tk.W)
         ttk.Entry(circle_frame, textvariable=self.param2_var, width=6).grid(row=2, column=3)
         
-        self.default_diameter_label = ttk.Label(circle_frame, text="Diámetro por defecto (px):")
+        self.default_diameter_label = ttk.Label(circle_frame, text="Default Diameter (px):")
         self.default_diameter_label.grid(row=3, column=0, sticky=tk.W)
         ttk.Entry(circle_frame, textvariable=self.default_diameter_var, width=6).grid(row=3, column=1)
         
@@ -333,7 +428,7 @@ class AutoMeasurementsTab(ttk.Frame):
         self.restrict_diameter_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             circle_frame,
-            text="Usar diámetro por defecto para todos los círculos",
+            text="Use default diameter for all circles",
             variable=self.restrict_diameter_var,
             command=self._apply_diameter_restriction,
         ).grid(row=4, column=0, columnspan=4, sticky=tk.W)
@@ -415,7 +510,7 @@ class AutoMeasurementsTab(ttk.Frame):
                                 all_metadata[f"ExifRead_{tag}"] = str(value)
                 except ImportError:
                     # Try to install exifread
-                    all_metadata['_info_exifread'] = "ExifRead no instalado - puede proporcionar más metadatos"
+                    all_metadata['_info_exifread'] = "ExifRead not installed - may provide more metadata"
                 except Exception as e:
                     print(f"ExifRead metadata extraction failed: {e}")
                 
@@ -548,7 +643,7 @@ class AutoMeasurementsTab(ttk.Frame):
     def _manual_metadata_selection(self):
         """Open dialog for manual metadata selection."""
         if not self.image_processor.has_image():
-            messagebox.showwarning("Metadatos", "Carga una imagen primero.")
+            messagebox.showwarning("Metadata", "Load an image first.")
             return
         
         # Get all metadata from the current image
@@ -558,14 +653,15 @@ class AutoMeasurementsTab(ttk.Frame):
             # Show debug information and offer manual input
             debug_info = self._get_debug_info()
             result = messagebox.askyesno(
-                "Metadatos No Encontrados", 
-                f"No se encontraron metadatos en la imagen actual.\n\n"
-                f"Información de debug:\n{debug_info}\n\n"
-                f"Sugerencias:\n"
-                f"• Verifica que la imagen tenga metadatos EXIF\n"
-                f"• Prueba con una imagen diferente\n"
-                f"• Algunos formatos (PNG, BMP) pueden no tener DPI en metadatos\n\n"
-                f"¿Quieres introducir el DPI manualmente?"
+                "Metadata Not Found", 
+                f"No metadata found in the current image.\n\n"
+                f"Debug information:\n{debug_info}\n\n"
+                f"Suggestions:\n"
+                f"• Check if the image has EXIF metadata\n"
+                f"• Try with a different image\n"
+                f"• Some formats (PNG, BMP) may not have DPI in metadata\n\n"
+                f"Do you want to enter the DPI manually?"
+
             )
             
             if result:
@@ -588,7 +684,7 @@ class AutoMeasurementsTab(ttk.Frame):
         elif hasattr(self.image_processor, 'current_file_path'):
             img_path = self.image_processor.current_file_path
         
-        debug_lines.append(f"Ruta: {img_path if img_path else 'No disponible'}")
+        debug_lines.append(f"Path: {img_path if img_path else 'Not available'}")
         
         if img_path and os.path.exists(img_path):
             debug_lines.append(f"Archivo existe: Sí")
@@ -610,43 +706,13 @@ class AutoMeasurementsTab(ttk.Frame):
         
         return "\n".join(debug_lines)
     
-    def _show_metadata_info(self):
-        """Show information about metadata handling."""
-        info_text = """Información sobre Metadatos y Resolución
-
-📋 TIPOS DE METADATOS SOPORTADOS:
-• EXIF - Datos estándar de cámaras
-• PIL Info - Información básica de imagen  
-• Windows Properties - Propiedades del sistema
-• Manual Detection - Búsqueda de patrones
-
-🔍 FORMATOS DE RESOLUCIÓN DETECTADOS:
-• DPI directo (ej: 300)
-• Tuplas (ej: (300, 300))
-• Texto con unidades (ej: "300 DPI")
-• Fracciones (ej: "300/1")
-
-⚠️ PROBLEMAS COMUNES:
-• PNG/BMP pueden no tener DPI en metadatos
-• Algunos editores eliminan metadatos
-• Archivos escaneados pueden usar formatos propietarios
-
-💡 SOLUCIONES:
-• Usa "Seleccionar metadatos" para ver todos disponibles
-• Busca campos con ⭐ (prioritarios para resolución)
-• Si no hay metadatos, introduce manualmente el DPI conocido
-
-🛠️ MEJORAS DISPONIBLES:
-• Instala 'exifread' para más metadatos: pip install exifread
-• Usa imágenes con metadatos EXIF completos"""
-        
-        messagebox.showinfo("Información de Metadatos", info_text)
+    
     
     def _manual_dpi_input(self):
         """Allow manual DPI input when metadata is not available."""
         # Crear diálogo personalizado para mantenerlo enfocado
         dialog = tk.Toplevel(self.frame)
-        dialog.title("Introducir DPI Manualmente")
+        dialog.title("Enter DPI Manually")
         dialog.transient(self.frame)  # Mantener sobre la ventana principal
         dialog.grab_set()  # Hacer modal
         
@@ -655,17 +721,17 @@ class AutoMeasurementsTab(ttk.Frame):
         dialog.resizable(False, False)
         
         # Título
-        ttk.Label(dialog, text="Introduce el DPI (puntos por pulgada) de la imagen:", 
+        ttk.Label(dialog, text="Enter the image DPI (dots per inch):", 
                  font=('Arial', 10, 'bold')).pack(pady=(10, 5))
         
         # Texto informativo
         info_text = (
-            "Valores comunes:\n\n"
-            "• 72 DPI - Pantalla estándar\n"
-            "• 96 DPI - Pantalla Windows\n"
-            "• 150 DPI - Impresión básica\n"
-            "• 300 DPI - Impresión de calidad\n"
-            "• 600+ DPI - Impresión profesional"
+            "Common values:\n\n"
+            "• 72 DPI - Standard screen\n"
+            "• 96 DPI - Windows screen\n"
+            "• 150 DPI - Basic printing\n"
+            "• 300 DPI - High quality print\n"
+            "• 600+ DPI - Professional print"
         )
         ttk.Label(dialog, text=info_text, justify=tk.LEFT).pack(pady=5)
         
@@ -686,7 +752,7 @@ class AutoMeasurementsTab(ttk.Frame):
             try:
                 dpi_input = float(dpi_var.get().replace(',', '.'))
                 if not (10.0 <= dpi_input <= 10000.0):
-                    raise ValueError("El valor debe estar entre 10 y 10000")
+                    raise ValueError("Value must be between 10 and 10000")
                 
                 # Store this as a manual selection for the session
                 self.session_metadata_key = "_manual_dpi"
@@ -708,18 +774,18 @@ class AutoMeasurementsTab(ttk.Frame):
                 dialog.destroy()
                 
                 messagebox.showinfo(
-                    "DPI Manual Aplicado", 
-                    f"DPI introducido manualmente: {dpi_input}\n"
-                    f"Factor de conversión: {conversion_factor:.6f} mm/píxel\n\n"
-                    f"Esta configuración se mantendrá para la sesión actual."
+                    "Manual DPI Applied", 
+                    f"Manually entered DPI: {dpi_input}\n"
+                    f"Conversion factor: {conversion_factor:.6f} mm/pixel\n\n"
+                    f"This setting will remain for the current session."
                 )
                 
             except ValueError as e:
                 messagebox.showerror("Error", f"Valor de DPI no válido: {e}")
                 dpi_entry.focus_set()
         
-        ttk.Button(btn_frame, text="Aceptar", command=on_ok).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="Cancelar", command=dialog.destroy).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="OK", command=on_ok).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Cancel", command=dialog.destroy).pack(side=tk.LEFT, padx=5)
         
         # Manejar tecla Enter
         def on_enter(event):
@@ -786,18 +852,18 @@ class AutoMeasurementsTab(ttk.Frame):
         """Update parameter labels to show current units."""
         if show_mm:
             # Update labels to show mm units
-            self.area_label.config(text="Área mín (mm²):")
-            self.min_radius_label.config(text="Radio mín (mm):")
-            self.max_radius_label.config(text="Radio máx (mm):")
-            self.min_dist_label.config(text="Distancia mín (mm):")
-            self.default_diameter_label.config(text="Diámetro por defecto (mm):")
+            self.area_label.config(text="Min Area (mm²):")
+            self.min_radius_label.config(text="Min Radius (mm):")
+            self.max_radius_label.config(text="Max Radius (mm):")
+            self.min_dist_label.config(text="Min Distance (mm):")
+            self.default_diameter_label.config(text="Default Diameter (mm):")
         else:
             # Update labels to show pixel units
-            self.area_label.config(text="Área mín (px²):")
-            self.min_radius_label.config(text="Radio mín (px):")
-            self.max_radius_label.config(text="Radio máx (px):")
-            self.min_dist_label.config(text="Distancia mín (px):")
-            self.default_diameter_label.config(text="Diámetro por defecto (px):")
+            self.area_label.config(text="Min Area (px²):")
+            self.min_radius_label.config(text="Min Radius (px):")
+            self.max_radius_label.config(text="Max Radius (px):")
+            self.min_dist_label.config(text="Min Distance (px):")
+            self.default_diameter_label.config(text="Default Diameter (px):")
     
 
 
@@ -851,8 +917,8 @@ class AutoMeasurementsTab(ttk.Frame):
         tree_frame.pack(fill=tk.BOTH, expand=True)
         
         metadata_tree = ttk.Treeview(tree_frame, columns=("value",), show="tree headings")
-        metadata_tree.heading("#0", text="Clave de Metadato")
-        metadata_tree.heading("value", text="Valor")
+        metadata_tree.heading("#0", text="Metadata Key")
+        metadata_tree.heading("value", text="Value")
         
         # Configure column widths
         metadata_tree.column("#0", width=200)
@@ -977,11 +1043,11 @@ class AutoMeasurementsTab(ttk.Frame):
                 self.conversion_label.config(text=f"({conversion_factor:.6f} mm/px)")
             
             messagebox.showinfo(
-                "Éxito", 
-                f"Metadato '{selected_key}' seleccionado exitosamente.\n"
-                f"Resolución: {resolution:.2f} DPI\n"
-                f"Factor de conversión: {conversion_factor:.6f} mm/píxel\n\n"
-                f"Esta selección se mantendrá para la sesión actual."
+                "Success", 
+                f"Metadata '{selected_key}' selected successfully.\n"
+                f"Resolution: {resolution:.2f} DPI\n"
+                f"Conversion factor: {conversion_factor:.6f} mm/pixel\n\n"
+                f"This selection will be kept for the current session."
             )
             
             dialog.destroy()
@@ -994,9 +1060,9 @@ class AutoMeasurementsTab(ttk.Frame):
             dialog.destroy()
             self._manual_dpi_input()
         
-        ttk.Button(button_frame, text="Aceptar", command=on_accept).pack(side=tk.RIGHT, padx=5)
-        ttk.Button(button_frame, text="Introducir DPI manualmente", command=on_manual_input).pack(side=tk.RIGHT, padx=5)
-        ttk.Button(button_frame, text="Cancelar", command=on_cancel).pack(side=tk.RIGHT)
+        ttk.Button(button_frame, text="OK", command=on_accept).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(button_frame, text="Enter DPI Manually", command=on_manual_input).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(button_frame, text="Cancel", command=on_cancel).pack(side=tk.RIGHT)
         
         # Handle dialog close
         def on_dialog_close():
@@ -1004,6 +1070,47 @@ class AutoMeasurementsTab(ttk.Frame):
         
         dialog.protocol("WM_DELETE_WINDOW", on_dialog_close)
 
+    def _extract_date_from_metadata(self):
+        """Extract date from image metadata or file modification date."""
+        try:
+            # First try to get date from EXIF metadata
+            if hasattr(self.image_processor, "image_metadata") and self.image_processor.image_metadata:
+                # Try common date metadata keys
+                date_keys = ['DateTime', 'DateTimeOriginal', 'DateTimeDigitized', 'ModifyDate', 'CreateDate']
+                
+                for key in date_keys:
+                    if key in self.image_processor.image_metadata:
+                        date_value = self.image_processor.image_metadata[key]
+                        # Try to parse date - expecting format like "2023:06:15 14:30:22"
+                        try:
+                            # Extract just the date part (YYYY:MM:DD)
+                            date_part = date_value.split()[0]
+                            # Convert from YYYY:MM:DD to YYYY-MM-DD
+                            formatted_date = date_part.replace(':', '-')
+                            logging.info(f"Date extracted from image metadata: {formatted_date}")
+                            return formatted_date
+                        except (ValueError, IndexError):
+                            continue
+        
+            # If we couldn't get a date from metadata, try to get file modification date
+            if hasattr(self.image_processor, "image_path") and self.image_processor.image_path:
+                import os
+                import datetime
+                try:
+                    # Get file modification time
+                    mod_time = os.path.getmtime(self.image_processor.image_path)
+                    # Convert to datetime and format
+                    mod_date = datetime.datetime.fromtimestamp(mod_time).strftime("%Y-%m-%d")
+                    logging.info(f"Using file modification date: {mod_date}")
+                    return mod_date
+                except Exception as e:
+                    logging.error(f"Error getting file modification time: {e}")
+            
+            return None
+        except Exception as e:
+            logging.error(f"Error extracting date from metadata: {e}")
+            return None
+    
     def _get_resolution_from_metadata(self):
         """Get resolution from metadata, using session key if available."""
         try:
@@ -1334,6 +1441,52 @@ class AutoMeasurementsTab(ttk.Frame):
         if img_rgb.ndim == 2:
             img_rgb = cv2.cvtColor(img_rgb, cv2.COLOR_GRAY2BGR)
         gray = cv2.cvtColor(img_rgb, cv2.COLOR_BGR2GRAY)
+        
+        # Extract date from metadata
+        self.metadata_date = self._extract_date_from_metadata()
+        
+        # Clear any previous entries if they're in gray (metadata display)
+        for entry in [self.year_entry, self.month_entry, self.day_entry]:
+            if entry.cget("foreground") == "gray":
+                entry.delete(0, tk.END)
+                entry.config(foreground="black", font=("Arial", 9))
+        
+        # Update metadata date display
+        if self.metadata_date:
+            # Update metadata label
+            self.metadata_date_label.config(text=f"(Metadata: {self.metadata_date})")
+            
+            # If user hasn't entered anything, pre-fill entries with gray text
+            if "-" in self.metadata_date and not any([self.year_var.get(), self.month_var.get(), self.day_var.get()]):
+                try:
+                    y, m, d = self.metadata_date.split("-")
+                    
+                    self.year_entry.delete(0, tk.END)
+                    self.year_entry.insert(0, y)
+                    self.year_entry.config(foreground="gray", font=("Arial", 9, "italic"))
+                    
+                    self.month_entry.delete(0, tk.END)
+                    self.month_entry.insert(0, m)
+                    self.month_entry.config(foreground="gray", font=("Arial", 9, "italic"))
+                    
+                    self.day_entry.delete(0, tk.END)
+                    self.day_entry.insert(0, d)
+                    self.day_entry.config(foreground="gray", font=("Arial", 9, "italic"))
+                    
+                    # Define the behavior when clicking on an entry with metadata
+                    def on_entry_click(event, entry):
+                        if entry.cget("foreground") == "gray":
+                            entry.delete(0, tk.END)
+                            entry.config(foreground="black", font=("Arial", 9))
+                    
+                    # Bind the focus event to each entry field
+                    self.year_entry.bind("<FocusIn>", lambda e: on_entry_click(e, self.year_entry))
+                    self.month_entry.bind("<FocusIn>", lambda e: on_entry_click(e, self.month_entry))
+                    self.day_entry.bind("<FocusIn>", lambda e: on_entry_click(e, self.day_entry))
+                except ValueError:
+                    pass
+
+
 
         # Check if parameters are converted to mm and need conversion to pixels
         restore_params = False
@@ -2001,19 +2154,19 @@ class AutoMeasurementsTab(ttk.Frame):
             and getattr(self.image_processor, "dose_channels", None) is not None
         ):
             img = self.image_processor.dose_channels
-            plot_title = "Mapa 3D de Dosis"
-            z_label = "Dosis"
+            plot_title = "3D Dose Map"
+            z_label = "Dose"
         else:
             img = (
                 self.image_processor.original_image
                 if getattr(self.image_processor, "original_image", None) is not None
                 else self.image_processor.current_image
             )
-            plot_title = "Mapa 3D de Intensidad"
-            z_label = "Valor"
+            plot_title = "3D Intensity Map"
+            z_label = "Value"
         
         if img is None:
-            messagebox.showwarning("Vista 3D", "No hay imagen cargada.")
+            messagebox.showwarning("3D View", "No image loaded.")
             return
 
         # Crop ROI with margin
@@ -2106,7 +2259,7 @@ class AutoMeasurementsTab(ttk.Frame):
     def _start_draw_mode(self, shape_type: str, dims):
         """Start interactive drawing mode."""
         if self._canvas is None or not self.image_processor.has_image():
-            messagebox.showwarning("Dibujar", "No hay imagen cargada o canvas no disponible.")
+            messagebox.showwarning("Draw", "No image loaded or canvas not available.")
             return
 
         self._cancel_draw()
@@ -2126,7 +2279,7 @@ class AutoMeasurementsTab(ttk.Frame):
             self._dims_window.destroy()
         
         self._dims_window = tk.Toplevel(self.frame)
-        self._dims_window.title("Dimensiones")
+        self._dims_window.title("Dimensions")
         self._dims_window.resizable(False, False)
         self._dims_window.attributes("-topmost", True)
         self._dim_vars.clear()
@@ -2151,15 +2304,15 @@ class AutoMeasurementsTab(ttk.Frame):
             w_var = tk.StringVar(value=str(w))
             h_var = tk.StringVar(value=str(h))
             self._dim_vars.extend([w_var, h_var])
-            tk.Label(self._dims_window, text="Ancho:").grid(row=0, column=0, padx=4, pady=2)
+            tk.Label(self._dims_window, text="Width:").grid(row=0, column=0, padx=4, pady=2)
             tk.Entry(self._dims_window, textvariable=w_var, width=6).grid(row=0, column=1, padx=4, pady=2)
-            tk.Label(self._dims_window, text="Alto:").grid(row=1, column=0, padx=4, pady=2)
+            tk.Label(self._dims_window, text="Height:").grid(row=1, column=0, padx=4, pady=2)
             tk.Entry(self._dims_window, textvariable=h_var, width=6).grid(row=1, column=1, padx=4, pady=2)
         elif self.draw_mode == "circle":
             r = self.draw_dims
             r_var = tk.StringVar(value=str(r))
             self._dim_vars.append(r_var)
-            tk.Label(self._dims_window, text="Radio:").grid(row=0, column=0, padx=4, pady=2)
+            tk.Label(self._dims_window, text="Radius:").grid(row=0, column=0, padx=4, pady=2)
             tk.Entry(self._dims_window, textvariable=r_var, width=6).grid(row=0, column=1, padx=4, pady=2)
 
         for var in self._dim_vars:
@@ -2446,35 +2599,76 @@ class AutoMeasurementsTab(ttk.Frame):
     # ---------------------------------------------------------------
 
     def export_csv(self):
-        """Export results to CSV file with both original and CTR-corrected values."""
+        """Export measurements to CSV."""
         if not self.results:
-            messagebox.showinfo("Exportar", "No hay datos para exportar.")
+            messagebox.showwarning("Export", "No data to export.")
             return
-        
-        file_path = filedialog.asksaveasfilename(
-            title="Guardar CSV", 
-            defaultextension=".csv", 
-            filetypes=[("CSV", "*.csv")]
+
+        # Ask for file location
+        filename = filedialog.asksaveasfilename(
+            title="Save CSV",
+            filetypes=[("CSV files", "*.csv")],
+            defaultextension=".csv"
         )
-        if not file_path:
-            return
         
+        if not filename:
+            return
+            
         try:
-            with open(file_path, "w", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-                # Write header with both original and corrected values
-                writer.writerow([
-                    "Radiocrómica", "Círculo", "X", "Y", 
-                    "Dosis_Original", "Inc_Original", "Promedio_Original", "Inc_Promedio_Original",
-                    "Promedio_Corregido_CTR", "Inc_Promedio_Corregido_CTR"
-                ])
+            with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+                # Define CSV columns
+                cols = [
+                    "date", "film", "circle", 
+                    "original_dose", "original_unc", "original_avg", "original_avg_unc"]
+                
+                # Add CTR columns if we have any CTR-corrected values
+                if self.results and self.results[0] and any(isinstance(self.results[0], dict) and "ctr_" in k for k in self.results[0].keys()):
+                    cols.extend(["ctr_corrected_avg", "ctr_corrected_avg_unc"])
+                
+                writer = csv.DictWriter(
+                    csvfile, 
+                    fieldnames=cols,
+                    extrasaction='ignore'
+                )
+                
+                # Write header with proper names
+                header_map = {
+                    "date": "Date",
+                    "film": "Film",
+                    "circle": "Circle", 
+                    "original_dose": "Original Dose",
+                    "original_unc": "Original Uncertainty",
+                    "original_avg": "Original Average",
+                    "original_avg_unc": "Original Average Uncertainty",
+                    "ctr_corrected_avg": "CTR Corrected Average",
+                    "ctr_corrected_avg_unc": "CTR Corrected Average Uncertainty"
+                }
+                writer.writerow({field: header_map.get(field, field) for field in cols})
+                
+                # Get the date to use for all rows
+                date_to_use = self.date_var.get() or self.metadata_date or ""
                 
                 # Sort results by Film, then by Circle
-                # Use a key function that handles potential None values for film or circle names
-                sorted_results = sorted(self.results, key=lambda rec: (str(rec.get("film") or ""), str(rec.get("circle") or "")))
+                # Wrap this in a try-except to handle potential issues with sorting
+                try:
+                    # Use a key function that handles potential None values for film or circle names
+                    sorted_results = sorted(self.results, key=lambda rec: (
+                        str(rec.get("film", "") if hasattr(rec, "get") else ""), 
+                        str(rec.get("circle", "") if hasattr(rec, "get") else "")
+                    ))
+                except Exception as e:
+                    logging.error(f"Error sorting results: {e}")
+                    sorted_results = self.results
+                    
+                # Process each result
                 for rec in sorted_results:
-                    film_name = rec["film"]
-                    circle_name = rec["circle"]
+                    # Handle both dict and list cases for safety
+                    if not isinstance(rec, dict):
+                        logging.warning(f"Unexpected record type: {type(rec)}")
+                        continue
+                    
+                    film_name = rec.get("film", "")
+                    circle_name = rec.get("circle", "")
                     
                     # Find the corresponding tree item for this circle
                     circle_display_name = circle_name
@@ -2500,53 +2694,67 @@ class AutoMeasurementsTab(ttk.Frame):
                     
                     # Get original values
                     orig_data = self.original_measurements.get(item_id, {}) if item_id else {}
-                    original_avg = orig_data.get("avg", rec["avg"])
-                    original_avg_unc = orig_data.get("avg_unc", rec["avg_unc"])
-                    original_dose = orig_data.get("dose", rec["dose"])
-                    original_unc = orig_data.get("unc", rec["unc"])
+                    
+                    # Get values safely
+                    original_avg = orig_data.get("avg", rec.get("avg", ""))
+                    original_avg_unc = orig_data.get("avg_unc", rec.get("avg_unc", ""))
+                    original_dose = orig_data.get("dose", rec.get("dose", ""))
+                    original_unc = orig_data.get("unc", rec.get("unc", ""))
                     
                     # Calculate CTR-corrected values
-                    ctr_corrected_avg = "" if not self.subtract_ctr_var.get() else ""
-                    ctr_corrected_unc = "" if not self.subtract_ctr_var.get() else ""
+                    ctr_corrected_avg = ""
+                    ctr_corrected_unc = ""
                     
-                    if film_name in self.ctr_map and item_id:
+                    if film_name in self.ctr_map and item_id and self.subtract_ctr_var.get():
                         ctr_id = self.ctr_map[film_name]
                         ctr_orig_data = self.original_measurements.get(ctr_id, {})
                         
                         if ctr_orig_data:
-                            ctr_avg = self._clean_numeric_string(ctr_orig_data.get("avg", "0"))
-                            ctr_unc = self._clean_numeric_string(ctr_orig_data.get("avg_unc", "0"))
-                            orig_avg_num = self._clean_numeric_string(original_avg)
-                            orig_unc_num = self._clean_numeric_string(original_avg_unc)
-                            
-                            if item_id == ctr_id:
-                                # CTR circle: set to 0 ± uncertainty
-                                corrected_avg = 0.0
-                                corrected_unc = ctr_unc
-                            else:
-                                # Other circles: subtract CTR with error propagation
-                                corrected_avg = max(0.0, orig_avg_num - ctr_avg)
-                                corrected_unc = sqrt(orig_unc_num**2 + ctr_unc**2)
-                            
-                            ctr_corrected_avg, ctr_corrected_unc = self._format_val_unc(corrected_avg, corrected_unc, 2)
+                            try:
+                                ctr_avg = self._clean_numeric_string(ctr_orig_data.get("avg", "0"))
+                                ctr_unc = self._clean_numeric_string(ctr_orig_data.get("avg_unc", "0"))
+                                orig_avg_num = self._clean_numeric_string(original_avg)
+                                orig_unc_num = self._clean_numeric_string(original_avg_unc)
+                                
+                                if item_id == ctr_id:
+                                    # CTR circle: set to 0 ± uncertainty
+                                    corrected_avg = 0.0
+                                    corrected_unc = ctr_unc
+                                else:
+                                    # Other circles: subtract CTR with error propagation
+                                    corrected_avg = max(0.0, orig_avg_num - ctr_avg)
+                                    corrected_unc = sqrt(orig_unc_num**2 + ctr_unc**2)
+                                
+                                ctr_corrected_avg, ctr_corrected_unc = self._format_val_unc(corrected_avg, corrected_unc, 2)
+                            except Exception as e:
+                                logging.error(f"Error calculating CTR-corrected values: {e}")
                     
                     # If no CTR correction available, use original values
                     if not ctr_corrected_avg:
                         ctr_corrected_avg = original_avg
                         ctr_corrected_unc = original_avg_unc
                     
-                    writer.writerow([
-                        rec["film"] or "",
-                        circle_display_name,
-                        rec.get("x", ""),
-                        rec.get("y", ""),
-                        original_dose,
-                        original_unc,
-                        original_avg,
-                        original_avg_unc,
-                        ctr_corrected_avg,
-                        ctr_corrected_unc
-                    ])
-            messagebox.showinfo("Exportar", f"CSV exportado exitosamente a:\n{file_path}")
+                    # Create a dictionary for the row
+                    row_data = {
+                        "date": date_to_use,
+                        "film": film_name if isinstance(film_name, str) else "",
+                        "circle": circle_display_name,
+                        "original_dose": original_dose,
+                        "original_unc": original_unc,
+                        "original_avg": original_avg,
+                        "original_avg_unc": original_avg_unc
+                    }
+                    
+                    # Add CTR columns if they exist
+                    if "ctr_corrected_avg" in cols:
+                        row_data["ctr_corrected_avg"] = ctr_corrected_avg
+                    if "ctr_corrected_avg_unc" in cols:
+                        row_data["ctr_corrected_avg_unc"] = ctr_corrected_unc
+                    
+                    # Write the row
+                    writer.writerow(row_data)
+            
+            # Show success message
+            messagebox.showinfo("Export", f"CSV successfully exported to:\n{filename}")
         except Exception as exc:
-            messagebox.showerror("Error de Exportación", f"Error al exportar CSV:\n{str(exc)}")
+            messagebox.showerror("Export Error", f"Error exporting CSV:\n{str(exc)}")

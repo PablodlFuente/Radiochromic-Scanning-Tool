@@ -1,0 +1,35 @@
+2025-06-23 20:56:51,827 - __main__ - INFO - Starting Radiochromic Film Analyzer
+2025-06-23 20:56:51,881 - app.rc_analyzer - INFO - Initializing RCAnalyzer application
+2025-06-23 20:56:51,886 - app.rc_analyzer - INFO - Cleaned up local temp directory: C:\Users\Pablo\OneDrive - UAM\2 Proyectos\1 Otros\0 Software_propio_utilidades\RC\analizadorrc\temp
+2025-06-23 20:56:51,886 - app.rc_analyzer - INFO - Cleaned up log and temporary files
+2025-06-23 20:56:51,886 - app.utils.config_manager - INFO - Configuration manager initialized
+2025-06-23 20:56:51,886 - app.utils.config_manager - INFO - Configuration loaded from file
+2025-06-23 20:56:51,903 - app.core.image_processor - INFO - System info: {'platform': 'Windows', 'processor': 'AMD64 Family 23 Model 113 Stepping 0, AuthenticAMD', 'cpu_count': 12, 'memory_gb': 31.94003677368164, 'python_version': '3.12.0', 'opencv_version': '4.11.0'}
+2025-06-23 20:56:51,905 - app.core.image_processor - WARNING - CUDA not available, skipping GPU initialization
+2025-06-23 20:56:51,905 - app.core.image_processor - INFO - Image processor initialized
+2025-06-23 20:56:51,905 - app.utils.file_manager - INFO - File manager initialized
+2025-06-23 20:56:51,931 - app.plugins.plugin_manager - INFO - Loaded plugin 'auto_measurements'
+2025-06-23 20:56:51,950 - app.ui.image_panel - INFO - Image panel initialized
+2025-06-23 20:56:51,964 - app.ui.measurement_panel - INFO - Measurement panel initialized
+2025-06-23 20:56:51,973 - app.ui.image_settings_panel - INFO - Image settings panel initialized
+2025-06-23 20:56:51,976 - app.plugins.plugin_manager - ERROR - Plugin 'auto_measurements' setup failed: 'AutoMeasurementsTab' object has no attribute '_update_unit_conversion'
+Traceback (most recent call last):
+  File "C:\Users\Pablo\OneDrive - UAM\2 Proyectos\1 Otros\0 Software_propio_utilidades\RC\analizadorrc\app\plugins\plugin_manager.py", line 127, in _enable_plugin_ui
+    frame = mod.setup(self._main_window, self._notebook, self._image_processor)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Pablo\OneDrive - UAM\2 Proyectos\1 Otros\0 Software_propio_utilidades\RC\analizadorrc\custom_plugins\auto_measurements.py", line 34, in setup
+    return AutoMeasurementsTab(main_window, notebook, image_processor).frame
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Pablo\OneDrive - UAM\2 Proyectos\1 Otros\0 Software_propio_utilidades\RC\analizadorrc\custom_plugins\auto_measurements.py", line 155, in __init__
+    self._setup_ui()
+  File "C:\Users\Pablo\OneDrive - UAM\2 Proyectos\1 Otros\0 Software_propio_utilidades\RC\analizadorrc\custom_plugins\auto_measurements.py", line 198, in _setup_ui
+    command=self._update_unit_conversion).pack(side=tk.LEFT)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'AutoMeasurementsTab' object has no attribute '_update_unit_conversion'
+2025-06-23 20:56:51,994 - app.ui.main_window - INFO - Main window initialized
+2025-06-23 20:56:51,994 - app.rc_analyzer - INFO - RCAnalyzer initialization complete
+2025-06-23 20:57:01,517 - app.rc_analyzer - INFO - Saving configuration before exit
+2025-06-23 20:57:01,518 - app.utils.config_manager - INFO - Configuration saved to file
+2025-06-23 20:57:01,520 - app.rc_analyzer - INFO - Cleaned up local temp directory: C:\Users\Pablo\OneDrive - UAM\2 Proyectos\1 Otros\0 Software_propio_utilidades\RC\analizadorrc\temp
+2025-06-23 20:57:01,523 - app.rc_analyzer - INFO - Cleaned up log and temporary files
+2025-06-23 20:57:01,614 - __main__ - INFO - Application closed normally
