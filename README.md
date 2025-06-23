@@ -96,10 +96,6 @@ The Radiochromic Film Analyzer is a specialized application designed for the ana
 
 ## Keyboard Shortcuts
 
-- **Ctrl+O**: Open image
-- **Ctrl+S**: Save image
-- **Ctrl+Z**: Undo
-- **Ctrl+Y**: Redo
 - **Ctrl+Mouse Wheel**: Adjust measurement size
 - **+/-**: Zoom in/out
 
