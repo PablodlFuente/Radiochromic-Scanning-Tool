@@ -1438,7 +1438,7 @@ class AutoMeasurementsTab(ttk.Frame):
                     continue
 
                 dose, _, unc, _ = res
-                
+            
                 # Format measurements
                 if isinstance(dose, tuple):
                     dose_parts = []
@@ -1563,23 +1563,23 @@ class AutoMeasurementsTab(ttk.Frame):
             conversion_factor = 25.4 / self.stored_resolution
             logging.debug(f"Conversion factor: {conversion_factor:.6f} mm/px")
 
-            # Store original parameters as floats
-            if not getattr(self, 'original_parameters', {}):
-                self.original_parameters = {
-                    'rc_min_area': float(self.rc_min_area_var.get()),
-                    'min_circle': float(self.min_circle_var.get()),
-                    'max_circle': float(self.max_circle_var.get()),
-                    'min_dist': float(self.min_dist_var.get()),
-                    'default_diameter': float(self.default_diameter_var.get())
-                }
+            # Always store current pixel values as original parameters before conversion
+            self.original_parameters = {
+                'rc_min_area': float(self.rc_min_area_var.get()),
+                'min_circle': float(self.min_circle_var.get()),
+                'max_circle': float(self.max_circle_var.get()),
+                'min_dist': float(self.min_dist_var.get()),
+                'default_diameter': float(self.default_diameter_var.get())
+            }
 
-            # Apply conversion to UI using exact values
+            # Apply conversion to UI using exact values from original_parameters
             self.rc_min_area_var.set(self.original_parameters['rc_min_area'] * (conversion_factor ** 2))
             self.min_circle_var.set(self.original_parameters['min_circle'] * conversion_factor)
             self.max_circle_var.set(self.original_parameters['max_circle'] * conversion_factor)
             self.min_dist_var.set(self.original_parameters['min_dist'] * conversion_factor)
             self.default_diameter_var.set(self.original_parameters['default_diameter'] * conversion_factor)
 
+            self.parameters_converted = True  # Set flag to indicate parameters are now in mm
         
             # Update labels
             self.resolution_label.config(text=f"Resolution: {self.stored_resolution:.3f} DPI")
@@ -1594,26 +1594,21 @@ class AutoMeasurementsTab(ttk.Frame):
                 conversion_factor = 25.4 / self.stored_resolution
 
                 # Use stored original parameters
-                if hasattr(self, 'original_parameters'):
-                    # Convert back to pixels using original_parameters (which are in pixels)
-                    # No need to divide by conversion_factor here, as original_parameters already stores pixel values
+                # Restore original parameters if they exist
+                if hasattr(self, 'original_parameters') and self.original_parameters:
                     self.rc_min_area_var.set(self.original_parameters['rc_min_area'])
                     self.min_circle_var.set(self.original_parameters['min_circle'])
                     self.max_circle_var.set(self.original_parameters['max_circle'])
                     self.min_dist_var.set(self.original_parameters['min_dist'])
                     self.default_diameter_var.set(self.original_parameters['default_diameter'])
-
-                    # Update labels
-                    self._update_parameter_labels(False)
-                    self.parameters_converted = False
-                    self.stored_resolution = None
                     logging.info("Stored resolution cleared.")
                 else:
-                    logging.info("No stored parameters, restoring defaults.")
-                    self._restore_original_parameters()
-            else:
-                logging.info("No stored resolution, restoring original parameters.")
-                self._restore_original_parameters()
+                    logging.info("No stored parameters, cannot restore. UI remains as is.")
+
+                # Always clear stored resolution and reset conversion flags
+                self.stored_resolution = None
+                self.parameters_converted = False
+                self._update_parameter_labels(False) # Update labels to show pixel units
 
             # Restore original values display
             self._restore_original_values()

@@ -1,0 +1,39 @@
+2025-06-23 03:09:20,231 - __main__ - INFO - Starting Radiochromic Film Analyzer
+2025-06-23 03:09:20,290 - app.rc_analyzer - INFO - Initializing RCAnalyzer application
+2025-06-23 03:09:20,295 - app.rc_analyzer - INFO - Cleaned up local temp directory: C:\Users\Pablo\OneDrive - UAM\2 Proyectos\1 Otros\0 Software_propio_utilidades\RC\analizadorrc\temp
+2025-06-23 03:09:20,296 - app.rc_analyzer - INFO - Cleaned up log and temporary files
+2025-06-23 03:09:20,297 - app.utils.config_manager - INFO - Configuration manager initialized
+2025-06-23 03:09:20,297 - app.utils.config_manager - INFO - Configuration loaded from file
+2025-06-23 03:09:20,316 - app.core.image_processor - INFO - System info: {'platform': 'Windows', 'processor': 'AMD64 Family 23 Model 113 Stepping 0, AuthenticAMD', 'cpu_count': 12, 'memory_gb': 31.94003677368164, 'python_version': '3.12.0', 'opencv_version': '4.11.0'}
+2025-06-23 03:09:20,316 - app.core.image_processor - WARNING - CUDA not available, skipping GPU initialization
+2025-06-23 03:09:20,316 - app.core.image_processor - INFO - Image processor initialized
+2025-06-23 03:09:20,316 - app.utils.file_manager - INFO - File manager initialized
+2025-06-23 03:09:20,356 - app.plugins.plugin_manager - INFO - Loaded plugin 'auto_measurements'
+2025-06-23 03:09:20,375 - app.ui.image_panel - INFO - Image panel initialized
+2025-06-23 03:09:20,395 - app.ui.measurement_panel - INFO - Measurement panel initialized
+2025-06-23 03:09:20,408 - app.ui.image_settings_panel - INFO - Image settings panel initialized
+2025-06-23 03:09:20,642 - app.ui.main_window - INFO - Main window initialized
+2025-06-23 03:09:20,642 - app.rc_analyzer - INFO - RCAnalyzer initialization complete
+2025-06-23 03:09:23,531 - app.ui.main_window - INFO - Loading image: C:\Users\Pablo\OneDrive - UAM\4 Protonterapia\1 Experimentos\1 Experimentos\2025_05_06_PT\scans_070525\RC1_2_3.tiff (Size: 14.94 MB)
+2025-06-23 03:09:23,686 - app.core.image_processor - INFO - Loading image: C:\Users\Pablo\OneDrive - UAM\4 Protonterapia\1 Experimentos\1 Experimentos\2025_05_06_PT\scans_070525\RC1_2_3.tiff, size: 2550x3510
+2025-06-23 03:09:23,691 - app.core.image_processor - INFO - Computing integral images for fast statistics
+2025-06-23 03:09:23,820 - app.core.image_processor - INFO - Integral images computed successfully
+2025-06-23 03:09:23,827 - app.core.image_processor - INFO - Loaded image: C:\Users\Pablo\OneDrive - UAM\4 Protonterapia\1 Experimentos\1 Experimentos\2025_05_06_PT\scans_070525\RC1_2_3.tiff
+2025-06-23 03:09:24,694 - app.core.image_processor - INFO - Computing integral images for fast statistics
+2025-06-23 03:09:24,876 - app.core.image_processor - INFO - Integral images computed successfully
+2025-06-23 03:09:24,878 - app.core.image_processor - INFO - Calibration applied successfully – dose image ready (3-channel float32)
+2025-06-23 03:09:24,901 - app.ui.main_window - INFO - Loaded image: C:\Users\Pablo\OneDrive - UAM\4 Protonterapia\1 Experimentos\1 Experimentos\2025_05_06_PT\scans_070525\RC1_2_3.tiff
+2025-06-23 03:09:25,618 - root - INFO - Unit Conversion Update initiated.
+2025-06-23 03:09:25,618 - root - INFO - Metadata usage enabled.
+2025-06-23 03:09:25,620 - root - INFO - No stored resolution found, attempting to detect new.
+2025-06-23 03:09:25,979 - root - INFO - Auto-detected resolution from PIL_dpi: 299.999 DPI
+2025-06-23 03:09:25,979 - root - INFO - New resolution stored: 300.00 DPI
+2025-06-23 03:09:25,982 - root - INFO - Unit Conversion Update complete.
+
+2025-06-23 03:09:25,982 - root - INFO - Unit Conversion Update complete.
+
+2025-06-23 03:09:28,772 - app.rc_analyzer - INFO - Saving configuration before exit
+2025-06-23 03:09:28,775 - app.utils.config_manager - INFO - Configuration saved to file
+2025-06-23 03:09:28,778 - app.rc_analyzer - INFO - Cleaned up local temp directory: C:\Users\Pablo\OneDrive - UAM\2 Proyectos\1 Otros\0 Software_propio_utilidades\RC\analizadorrc\temp
+2025-06-23 03:09:28,778 - app.rc_analyzer - INFO - Cleaned up log and temporary files
+2025-06-23 03:09:28,894 - __main__ - INFO - Application closed normally
