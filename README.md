@@ -1,8 +1,8 @@
-# Radiochromic Film Analyzer
+# Radiochromic-Scanning-Tool
 
 ## Overview
 
-The Radiochromic Film Analyzer is a specialized application designed for the analysis and measurement of radiochromic films used in medical physics and radiation dosimetry. This tool provides precise measurements, visualization, and analysis capabilities for researchers and medical physicists.
+The Radiochromic-Scanning-Tool is a specialized application designed for the analysis and measurement of radiochromic films used in medical physics and radiation dosimetry. This tool provides precise measurements, visualization, and analysis capabilities for researchers and medical physicists.
 
 ## Features
 
