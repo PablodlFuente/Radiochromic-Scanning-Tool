@@ -56,6 +56,8 @@ def setup(main_window, notebook, image_processor):
     return _AUTO_MEASUREMENTS_INSTANCE.frame
 
 
+# NOTE: _OVERLAY is a global variable used for sharing detection state between plugin and drawing code.
+# In multi-threaded or async contexts, this must be protected for thread safety.
 _OVERLAY: dict | None = None  # Holds last detection for drawing
 
 # Keys used in _OVERLAY:
@@ -1298,6 +1300,8 @@ class AutoMeasurementsTab(ttk.Frame):
                 new_text = current_text.replace(" (CTR)", "")
                 self.tree.item(item_id, text=new_text)
             self.tree.item(item_id, tags=())  # Remove CTR tag
+            # Restore original values for all circles in this film
+            self._restore_original_measurements()
         else:
             # Remove existing CTR if any
             if film_name in self.ctr_map:
@@ -1314,7 +1318,7 @@ class AutoMeasurementsTab(ttk.Frame):
                 self.tree.item(item_id, text=f"{current_text} (CTR)")
             self.tree.item(item_id, tags=("ctr",))  # Apply CTR tag
         
-        # Update CTR subtraction
+        # Update CTR subtraction (if any CTR remains)
         self._update_ctr_subtraction()
         self.main_window.update_image()
 
@@ -1412,13 +1416,17 @@ class AutoMeasurementsTab(ttk.Frame):
                     current_values[3] = unc_str   # avg_unc
                     self.tree.item(circle_id, values=tuple(current_values))
 
-    def _store_original_measurement(self, item_id: str, dose_str: str, unc_str: str, avg_str: str, avg_unc_str: str):
+    def _store_original_measurement(self, item_id: str, dose_str: str, unc_str: str, avg_str: str, avg_unc_str: str, dose_val: float, unc_val: float, avg_val: float, avg_unc_val: float):
         """Store original measurement data before any CTR corrections."""
         self.original_measurements[item_id] = {
             "dose": dose_str,
             "unc": unc_str,
             "avg": avg_str,
-            "avg_unc": avg_unc_str
+            "avg_unc": avg_unc_str,
+            "dose_val": dose_val,
+            "unc_val": unc_val,
+            "avg_val": avg_val,
+            "avg_unc_val": avg_unc_val
         }
 
     def _refresh_all_measurements(self):
@@ -1713,7 +1721,7 @@ class AutoMeasurementsTab(ttk.Frame):
                 # Store mapping and original measurements
                 _OVERLAY["item_to_shape"][circ_id] = ("circle", (abs_cx, abs_cy, r_int))
                 self.original_radii[circ_id] = orig_r_int
-                self._store_original_measurement(circ_id, dose_str, unc_str, avg_str, avg_unc_str)
+                self._store_original_measurement(circ_id, dose_str, unc_str, avg_str, avg_unc_str, dose, unc, avg_val, avg_unc)
                 
                 # Add to overlay circles
                 _OVERLAY["circles"].append((abs_cx, abs_cy, r_int))
@@ -2760,25 +2768,33 @@ class AutoMeasurementsTab(ttk.Frame):
         
         if not filename:
             return
-            
+        
         try:
             with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
-                # Define CSV columns
                 cols = [
                     "date", "film", "circle", 
                     "original_dose", "original_unc", "original_avg", "original_avg_unc",
+<<<<<<< HEAD
                     "std", "pixel_count"]
+=======
+                    "avg_dose", "uncertainty" 
+                ]
+
+                # Determine if CTR columns are needed based on whether CTR subtraction is enabled
+                # and if there are any CTR circles defined.
+                ctr_columns_needed = self.subtract_ctr_var.get() and bool(self.ctr_map)
+>>>>>>> 39d0fcf05271feaf89d15f87209e2112e4e11ce5
                 
-                # Add CTR columns if we have any CTR-corrected values
-                if self.results and self.results[0] and any(isinstance(self.results[0], dict) and "ctr_" in k for k in self.results[0].keys()):
+                # Add CTR columns to the list of columns if they are needed
+                if ctr_columns_needed:
                     cols.extend(["ctr_corrected_avg", "ctr_corrected_avg_unc"])
-                
+
+                # Initialize the DictWriter with the correctly defined fieldnames
                 writer = csv.DictWriter(
                     csvfile, 
-                    fieldnames=cols,
-                    extrasaction='ignore'
+                    fieldnames=cols
                 )
-                
+
                 # Write header with proper names
                 header_map = {
                     "date": "Date",
@@ -2788,51 +2804,53 @@ class AutoMeasurementsTab(ttk.Frame):
                     "original_unc": "Original Uncertainty",
                     "original_avg": "Original Average",
                     "original_avg_unc": "Original Average Uncertainty",
+<<<<<<< HEAD
                     "std": "STD",
                     "pixel_count": "Number of pixels averaged",
+=======
+                    "avg_dose": "Average Dose",
+                    "uncertainty": "Uncertainty",
+>>>>>>> 39d0fcf05271feaf89d15f87209e2112e4e11ce5
                     "ctr_corrected_avg": "CTR Corrected Average",
                     "ctr_corrected_avg_unc": "CTR Corrected Average Uncertainty"
                 }
                 writer.writerow({field: header_map.get(field, field) for field in cols})
-                
+
+
                 # Get the date to use for all rows
                 date_to_use = self.date_var.get() or self.metadata_date or ""
-                
+
                 # Sort results by Film, then by Circle
-                # Wrap this in a try-except to handle potential issues with sorting
                 try:
-                    # Use a key function that handles potential None values for film or circle names
-                    sorted_results = sorted(self.results, key=lambda rec: (
-                        str(rec.get("film", "") if hasattr(rec, "get") else ""), 
-                        str(rec.get("circle", "") if hasattr(rec, "get") else "")
-                    ))
+                    sorted_results = sorted(
+                        [r for r in self.results if isinstance(r, dict)],
+                        key=lambda rec: (
+                            str(rec.get("film", "")),
+                            str(rec.get("circle", ""))
+                        )
+                    )
                 except Exception as e:
                     logging.error(f"Error sorting results: {e}")
-                    sorted_results = self.results
-                    
+                    sorted_results = [r for r in self.results if isinstance(r, dict)]
+
                 # Process each result
                 for rec in sorted_results:
-                    # Handle both dict and list cases for safety
-                    if not isinstance(rec, dict):
-                        logging.warning(f"Unexpected record type: {type(rec)}")
-                        continue
-                    
                     film_name = rec.get("film", "")
                     circle_name = rec.get("circle", "")
-                    
+
                     # Find the corresponding tree item for this circle
                     circle_display_name = circle_name
                     item_id = None
                     is_ctr = False
-                    
+
                     # Search through all circle items to find the matching one
-                    for iid, (stype, coords) in _OVERLAY.get("item_to_shape", {}).items():
+                    for iid, (stype, coords) in (_OVERLAY.get("item_to_shape", {}) if _OVERLAY else {}).items():
                         if stype == "circle" and self.tree.exists(iid):
                             parent_id = self.tree.parent(iid)
                             if parent_id and self.tree.exists(parent_id):
                                 parent_name = self.tree.item(parent_id, "text")
                                 current_circle_name = self.tree.item(iid, "text").replace(" (CTR)", "")
-                                
+
                                 # Match by film name and circle name
                                 if parent_name == film_name and current_circle_name == circle_name:
                                     item_id = iid
@@ -2841,10 +2859,21 @@ class AutoMeasurementsTab(ttk.Frame):
                                         is_ctr = True
                                         circle_display_name = f"{circle_name} (CTR)"
                                     break
-                    
-                    # Get original values
+
+                                        # Get original values
                     orig_data = self.original_measurements.get(item_id, {}) if item_id else {}
+
+                    # Get original numeric values
+                    original_dose_val = orig_data.get("dose_val", 0.0) # Ensure these are numeric, default to 0.0
+                    original_unc_val = orig_data.get("unc_val", 0.0)
+                    original_avg_val = orig_data.get("avg_val", 0.0)
+                    original_avg_unc_val = orig_data.get("avg_unc_val", 0.0)
+
+                                        # Initialize corrected_avg and corrected_unc to original values
+                    corrected_avg = original_avg_val
+                    corrected_unc = original_avg_unc_val
                     
+<<<<<<< HEAD
                     # Get values safely
                     original_avg = orig_data.get("avg", rec.get("avg", ""))
                     original_avg_unc = orig_data.get("avg_unc", rec.get("avg_unc", ""))
@@ -2857,60 +2886,76 @@ class AutoMeasurementsTab(ttk.Frame):
                     ctr_corrected_avg = ""
                     ctr_corrected_unc = ""
                     
+=======
+                    # Initialize ctr_avg and ctr_unc for the CTR circle itself
+                    ctr_avg_val_for_calc = 0.0
+                    ctr_unc_val_for_calc = 0.0
+
+                    # Apply CTR correction if enabled and applicable
+>>>>>>> 39d0fcf05271feaf89d15f87209e2112e4e11ce5
                     if film_name in self.ctr_map and item_id and self.subtract_ctr_var.get():
                         ctr_id = self.ctr_map[film_name]
                         ctr_orig_data = self.original_measurements.get(ctr_id, {})
-                        
+
                         if ctr_orig_data:
                             try:
-                                ctr_avg = self._clean_numeric_string(ctr_orig_data.get("avg", "0"))
-                                ctr_unc = self._clean_numeric_string(ctr_orig_data.get("avg_unc", "0"))
-                                orig_avg_num = self._clean_numeric_string(original_avg)
-                                orig_unc_num = self._clean_numeric_string(original_avg_unc)
-                                
+                                ctr_avg_val_for_calc = ctr_orig_data.get("avg_val", 0.0)
+                                ctr_unc_val_for_calc = ctr_orig_data.get("avg_unc_val", 0.0)
+
                                 if item_id == ctr_id:
                                     # CTR circle: set to 0 ± uncertainty
                                     corrected_avg = 0.0
-                                    corrected_unc = ctr_unc
+                                    corrected_unc = ctr_unc_val_for_calc
                                 else:
                                     # Other circles: subtract CTR with error propagation
-                                    corrected_avg = max(0.0, orig_avg_num - ctr_avg)
-                                    corrected_unc = sqrt(orig_unc_num**2 + ctr_unc**2)
+                                    corrected_avg = max(0.0, original_avg_val - ctr_avg_val_for_calc)
+                                    corrected_unc = sqrt(original_avg_unc_val**2 + ctr_unc_val_for_calc**2)
                                 
-                                ctr_corrected_avg, ctr_corrected_unc = self._format_val_unc(corrected_avg, corrected_unc, 2)
                             except Exception as e:
                                 logging.error(f"Error calculating CTR-corrected values: {e}")
-                    
-                    # If no CTR correction available, use original values
-                    if not ctr_corrected_avg:
-                        ctr_corrected_avg = original_avg
-                        ctr_corrected_unc = original_avg_unc
-                    
+                                messagebox.showerror("CTR Calculation Error", f"Error calculating CTR-corrected values for {circle_display_name}: {e}")
+
+                    # Determine final values for avg_dose and uncertainty columns
+                    # These should be the CTR-corrected values if CTR was applied, otherwise original
+                    final_avg_dose = corrected_avg
+                    final_uncertainty = corrected_unc
+
                     # Create a dictionary for the row
                     row_data = {
                         "date": date_to_use,
                         "film": film_name if isinstance(film_name, str) else "",
                         "circle": circle_display_name,
+<<<<<<< HEAD
                         "original_dose": original_dose,
                         "original_unc": original_unc,
                         "original_avg": original_avg,
                         "original_avg_unc": original_avg_unc,
                         "std": std,
                         "pixel_count": pixel_count
+=======
+                        "original_dose": original_dose_val, # Use numeric values
+                        "original_unc": original_unc_val,   # Use numeric values
+                        "original_avg": original_avg_val,   # Use numeric values
+                        "original_avg_unc": original_avg_unc_val, # Use numeric values
+                        "avg_dose": final_avg_dose, # Final average dose (numeric)
+                        "uncertainty": final_uncertainty, # Final uncertainty (numeric)
+>>>>>>> 39d0fcf05271feaf89d15f87209e2112e4e11ce5
                     }
-                    
-                    # Add CTR columns if they exist
-                    if "ctr_corrected_avg" in cols:
-                        row_data["ctr_corrected_avg"] = ctr_corrected_avg
-                    if "ctr_corrected_avg_unc" in cols:
-                        row_data["ctr_corrected_avg_unc"] = ctr_corrected_unc
-                    
+
+                    # Add CTR columns if they were calculated (numeric values)
+                    # Only add if CTR was actually applied to this specific circle
+                    # and if the CTR values are not zero (meaning a subtraction actually occurred)
+                    if self.subtract_ctr_var.get() and bool(self.ctr_map) and (ctr_avg_val_for_calc != 0.0 or ctr_unc_val_for_calc != 0.0):
+                        row_data["ctr_corrected_avg"] = corrected_avg
+                        row_data["ctr_corrected_avg_unc"] = corrected_unc
+
                     # Write the row
                     writer.writerow(row_data)
-            
+
             # Show success message
             messagebox.showinfo("Export", f"CSV successfully exported to:\n{filename}")
         except Exception as exc:
+            logging.error(f"Error exporting CSV: {exc}")
             messagebox.showerror("Export Error", f"Error exporting CSV:\n{str(exc)}")
 
 
