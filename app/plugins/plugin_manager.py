@@ -180,6 +180,22 @@ class PluginManager:
                 logger.error("Plugin '%s' raised an exception: %s", name, exc, exc_info=True)
         return image
 
+    def notify_config_change(self, config):
+        """Notify all active plugins about configuration changes."""
+        if not self.has_active_plugins():
+            return
+
+        for name in self.plugin_names():
+            if not self.is_active(name):
+                continue
+            mod = self._plugins[name]
+            if hasattr(mod, 'on_config_change'):
+                try:
+                    mod.on_config_change(config, self._image_processor)
+                    logger.info("Plugin '%s' notified of config change", name)
+                except Exception as exc:
+                    logger.error("Plugin '%s' config change notification failed: %s", name, exc, exc_info=True)
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------

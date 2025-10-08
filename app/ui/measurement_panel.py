@@ -123,8 +123,8 @@ class MeasurementPanel:
         self.std_dev_label = ttk.Label(self.results_frame, text="Standard deviation: --")
         self.std_dev_label.pack(anchor=tk.W, pady=2)
         
-        self.uncertainty_label = ttk.Label(self.results_frame, text="Uncertainty: --")
-        self.uncertainty_label.pack(anchor=tk.W, pady=2)
+        self.std_err_label = ttk.Label(self.results_frame, text="STD err: --")
+        self.std_err_label.pack(anchor=tk.W, pady=2)
         
         # Pixel count label
         self.pixel_count_label = ttk.Label(self.results_frame, text="Pixels: --")
@@ -340,7 +340,7 @@ class MeasurementPanel:
         if not results:
             self.average_label.config(text="Average RGB: --")
             self.std_dev_label.config(text="Standard deviation: --")
-            self.uncertainty_label.config(text="Uncertainty: --")
+            self.std_err_label.config(text="STD err: --")
             self.pixel_count_label.config(text="Pixels: --")
             self.view_3d_button.config(state=tk.DISABLED)
             self.view_2d_button.config(state=tk.DISABLED)
@@ -353,30 +353,19 @@ class MeasurementPanel:
         self.current_measurement_data = results
         self.has_valid_measurement = True
         
-        # Unpack results (now includes pixel count)
-        if len(results) == 4:  # New format with pixel count
-            average, std_dev, uncertainty, pixel_count = results
-        else:  # Old format without pixel count (for compatibility)
-            average, std_dev, uncertainty = results
-            pixel_count = 0
+        # Unpack results (6-tuple format)
+        average, std_dev, std_err, rgb_mean, rgb_mean_std, pixel_count = results
+        
         
         # Update labels
         if isinstance(average, tuple) and len(average) == 3:
             # RGB values
             # Determine if dose calibration is active so we can tailor the label
             if self.image_processor.calibration_applied:
-                # Calculate overall average dose and its standard error
-                avg_dose = sum(average) / 3.0
-                # uncertainty is a tuple when RGB
-                if isinstance(uncertainty, tuple):
-                    import math
-                    se_avg = math.sqrt(sum(u ** 2 for u in uncertainty)) / 3.0
-                else:
-                    se_avg = 0.0
                 self.average_label.config(
                     text=(
                         f"Average dose Gy (RGB): ({average[0]:.2f}, {average[1]:.2f}, {average[2]:.2f}) | "
-                        f"Mean: {avg_dose:.2f} | SE: {se_avg:.4f}"
+                        f"Mean: {rgb_mean:.4f}"
                     )
                 )
             else:
@@ -384,11 +373,19 @@ class MeasurementPanel:
                 self.average_label.config(
                     text=f"Average RGB: ({average[0]:.2f}, {average[1]:.2f}, {average[2]:.2f})"
                 )
+            # Get the uncertainty method name for display
+            method = self.image_processor.config.get("uncertainty_estimation_method", "weighted_average")
+            method_display = {
+                "weighted_average": "Weighted",
+                "birge_factor": "Birge", 
+                "dersimonian_laird": "D-L"
+            }.get(method, method)
+            
             self.std_dev_label.config(
-                text=f"Standard deviation: ({std_dev[0]:.2f}, {std_dev[1]:.2f}, {std_dev[2]:.2f})"
+                text=f"Standard deviation: ({std_dev[0]:.2f}, {std_dev[1]:.2f}, {std_dev[2]:.2f}) | Combined ({method_display}): {rgb_mean_std:.4f}"
             )
-            self.uncertainty_label.config(
-                text=f"Uncertainty: ({uncertainty[0]:.4f}, {uncertainty[1]:.4f}, {uncertainty[2]:.4f})"
+            self.std_err_label.config(
+                text=f"STD err: ({std_err[0]:.4f}, {std_err[1]:.4f}, {std_err[2]:.4f})"
             )
             
             # Enable view buttons for RGB data
@@ -398,7 +395,7 @@ class MeasurementPanel:
             # Grayscale value
             self.average_label.config(text=f"Average: {average:.2f}")
             self.std_dev_label.config(text=f"Standard deviation: {std_dev:.2f}")
-            self.uncertainty_label.config(text=f"Uncertainty: {uncertainty:.4f}")
+            self.std_err_label.config(text=f"STD err: {std_err:.4f}")
             
             # Enable only 2D View button for grayscale data
             self.view_3d_button.config(state=tk.DISABLED)

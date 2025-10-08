@@ -47,9 +47,13 @@ except ImportError:
 # Plugin interface ---------------------------------------------------------
 TAB_TITLE = "AutoMeasurements"
 
+# Global instance to track the plugin for configuration updates
+_AUTO_MEASUREMENTS_INSTANCE = None
 
 def setup(main_window, notebook, image_processor):
-    return AutoMeasurementsTab(main_window, notebook, image_processor).frame
+    global _AUTO_MEASUREMENTS_INSTANCE
+    _AUTO_MEASUREMENTS_INSTANCE = AutoMeasurementsTab(main_window, notebook, image_processor)
+    return _AUTO_MEASUREMENTS_INSTANCE.frame
 
 
 _OVERLAY: dict | None = None  # Holds last detection for drawing
@@ -705,8 +709,7 @@ class AutoMeasurementsTab(ttk.Frame):
             debug_lines.append("Archivo no existe o no accesible")
         
         return "\n".join(debug_lines)
-    
-    
+
     
     def _manual_dpi_input(self):
         """Allow manual DPI input when metadata is not available."""
@@ -1418,6 +1421,83 @@ class AutoMeasurementsTab(ttk.Frame):
             "avg_unc": avg_unc_str
         }
 
+    def _refresh_all_measurements(self):
+        """Refresh all measurements using the current uncertainty estimation method."""
+        if not self.image_processor.has_image() or not hasattr(self, 'tree'):
+            return
+        
+        # Get all items from the tree
+        items = self.tree.get_children()
+        if not items:
+            return
+        
+        # Re-measure all circles with the new uncertainty method
+        for item in items:
+            item_id = self.tree.item(item, "values")[0]  # Get the ID from first column
+            
+            # Find the shape info for this item
+            if item_id in _OVERLAY.get("item_to_shape", {}):
+                shape_info = _OVERLAY["item_to_shape"][item_id]
+                if shape_info[0] == "circle":
+                    cx, cy, r = shape_info[1:]
+                    
+                    # Re-measure with current settings
+                    prev_size = self.image_processor.measurement_size
+                    try:
+                        self.image_processor.measurement_size = r
+                        res = self.image_processor.measure_area(
+                            cx * self.image_processor.zoom,
+                            cy * self.image_processor.zoom
+                        )
+                        if res:
+                            # Extract measurement results (always 6-tuple format)
+                            dose, std, unc, rgb_mean, rgb_mean_std, pixel_count = res
+                            
+                            # Format and update the tree
+                            if isinstance(dose, tuple):
+                                dose_parts = []
+                                unc_parts = []
+                                std_parts = []
+                                for v, s, u in zip(dose, std, unc):
+                                    v_str, u_str = self._format_val_unc(v, u, 2)
+                                    _, s_str = self._format_val_unc(v, s, 2)
+                                    dose_parts.append(v_str)
+                                    unc_parts.append(u_str)
+                                    std_parts.append(s_str.replace("±", "").strip())
+                                dose_str = ", ".join(dose_parts)
+                                unc_str = ", ".join(unc_parts)
+                                std_str = ", ".join(std_parts)
+                                
+                                # Use combined uncertainty from ImageProcessor
+                                avg_val = float(rgb_mean)
+                                avg_unc = float(rgb_mean_std)
+                            else:
+                                dose_str, unc_str = self._format_val_unc(dose, unc, 2)
+                                _, std_str_full = self._format_val_unc(dose, std, 2)
+                                std_str = std_str_full.replace("±", "").strip()
+                                
+                                # For single channel, use combined uncertainty values
+                                avg_val = float(rgb_mean)
+                                avg_unc = float(rgb_mean_std)
+                            
+                            # Format average values
+                            avg_str, avg_unc_str = self._format_val_unc(avg_val, avg_unc, 2)
+                            
+                            # Update tree values
+                            current_values = list(self.tree.item(item, "values"))
+                            if len(current_values) >= 4:
+                                current_values[0] = dose_str    # dose
+                                current_values[1] = unc_str     # sigma (uncertainty)
+                                current_values[2] = avg_str     # avg
+                                current_values[3] = avg_unc_str # avg_unc
+                                self.tree.item(item, values=current_values)
+                                
+                                # Update original measurements for CTR calculations
+                                self._store_original_measurement(item, dose_str, unc_str, avg_str, avg_unc_str)
+                                
+                    finally:
+                        self.image_processor.measurement_size = prev_size
+
     # ---------------------------------------------------------------
     # Detection functionality
     # ---------------------------------------------------------------
@@ -1590,24 +1670,38 @@ class AutoMeasurementsTab(ttk.Frame):
                 if res is None:
                     continue
 
-                dose, _, unc, _ = res
-            
+                # Extract measurement results (always 6-tuple format)
+                dose, std, unc, rgb_mean, rgb_mean_std, pixel_count = res
+
                 # Format measurements
                 if isinstance(dose, tuple):
                     dose_parts = []
                     unc_parts = []
-                    for v, u in zip(dose, unc):
+                    std_parts = []
+                    for v, s, u in zip(dose, std, unc):
                         v_str, u_str = self._format_val_unc(v, u, 2)
+                        _, s_str = self._format_val_unc(v, s, 2)
                         dose_parts.append(v_str)
                         unc_parts.append(u_str)
+                        std_parts.append(s_str.replace("±", "").strip())
                     dose_str = ", ".join(dose_parts)
                     unc_str = ", ".join(unc_parts)
-                    avg_val = float(np.mean(dose))
-                    avg_unc = float(np.mean(unc))
+                    std_str = ", ".join(std_parts)
+                    
+                    # Use combined uncertainty from ImageProcessor
+                    avg_val = float(rgb_mean)
+                    avg_unc = float(rgb_mean_std)
+                    avg_std = float(np.mean(std))
+                    avg_std_str = self._fmt_sig(avg_std, 2)
                 else:
                     dose_str, unc_str = self._format_val_unc(dose, unc, 2)
-                    avg_val = float(dose)
-                    avg_unc = float(unc)
+                    _, std_str_full = self._format_val_unc(dose, std, 2)
+                    std_str = std_str_full.replace("±", "").strip()
+                    avg_std_str = std_str
+                    
+                    # For single channel, use combined uncertainty values
+                    avg_val = float(rgb_mean)
+                    avg_unc = float(rgb_mean_std)
 
                 avg_str, avg_unc_str = self._format_val_unc(avg_val, avg_unc, 2)
 
@@ -1632,6 +1726,8 @@ class AutoMeasurementsTab(ttk.Frame):
                     "unc": unc,
                     "avg_val": avg_val,
                     "avg_unc": avg_unc,
+                    "std": std,
+                    "pixel_count": pixel_count,
                 })
 
                 # Store results
@@ -1642,6 +1738,8 @@ class AutoMeasurementsTab(ttk.Frame):
                     "unc": unc_str,
                     "avg": avg_str,
                     "avg_unc": avg_unc_str,
+                    "std": avg_std_str,
+                    "pixel_count": pixel_count,
                     "x": abs_cx,
                     "y": abs_cy,
                 })
@@ -1971,22 +2069,36 @@ class AutoMeasurementsTab(ttk.Frame):
                     continue
                 
                 # Update tree view with new measurements
-                dose, _, unc, _ = res  # mean(s), std, uncertainty
+                # Extract measurement results (always 6-tuple format)
+                dose, std, unc, rgb_mean, rgb_mean_std, pixel_count = res
+                
                 if isinstance(dose, tuple):
                     dose_parts: list[str] = []
                     unc_parts: list[str] = []
-                    for v, u in zip(dose, unc):
+                    std_parts: list[str] = []
+                    for v, s, u in zip(dose, std, unc):
                         v_str, u_str = self._format_val_unc(v, u, 2, force_decimals=self.parameters_converted)
+                        _, s_str = self._format_val_unc(v, s, 2)
                         dose_parts.append(v_str)
                         unc_parts.append(u_str)
+                        std_parts.append(s_str.replace("±", "").strip())
                     dose_str = ", ".join(dose_parts)
                     unc_str = ", ".join(unc_parts)
-                    avg_val = float(np.mean(dose))
-                    avg_unc = float(np.mean(unc))
+                    
+                    # Use combined uncertainty from ImageProcessor
+                    avg_val = float(rgb_mean)
+                    avg_unc = float(rgb_mean_std)
+                    avg_std = float(np.mean(std))
+                    avg_std_str = self._fmt_sig(avg_std, 2)
                 else:
                     dose_str, unc_str = self._format_val_unc(dose, unc, 2, force_decimals=self.parameters_converted)
-                    avg_val = float(dose)
-                    avg_unc = float(unc)
+                    _, std_str_full = self._format_val_unc(dose, std, 2)
+                    std_str = std_str_full.replace("±", "").strip()
+                    avg_std_str = std_str
+                    
+                    # For single channel, use combined uncertainty values
+                    avg_val = float(rgb_mean)
+                    avg_unc = float(rgb_mean_std)
                 
                 avg_str, avg_unc_str = self._format_val_unc(avg_val, avg_unc, 2, force_decimals=self.parameters_converted)
                 
@@ -2007,6 +2119,8 @@ class AutoMeasurementsTab(ttk.Frame):
                         rec["unc"] = unc_str
                         rec["avg"] = avg_str
                         rec["avg_unc"] = avg_unc_str
+                        rec["std"] = avg_std_str
+                        rec["pixel_count"] = pixel_count
                         break
 
             _OVERLAY["circles"] = new_circles
@@ -2038,22 +2152,36 @@ class AutoMeasurementsTab(ttk.Frame):
                     continue
                 
                 # Update tree view with original measurements
-                dose, _, unc, _ = res  # mean(s), std, uncertainty
+                # Extract measurement results (always 6-tuple format)
+                dose, std, unc, rgb_mean, rgb_mean_std, pixel_count = res
+                
                 if isinstance(dose, tuple):
                     dose_parts: list[str] = []
                     unc_parts: list[str] = []
-                    for v, u in zip(dose, unc):
+                    std_parts: list[str] = []
+                    for v, s, u in zip(dose, std, unc):
                         v_str, u_str = self._format_val_unc(v, u, 2, force_decimals=self.parameters_converted)
+                        _, s_str = self._format_val_unc(v, s, 2)
                         dose_parts.append(v_str)
                         unc_parts.append(u_str)
+                        std_parts.append(s_str.replace("±", "").strip())
                     dose_str = ", ".join(dose_parts)
                     unc_str = ", ".join(unc_parts)
-                    avg_val = float(np.mean(dose))
-                    avg_unc = float(np.mean(unc))
+                    
+                    # Use combined uncertainty from ImageProcessor
+                    avg_val = float(rgb_mean)
+                    avg_unc = float(rgb_mean_std)
+                    avg_std = float(np.mean(std))
+                    avg_std_str = self._fmt_sig(avg_std, 2)
                 else:
                     dose_str, unc_str = self._format_val_unc(dose, unc, 2, force_decimals=self.parameters_converted)
-                    avg_val = float(dose)
-                    avg_unc = float(unc)
+                    _, std_str_full = self._format_val_unc(dose, std, 2)
+                    std_str = std_str_full.replace("±", "").strip()
+                    avg_std_str = std_str
+                    
+                    # For single channel, use combined uncertainty values
+                    avg_val = float(rgb_mean)
+                    avg_unc = float(rgb_mean_std)
                     
                 avg_str, avg_unc_str = self._format_val_unc(avg_val, avg_unc, 2, force_decimals=self.parameters_converted)
                 
@@ -2074,6 +2202,8 @@ class AutoMeasurementsTab(ttk.Frame):
                         rec["unc"] = unc_str
                         rec["avg"] = avg_str
                         rec["avg_unc"] = avg_unc_str
+                        rec["std"] = avg_std_str
+                        rec["pixel_count"] = pixel_count
                         break
 
             _OVERLAY["circles"] = new_circles
@@ -2451,28 +2581,43 @@ class AutoMeasurementsTab(ttk.Frame):
             self.image_processor.measurement_size = prev_size
 
         if res:
-            dose, _, unc, _ = res
-            
+            # Extract measurement results (always 6-tuple format)
+            dose, std, unc, rgb_mean, rgb_mean_std, pixel_count = res
+
             # Format measurements
             if isinstance(dose, tuple):
                 dose_parts = []
                 unc_parts = []
-                for v, u in zip(dose, unc):
+                std_parts = []
+                for v, s, u in zip(dose, std, unc):
                     v_str, u_str = self._format_val_unc(v, u, 2, force_decimals=self.parameters_converted)
+                    _, s_str = self._format_val_unc(v, s, 2)
                     dose_parts.append(v_str)
                     unc_parts.append(u_str)
+                    std_parts.append(s_str.replace("±", "").strip())
                 dose_str = ", ".join(dose_parts)
                 unc_str = ", ".join(unc_parts)
-                avg_val = float(np.mean(dose))
-                avg_unc = float(np.mean(unc))
+                std_str = ", ".join(std_parts)
+                
+                # Use combined uncertainty from ImageProcessor
+                avg_val = float(rgb_mean)
+                avg_unc = float(rgb_mean_std)
+                avg_std = float(np.mean(std))
+                avg_std_str = self._fmt_sig(avg_std, 2)
             else:
                 dose_str, unc_str = self._format_val_unc(dose, unc, 2, force_decimals=self.parameters_converted)
-                avg_val = float(dose)
-                avg_unc = float(unc)
+                _, std_str_full = self._format_val_unc(dose, std, 2)
+                std_str = std_str_full.replace("±", "").strip()
+                avg_std_str = std_str
+                
+                # For single channel, use combined uncertainty values
+                avg_val = float(rgb_mean)
+                avg_unc = float(rgb_mean_std)
             
             avg_str, avg_unc_str = self._format_val_unc(avg_val, avg_unc, 2, force_decimals=self.parameters_converted)
         else:
-            dose_str = unc_str = avg_str = avg_unc_str = ""
+            dose_str = unc_str = avg_str = avg_unc_str = std_str = ""
+            pixel_count = 0
             avg_val = avg_unc = 0.0
 
         circ_id = self.tree.insert(parent_id, "end", text=circ_name, 
@@ -2525,6 +2670,8 @@ class AutoMeasurementsTab(ttk.Frame):
             "unc": unc_str,
             "avg": avg_str,
             "avg_unc": avg_unc_str,
+            "std": avg_std_str,
+            "pixel_count": pixel_count,
             "x": cx,
             "y": cy,
         })
@@ -2619,7 +2766,8 @@ class AutoMeasurementsTab(ttk.Frame):
                 # Define CSV columns
                 cols = [
                     "date", "film", "circle", 
-                    "original_dose", "original_unc", "original_avg", "original_avg_unc"]
+                    "original_dose", "original_unc", "original_avg", "original_avg_unc",
+                    "std", "pixel_count"]
                 
                 # Add CTR columns if we have any CTR-corrected values
                 if self.results and self.results[0] and any(isinstance(self.results[0], dict) and "ctr_" in k for k in self.results[0].keys()):
@@ -2640,6 +2788,8 @@ class AutoMeasurementsTab(ttk.Frame):
                     "original_unc": "Original Uncertainty",
                     "original_avg": "Original Average",
                     "original_avg_unc": "Original Average Uncertainty",
+                    "std": "STD",
+                    "pixel_count": "Number of pixels averaged",
                     "ctr_corrected_avg": "CTR Corrected Average",
                     "ctr_corrected_avg_unc": "CTR Corrected Average Uncertainty"
                 }
@@ -2700,6 +2850,8 @@ class AutoMeasurementsTab(ttk.Frame):
                     original_avg_unc = orig_data.get("avg_unc", rec.get("avg_unc", ""))
                     original_dose = orig_data.get("dose", rec.get("dose", ""))
                     original_unc = orig_data.get("unc", rec.get("unc", ""))
+                    std = rec.get("std", "")
+                    pixel_count = rec.get("pixel_count", "")
                     
                     # Calculate CTR-corrected values
                     ctr_corrected_avg = ""
@@ -2742,7 +2894,9 @@ class AutoMeasurementsTab(ttk.Frame):
                         "original_dose": original_dose,
                         "original_unc": original_unc,
                         "original_avg": original_avg,
-                        "original_avg_unc": original_avg_unc
+                        "original_avg_unc": original_avg_unc,
+                        "std": std,
+                        "pixel_count": pixel_count
                     }
                     
                     # Add CTR columns if they exist
@@ -2758,3 +2912,18 @@ class AutoMeasurementsTab(ttk.Frame):
             messagebox.showinfo("Export", f"CSV successfully exported to:\n{filename}")
         except Exception as exc:
             messagebox.showerror("Export Error", f"Error exporting CSV:\n{str(exc)}")
+
+
+def on_config_change(config, image_processor):
+    """Handle configuration changes - refresh measurements if uncertainty method changed."""
+    global _AUTO_MEASUREMENTS_INSTANCE
+    
+    try:
+        if _AUTO_MEASUREMENTS_INSTANCE is not None:
+            # Force refresh of all existing measurements with new uncertainty method
+            _AUTO_MEASUREMENTS_INSTANCE._refresh_all_measurements()
+            logging.info("Auto-measurements refreshed due to uncertainty method change")
+        else:
+            logging.debug("Auto-measurements instance not available for config change notification")
+    except Exception as e:
+        logging.error(f"Error refreshing auto-measurements after config change: {e}")

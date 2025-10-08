@@ -15,6 +15,7 @@ from app.ui.image_settings_panel import ImageSettingsPanel
 from app.ui.image_panel import ImagePanel
 from app.core.image_processor import ImageProcessor
 from app.utils.file_manager import FileManager
+from app.utils.config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
 
@@ -562,6 +563,46 @@ class MainWindow:
         
         cache_var.trace_add("write", update_cache_label)
         
+        # Uncertainty Estimation section
+        ttk.Label(
+            main_frame, 
+            text="Uncertainty Estimation", 
+            font=("Arial", 11, "bold")
+        ).pack(anchor=tk.W, pady=(20, 5))
+        
+        # Uncertainty estimation method selection
+        uncertainty_frame = ttk.Frame(main_frame)
+        uncertainty_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        ttk.Label(
+            uncertainty_frame, 
+            text="Method for combining channel uncertainties:"
+        ).pack(anchor=tk.W, pady=(0, 5))
+        
+        # Available uncertainty estimation methods
+        uncertainty_method_var = tk.StringVar(
+            value=self.app_config.get("uncertainty_estimation_method", "dersimonian_laird")
+        )
+        
+        uncertainty_combobox = ttk.Combobox(
+            uncertainty_frame,
+            textvariable=uncertainty_method_var,
+            values=["weighted_average", "birge_factor", "dersimonian_laird"],
+            state="readonly"
+        )
+        uncertainty_combobox.pack(fill=tk.X, pady=(0, 5))
+        
+        # Add explanatory text for each method
+        ttk.Label(
+            uncertainty_frame, 
+            text="• Weighted Average: Standard weighted mean (fastest)\n"
+                 "• Birge Factor: Inflates uncertainties when χ²ν > 1\n"
+                 "• DerSimonian-Laird: Random effects model with between-channel variance",
+            foreground="gray",
+            justify=tk.LEFT,
+            font=("Arial", 9)
+        ).pack(anchor=tk.W, pady=(0, 10))
+        
         # Logging section
         ttk.Label(
             main_frame, 
@@ -620,20 +661,45 @@ class MainWindow:
             self.app_config["max_cache_mb"] = cache_var.get()
             self.app_config["log_level"] = log_level_var.get()
             self.app_config["detailed_logging"] = detailed_logging_var.get()
+            self.app_config["uncertainty_estimation_method"] = uncertainty_method_var.get()
+            
+            # Save configuration to file
+            try:
+                config_manager = ConfigManager()
+                config_manager.save_config(self.app_config)
+                logger.info("Settings saved to configuration file")
+            except Exception as e:
+                logger.error(f"Error saving configuration: {str(e)}", exc_info=True)
+                messagebox.showerror("Error", f"Error saving configuration: {str(e)}")
+                return
             
             # Apply settings
             self.apply_settings()
             
-            # Close window
+            # Clean up events and close window
+            cleanup_events()
             settings_window.destroy()
             
             # Show success message
             messagebox.showinfo("Settings", "Settings saved and applied successfully.")
         
+        # Cleanup function to unbind events when window is destroyed
+        def cleanup_events():
+            try:
+                canvas.unbind_all("<MouseWheel>")
+                canvas.unbind_all("<Button-4>")
+                canvas.unbind_all("<Button-5>")
+            except tk.TclError:
+                pass
+        
+        def cancel_settings():
+            cleanup_events()
+            settings_window.destroy()
+        
         ttk.Button(
             button_frame, 
             text="Cancel", 
-            command=settings_window.destroy
+            command=cancel_settings
         ).pack(side=tk.RIGHT, padx=5)
         
         ttk.Button(
@@ -644,11 +710,34 @@ class MainWindow:
         
         # Make canvas scrollable with mouse wheel
         def _on_mousewheel(event):
-            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+            try:
+                # Check if canvas still exists and is valid
+                if canvas.winfo_exists():
+                    canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+            except tk.TclError:
+                # Canvas has been destroyed, ignore the event
+                pass
+        
+        def _on_scroll_up(event):
+            try:
+                if canvas.winfo_exists():
+                    canvas.yview_scroll(-1, "units")
+            except tk.TclError:
+                pass
+        
+        def _on_scroll_down(event):
+            try:
+                if canvas.winfo_exists():
+                    canvas.yview_scroll(1, "units")
+            except tk.TclError:
+                pass
         
         canvas.bind_all("<MouseWheel>", _on_mousewheel)  # For Windows and MacOS
-        canvas.bind_all("<Button-4>", lambda e: canvas.yview_scroll(-1, "units"))  # For Linux
-        canvas.bind_all("<Button-5>", lambda e: canvas.yview_scroll(1, "units"))   # For Linux
+        canvas.bind_all("<Button-4>", _on_scroll_up)  # For Linux
+        canvas.bind_all("<Button-5>", _on_scroll_down)   # For Linux
+        
+        # Bind cleanup to window destruction
+        settings_window.protocol("WM_DELETE_WINDOW", lambda: (cleanup_events(), settings_window.destroy()))
         
         # Make sure scrollregion is updated properly
         canvas.update_idletasks()
@@ -659,6 +748,10 @@ class MainWindow:
         # Update image processor settings
         self.image_processor.update_settings(self.app_config)
         
+        # Notify plugins about configuration change
+        from app.plugins.plugin_manager import plugin_manager
+        plugin_manager.notify_config_change(self.app_config)
+        
         # Reload current image if available
         if self.image_processor.has_image():
             self.update_status("Applying settings...")
@@ -667,7 +760,15 @@ class MainWindow:
     def _apply_settings_thread(self):
         """Apply settings in a background thread."""
         try:
+            # Store calibration state before reprocessing
+            was_calibrated = getattr(self.image_processor, 'calibration_applied', False)
+            
             self.image_processor.reprocess_current_image()
+            
+            # Restore calibration if it was applied before
+            if was_calibrated and self.image_processor.has_calibration():
+                self.image_processor.apply_calibration()
+            
             self.parent.after(0, lambda: self._finish_applying_settings())
         except Exception as e:
             logger.error(f"Error applying settings: {str(e)}", exc_info=True)

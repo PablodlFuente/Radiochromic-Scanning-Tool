@@ -5,13 +5,14 @@
         "C:/Users/pablo/Downloads/scans_070525 1/scans_070525/RC15_16.tiff"
     ],
     "auto_measure": false,
-    "colormap": "viridis",
+    "colormap": "inferno",
     "use_gpu": false,
     "gpu_force_enabled": false,
     "use_multithreading": true,
-    "num_threads": 9,
+    "num_threads": 7,
     "max_memory_percent": 75,
     "max_cache_mb": 512,
     "log_level": "INFO",
-    "detailed_logging": false
+    "detailed_logging": false,
+    "uncertainty_estimation_method": "dersimonian_laird"
 }

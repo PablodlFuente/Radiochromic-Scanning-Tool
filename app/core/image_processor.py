@@ -1128,6 +1128,154 @@ class ImageProcessor:
             variance = (sum_sq / area) - (mean * mean)
             std_dev = np.sqrt(max(0, variance))  # Avoid negative values due to precision
             
+            return mean, std_dev
+    
+    def _calculate_combined_uncertainty(self, means, std_errors):
+        """
+        Calculate combined uncertainty using the configured estimation method.
+        
+        Args:
+            means: Array of mean values for each channel
+            std_errors: Array of standard errors for each channel
+            
+        Returns:
+            tuple: (combined_mean, combined_uncertainty)
+        """
+        method = self.config.get("uncertainty_estimation_method", "weighted_average")
+        
+        if method == "birge_factor":
+            return self._birge_factor_method(means, std_errors)
+        elif method == "dersimonian_laird":
+            return self._dersimonian_laird_method(means, std_errors)
+        else:  # Default: weighted_average
+            return self._weighted_average_method(means, std_errors)
+    
+    def _weighted_average_method(self, means, std_errors):
+        """
+        Calculate combined uncertainty using weighted average (original method).
+        
+        Args:
+            means: Array of mean values for each channel
+            std_errors: Array of standard errors for each channel
+            
+        Returns:
+            tuple: (combined_mean, combined_uncertainty)
+        """
+        # Avoid division by zero
+        valid_indices = std_errors > 0
+        if not np.any(valid_indices):
+            return np.mean(means), 0.0
+        
+        valid_means = means[valid_indices]
+        valid_std_errors = std_errors[valid_indices]
+        
+        weights = 1 / (valid_std_errors**2)
+        combined_mean = np.average(valid_means, weights=weights)
+        combined_uncertainty = 1 / np.sqrt(np.sum(weights))
+        
+        return combined_mean, combined_uncertainty
+    
+    def _birge_factor_method(self, means, std_errors):
+        """
+        Calculate combined uncertainty using Birge factor method.
+        
+        The Birge factor inflates uncertainties globally when χ²_ν > 1.
+        
+        Args:
+            means: Array of mean values for each channel
+            std_errors: Array of standard errors for each channel
+            
+        Returns:
+            tuple: (combined_mean, combined_uncertainty)
+        """
+        # Avoid division by zero
+        valid_indices = std_errors > 0
+        if not np.any(valid_indices):
+            return np.mean(means), 0.0
+        
+        valid_means = means[valid_indices]
+        valid_std_errors = std_errors[valid_indices]
+        n = len(valid_means)
+        
+        if n <= 1:
+            return valid_means[0] if n == 1 else 0.0, valid_std_errors[0] if n == 1 else 0.0
+        
+        # Calculate initial weighted average
+        weights = 1 / (valid_std_errors**2)
+        weighted_mean = np.average(valid_means, weights=weights)
+        
+        # Calculate χ² statistic
+        chi_squared = np.sum(weights * (valid_means - weighted_mean)**2)
+        chi_squared_nu = chi_squared / (n - 1)  # Reduced chi-squared
+        
+        # Apply Birge factor if χ²_ν > 1
+        if chi_squared_nu > 1:
+            birge_factor = np.sqrt(chi_squared_nu)
+            inflated_std_errors = birge_factor * valid_std_errors
+            
+            # Recalculate with inflated uncertainties
+            new_weights = 1 / (inflated_std_errors**2)
+            combined_mean = np.average(valid_means, weights=new_weights)
+            combined_uncertainty = 1 / np.sqrt(np.sum(new_weights))
+        else:
+            # Use original weighted average
+            combined_mean = weighted_mean
+            combined_uncertainty = 1 / np.sqrt(np.sum(weights))
+        
+        return combined_mean, combined_uncertainty
+    
+    def _dersimonian_laird_method(self, means, std_errors):
+        """
+        Calculate combined uncertainty using DerSimonian-Laird random effects model.
+        
+        This method incorporates between-channel heterogeneity via τ².
+        
+        Args:
+            means: Array of mean values for each channel
+            std_errors: Array of standard errors for each channel
+            
+        Returns:
+            tuple: (combined_mean, combined_uncertainty)
+        """
+        # Avoid division by zero
+        valid_indices = std_errors > 0
+        if not np.any(valid_indices):
+            return np.mean(means), 0.0
+        
+        valid_means = means[valid_indices]
+        valid_std_errors = std_errors[valid_indices]
+        n = len(valid_means)
+        
+        if n <= 1:
+            return valid_means[0] if n == 1 else 0.0, valid_std_errors[0] if n == 1 else 0.0
+        
+        # Initial weights
+        w_i = 1 / (valid_std_errors**2)
+        
+        # Calculate fixed effects estimate
+        D_fixed = np.sum(w_i * valid_means) / np.sum(w_i)
+        
+        # Calculate Q statistic 
+        Q = np.sum(w_i * (valid_means - D_fixed)**2)
+        
+        # Estimate between-channel variance τ²
+        sum_w_i = np.sum(w_i)
+        sum_w_i_squared = np.sum(w_i**2)
+        
+        denominator = sum_w_i - (sum_w_i_squared / sum_w_i)
+        if denominator > 0:
+            tau_squared = max(0, (Q - (n - 1)) / denominator)
+        else:
+            tau_squared = 0
+        
+        # New weights incorporating τ²
+        w_i_star = 1 / (valid_std_errors**2 + tau_squared)
+        
+        # Final combined estimate
+        combined_mean = np.sum(w_i_star * valid_means) / np.sum(w_i_star)
+        combined_uncertainty = 1 / np.sqrt(np.sum(w_i_star))
+        
+        return combined_mean, combined_uncertainty
 
     def measure_area(self, canvas_x, canvas_y):
         """Measure the area at the specified canvas position."""
@@ -1167,10 +1315,10 @@ class ImageProcessor:
                         means, std_devs = cv2.meanStdDev(self.current_image, mask=mask)
                         means = means.flatten()
                         std_devs = std_devs.flatten()
-                    
-                        # Calculate uncertainties
-                        uncertainties = std_devs / np.sqrt(pixel_count) if pixel_count > 0 else np.zeros_like(std_devs)
-                    
+                        std_err = std_devs / np.sqrt(pixel_count) if pixel_count > 0 else np.zeros_like(std_devs)
+                        
+                        # Calculate combined uncertainty using the configured method
+                        rgb_mean, rgb_mean_std = self._calculate_combined_uncertainty(means, std_err)
                         # Collect raw data for histogram (sample if too many pixels)
                         if len(x_coords) > 1000:
                             # Take a random sample of 1000 pixels
@@ -1196,7 +1344,9 @@ class ImageProcessor:
                         return (
                             tuple(means),
                             tuple(std_devs),
-                            tuple(uncertainties),
+                            tuple(std_err),
+                            rgb_mean,
+                            rgb_mean_std,
                             pixel_count
                         )
                     else:  # Grayscale image
@@ -1205,8 +1355,8 @@ class ImageProcessor:
                         mean = float(mean[0][0])
                         std_dev = float(std_dev[0][0])
                     
-                        # Calculate uncertainty
-                        uncertainty = std_dev / np.sqrt(pixel_count) if pixel_count > 0 else 0
+                        # Calculate std_err
+                        std_err = std_dev / np.sqrt(pixel_count) if pixel_count > 0 else 0
                     
                         # Collect raw data for histogram (sample if too many pixels)
                         if len(x_coords) > 1000:
@@ -1230,7 +1380,11 @@ class ImageProcessor:
                         self.last_measurement_coordinates = sample_rel
                         self.last_auto_measure_time = time.time()
                     
-                        return mean, std_dev, uncertainty, pixel_count
+
+
+                        # For grayscale, we don't need combined uncertainty (only one channel)
+                        return mean, std_dev, std_err, mean, std_err, pixel_count
+
                 elif self.measurement_shape == "rectangular":
                     # For rectangular regions, we can use integral images for faster calculation
                     # Calculate region boundaries
@@ -1249,13 +1403,18 @@ class ImageProcessor:
                     if len(self.current_image.shape) == 3:  # Color image
                         means = []
                         std_devs = []
-                        uncertainties = []
+                        std_err = []
                     
                         for c in range(self.current_image.shape[2]):
                             mean, std_dev = self._calculate_stats_from_integral(x1, y1, x2, y2, channel=c)
                             means.append(mean)
                             std_devs.append(std_dev)
-                            uncertainties.append(std_dev / np.sqrt(pixel_count) if pixel_count > 0 else 0)
+                            std_err.append(std_dev / np.sqrt(pixel_count) if pixel_count > 0 else 0)
+                    
+                        # Calculate combined uncertainty using the configured method
+                        means_array = np.array(means)
+                        std_err_array = np.array(std_err)
+                        rgb_mean, rgb_mean_std = self._calculate_combined_uncertainty(means_array, std_err_array)
                     
                         # Collect raw data for histogram
                         masked_data = self.current_image[y1:y2+1, x1:x2+1, :].reshape(-1, self.current_image.shape[2])
@@ -1270,12 +1429,14 @@ class ImageProcessor:
                         return (
                             tuple(means),
                             tuple(std_devs),
-                            tuple(uncertainties),
+                            tuple(std_err),
+                            rgb_mean,
+                            rgb_mean_std,
                             pixel_count
                         )
                     else:  # Grayscale image
                         mean, std_dev = self._calculate_stats_from_integral(x1, y1, x2, y2)
-                        uncertainty = std_dev / np.sqrt(pixel_count) if pixel_count > 0 else 0
+                        std_err = std_dev / np.sqrt(pixel_count) if pixel_count > 0 else 0
                     
                         # Collect raw data for histogram
                         masked_data = self.current_image[y1:y2+1, x1:x2+1].ravel()
@@ -1286,7 +1447,8 @@ class ImageProcessor:
                         self.last_measurement_coordinates = np.column_stack((rel_x.ravel(), rel_y.ravel()))
                         self.last_auto_measure_time = time.time()
                     
-                        return mean, std_dev, uncertainty, pixel_count
+                        # For grayscale, we don't need combined uncertainty (only one channel)
+                        return mean, std_dev, std_err, mean, std_err, pixel_count
                 elif self.measurement_shape == "line":
                     # For line profiles, we need to get pixels along the line
                     # For simplicity, we'll take a horizontal line of 'actual_size' length
@@ -1304,7 +1466,10 @@ class ImageProcessor:
                     if len(self.current_image.shape) == 3:  # Color image
                         means = np.mean(line_pixels, axis=0)
                         std_devs = np.std(line_pixels, axis=0)
-                        uncertainties = std_devs / np.sqrt(pixel_count) if pixel_count > 0 else np.zeros_like(std_devs)
+                        std_err = std_devs / np.sqrt(pixel_count) if pixel_count > 0 else np.zeros_like(std_devs)
+                    
+                        # Calculate combined uncertainty using the configured method
+                        rgb_mean, rgb_mean_std = self._calculate_combined_uncertainty(means, std_err)
                     
                         self.last_measurement_raw_data = line_pixels
                         self.last_measurement_coordinates = np.arange(x_start - img_x, x_end - img_x + 1)
@@ -1313,19 +1478,22 @@ class ImageProcessor:
                         return (
                             tuple(means),
                             tuple(std_devs),
-                            tuple(uncertainties),
+                            tuple(std_err),
+                            rgb_mean,
+                            rgb_mean_std,
                             pixel_count
                         )
                     else:  # Grayscale image
                         mean = np.mean(line_pixels)
                         std_dev = np.std(line_pixels)
-                        uncertainty = std_dev / np.sqrt(pixel_count) if pixel_count > 0 else 0
+                        std_err = std_dev / np.sqrt(pixel_count) if pixel_count > 0 else 0
                     
                         self.last_measurement_raw_data = line_pixels
                         self.last_measurement_coordinates = np.arange(x_start - img_x, x_end - img_x + 1)
                         self.last_auto_measure_time = time.time()
                     
-                        return mean, std_dev, uncertainty, pixel_count
+                        # For grayscale, we don't need combined uncertainty (only one channel)
+                        return mean, std_dev, std_err, mean, std_err, pixel_count
                 else:
                     logger.warning(f"Unknown measurement shape: {self.measurement_shape}")
                     return None
@@ -1428,7 +1596,7 @@ class ImageProcessor:
                         continue
                     params[ch] = (a, b, c)
 
-                    # Optional uncertainty columns – tolerate multiple naming conventions
+                    # Optional std_err columns – tolerate multiple naming conventions
                     try:
                         sa = float(row.get("sigma_a") or row.get("sa") or row.get("σa") or 0.0)
                         sb = float(row.get("sigma_b") or row.get("sb") or row.get("σb") or 0.0)
@@ -1446,7 +1614,7 @@ class ImageProcessor:
             return False
 
         # ------------------------------------------------------------------
-        # Apply inverse calibration and compute uncertainty propagation
+        # Apply inverse calibration and compute std_err propagation
         # ------------------------------------------------------------------
         try:
             # Work on ORIGINAL pixel values (uint8) for derivative computation
@@ -1465,7 +1633,7 @@ class ImageProcessor:
                 valid = denom != 0
                 dose[valid] = c + b / denom[valid]
 
-                # Uncertainty per-pixel
+                # std_err per-pixel
                 var = np.full_like(img_uint, np.nan, dtype=np.float32)
                 if np.any(valid):
                     term_a = (-b / (denom[valid] ** 2)) ** 2 * sa ** 2
@@ -1476,7 +1644,7 @@ class ImageProcessor:
 
                 # Store helper arrays
                 self.dose_channels = np.expand_dims(dose, axis=-1)
-                self.dose_uncertainty_channels = np.expand_dims(sigma, axis=-1)
+                self.dose_std_err_channels = np.expand_dims(sigma, axis=-1)
                 dose_for_integral = dose  # single-channel
             else:
                 # Colour image – compute dose and variance per channel
@@ -1507,7 +1675,7 @@ class ImageProcessor:
                 var_stack = np.stack(vars_, axis=-1)
 
                 self.dose_channels = dose_stack
-                self.dose_uncertainty_channels = np.sqrt(var_stack)
+                self.dose_std_err_channels = np.sqrt(var_stack)
                 dose_for_integral = np.nanmean(dose_stack, axis=-1)  # averaged dose for integral images
 
             # Replace current_image with 3-channel dose to keep RGB workflow alive

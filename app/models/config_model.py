@@ -43,7 +43,8 @@ class ConfigModel:
             "max_memory_percent": 75,
             "max_cache_mb": 512,
             "log_level": "INFO",
-            "detailed_logging": False
+            "detailed_logging": False,
+            "uncertainty_estimation_method": "dersimonian_laird"
         }
         
         for key, value in defaults.items():
