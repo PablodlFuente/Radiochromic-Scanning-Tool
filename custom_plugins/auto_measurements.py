@@ -186,6 +186,11 @@ class AutoMeasurementsTab(ttk.Frame):
         # Store original values for unit conversion
         self.original_values = {}  # key: item_id, value: dict of numeric values
         
+        # Multi-file support
+        self.file_list = []  # List of file paths
+        self.current_file_index = 0  # Index of currently displayed file
+        self.file_data = {}  # Dict[file_path] -> {results, ctr_map, original_measurements, etc.}
+        
         # Drawing attributes
         self.draw_mode = None
         self.draw_dims = None
@@ -322,7 +327,8 @@ class AutoMeasurementsTab(ttk.Frame):
         # Main button frame
         btn_frame = ttk.Frame(self.frame)
         btn_frame.pack(fill=tk.X, padx=10)
-        ttk.Button(btn_frame, text="Start Detection", command=self.start_detection).pack(side=tk.LEFT)
+        ttk.Button(btn_frame, text="Add Files", command=self._add_files).pack(side=tk.LEFT)
+        ttk.Button(btn_frame, text="Start Detection", command=self.start_detection).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Clear", command=self._clear_all).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Add RC", command=self._add_manual_film).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Add Circle", command=self._add_manual_circle).pack(side=tk.LEFT)
@@ -365,7 +371,25 @@ class AutoMeasurementsTab(ttk.Frame):
         self.tree.column("avg_unc", width=80, anchor=tk.CENTER)
         self.tree.column("ci95", width=100, anchor=tk.CENTER)
         
-        self.tree.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        self.tree.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 5))
+        
+        # Multi-file navigation controls
+        nav_frame = ttk.Frame(self.frame)
+        nav_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
+        
+        # Navigation buttons and label
+        self.prev_button = ttk.Button(nav_frame, text="<", command=self._prev_file, state="disabled")
+        self.prev_button.pack(side=tk.LEFT)
+        
+        self.file_counter_label = ttk.Label(nav_frame, text="0/0")
+        self.file_counter_label.pack(side=tk.LEFT, padx=10)
+        
+        self.next_button = ttk.Button(nav_frame, text=">", command=self._next_file, state="disabled")
+        self.next_button.pack(side=tk.LEFT)
+        
+        # Current file name label
+        self.current_file_label = ttk.Label(nav_frame, text="No files loaded", foreground="gray")
+        self.current_file_label.pack(side=tk.LEFT, padx=20)
         
         # Configure CTR style
         self.tree.tag_configure("ctr", background="#FFE4B5", foreground="#8B4513", font=("TkDefaultFont", 9, "underline"))
@@ -1518,6 +1542,262 @@ class AutoMeasurementsTab(ttk.Frame):
                         self.image_processor.measurement_size = prev_size
 
     # ---------------------------------------------------------------
+    # Multi-file functionality
+    # ---------------------------------------------------------------
+    
+    def _add_files(self):
+        """Allow user to select multiple image files for analysis."""
+        # If files are already loaded, ask user what to do
+        if self.file_list:
+            response = messagebox.askyesnocancel(
+                "Add Files",
+                "Files are already loaded. What would you like to do?\n\n"
+                "Yes = Add to current set\n"
+                "No = Start new set (clear current files)\n"
+                "Cancel = Don't add files"
+            )
+            
+            if response is None:  # Cancel
+                return
+            elif not response:  # No - start new set
+                self._clear_all_files()
+        
+        filetypes = [
+            ("Image files", "*.tif *.tiff *.jpg *.jpeg *.png *.bmp"),
+            ("TIFF files", "*.tif *.tiff"),
+            ("JPEG files", "*.jpg *.jpeg"),
+            ("PNG files", "*.png"),
+            ("All files", "*.*")
+        ]
+        
+        files = filedialog.askopenfilenames(
+            title="Select image files for analysis",
+            filetypes=filetypes
+        )
+        
+        if files:
+            # Store current file data if any exists
+            self._store_current_file_data()
+            
+            # Add new files to the list
+            new_files_count = 0
+            for file_path in files:
+                if file_path not in self.file_list:
+                    self.file_list.append(file_path)
+                    new_files_count += 1
+                    # Initialize empty data for this file
+                    self.file_data[file_path] = {
+                        'results': [],
+                        'ctr_map': {},
+                        'original_measurements': {},
+                        'original_radii': {},
+                        'original_values': {},
+                        'measured': False,
+                        'overlay_state': {
+                            'films': [],
+                            'circles': [],
+                            'item_to_shape': {},
+                            'ctr_map': {},
+                            '_shape': (0, 0),
+                            'scale': 1.0
+                        }
+                    }
+            
+            # Update UI
+            self._update_navigation_controls()
+            
+            # Load the first file if no image is currently loaded or if this is the first file added
+            should_load_first = False
+            if len(self.file_list) == new_files_count:  # All files are new (empty list or cleared)
+                should_load_first = True
+            elif not self.image_processor.has_image():  # No image currently loaded
+                should_load_first = True
+            
+            if should_load_first and self.file_list:
+                self.current_file_index = 0
+                self._load_file(self.file_list[0])
+            
+            if new_files_count > 0:
+                messagebox.showinfo("Files Added", f"Added {new_files_count} new file(s). Total: {len(self.file_list)} files.")
+            else:
+                messagebox.showinfo("Files Added", "All selected files were already in the list.")
+    
+    def _store_current_file_data(self):
+        """Store current measurements and data for the current file."""
+        if self.file_list and 0 <= self.current_file_index < len(self.file_list):
+            current_file = self.file_list[self.current_file_index]
+            
+            # Store overlay state (handle case where _OVERLAY might be None)
+            global _OVERLAY
+            if _OVERLAY is None:
+                _OVERLAY = {
+                    'films': [],
+                    'circles': [],
+                    'item_to_shape': {},
+                    'ctr_map': {},
+                    '_shape': (0, 0),
+                    'scale': 1.0
+                }
+            
+            overlay_state = {
+                'films': _OVERLAY.get('films', []).copy(),
+                'circles': _OVERLAY.get('circles', []).copy(),
+                'item_to_shape': _OVERLAY.get('item_to_shape', {}).copy(),
+                'ctr_map': _OVERLAY.get('ctr_map', {}).copy(),
+                '_shape': _OVERLAY.get('_shape', (0, 0)),
+                'scale': _OVERLAY.get('scale', 1.0)
+            }
+            
+            self.file_data[current_file] = {
+                'results': self.results.copy(),
+                'ctr_map': self.ctr_map.copy(),
+                'original_measurements': self.original_measurements.copy(),
+                'original_radii': self.original_radii.copy(),
+                'original_values': self.original_values.copy(),
+                'measured': len(self.results) > 0,
+                'overlay_state': overlay_state
+            }
+    
+    def _load_file_data(self, file_path):
+        """Load data for a specific file."""
+        global _OVERLAY
+        
+        # Initialize _OVERLAY if it's None
+        if _OVERLAY is None:
+            _OVERLAY = {
+                'films': [],
+                'circles': [],
+                'item_to_shape': {},
+                'ctr_map': {},
+                '_shape': (0, 0),
+                'scale': 1.0
+            }
+        
+        if file_path in self.file_data:
+            data = self.file_data[file_path]
+            self.results = data['results'].copy()
+            self.ctr_map = data['ctr_map'].copy()
+            self.original_measurements = data['original_measurements'].copy()
+            self.original_radii = data['original_radii'].copy()
+            self.original_values = data['original_values'].copy()
+            
+            # Restore overlay state if it exists
+            if 'overlay_state' in data:
+                overlay_state = data['overlay_state']
+                _OVERLAY.update(overlay_state)
+            else:
+                # Clear overlay if no saved state
+                _OVERLAY = {
+                    'films': [],
+                    'circles': [],
+                    'item_to_shape': {},
+                    'ctr_map': {},
+                    '_shape': (0, 0),
+                    'scale': 1.0
+                }
+        else:
+            # Initialize empty data and clear overlay
+            self.results = []
+            self.ctr_map = {}
+            self.original_measurements = {}
+            self.original_radii = {}
+            self.original_values = {}
+            
+            # Clear overlay for new file
+            _OVERLAY = {
+                'films': [],
+                'circles': [],
+                'item_to_shape': {},
+                'ctr_map': {},
+                '_shape': (0, 0),
+                'scale': 1.0
+            }
+    
+    def _load_file(self, file_path):
+        """Load a specific image file and its associated data."""
+        try:
+            # Load the image through the main window
+            self.main_window.load_image(file_path)
+            
+            # Load associated measurement data
+            self._load_file_data(file_path)
+            
+            # Update TreeView with loaded data
+            self._update_treeview_from_data()
+            
+            # Update image display to show overlay for this file
+            self.main_window.update_image()
+            
+            # Update UI
+            import os
+            filename = os.path.basename(file_path)
+            self.current_file_label.config(text=f"Current: {filename}", foreground="black")
+            
+        except Exception as e:
+            messagebox.showerror("Load Error", f"Error loading file {file_path}:\n{str(e)}")
+    
+    def _update_treeview_from_data(self):
+        """Update TreeView display with current file's data."""
+        # Clear TreeView
+        self.tree.delete(*self.tree.get_children())
+        
+        # Rebuild TreeView from stored results
+        films = {}
+        for result in self.results:
+            film_name = result['film']
+            if film_name not in films:
+                film_id = self.tree.insert("", "end", text=film_name, values=("", "", "", "", ""))
+                films[film_name] = film_id
+            else:
+                film_id = films[film_name]
+            
+            # Add circle
+            circle_name = result['circle']
+            values = (result['dose'], result['unc'], result['avg'], result['avg_unc'], "")
+            circle_id = self.tree.insert(film_id, "end", text=circle_name, values=values)
+            
+        # Open all film nodes
+        for film_id in films.values():
+            self.tree.item(film_id, open=True)
+            
+        # Apply CTR subtraction if enabled
+        self._update_ctr_subtraction()
+    
+    def _prev_file(self):
+        """Navigate to previous file."""
+        if self.current_file_index > 0:
+            self._store_current_file_data()
+            self.current_file_index -= 1
+            self._load_file(self.file_list[self.current_file_index])
+            self._update_navigation_controls()
+    
+    def _next_file(self):
+        """Navigate to next file."""
+        if self.current_file_index < len(self.file_list) - 1:
+            self._store_current_file_data()
+            self.current_file_index += 1
+            self._load_file(self.file_list[self.current_file_index])
+            self._update_navigation_controls()
+    
+    def _update_navigation_controls(self):
+        """Update navigation button states and counter label."""
+        if not self.file_list:
+            self.prev_button.config(state="disabled")
+            self.next_button.config(state="disabled")
+            self.file_counter_label.config(text="0/0")
+            return
+        
+        total_files = len(self.file_list)
+        current_num = self.current_file_index + 1
+        
+        # Update counter
+        self.file_counter_label.config(text=f"{current_num}/{total_files}")
+        
+        # Update button states
+        self.prev_button.config(state="normal" if self.current_file_index > 0 else "disabled")
+        self.next_button.config(state="normal" if self.current_file_index < total_files - 1 else "disabled")
+
+    # ---------------------------------------------------------------
     # Detection functionality
     # ---------------------------------------------------------------
     
@@ -1780,6 +2060,12 @@ class AutoMeasurementsTab(ttk.Frame):
 
         # Apply CTR subtraction if enabled
         self._update_ctr_subtraction()
+        
+        # Mark current file as measured (for multi-file support)
+        if self.file_list and 0 <= self.current_file_index < len(self.file_list):
+            current_file = self.file_list[self.current_file_index]
+            if current_file in self.file_data:
+                self.file_data[current_file]['measured'] = True
 
         # Update display
         self.main_window.update_image()
@@ -2275,16 +2561,83 @@ class AutoMeasurementsTab(ttk.Frame):
         self._autosize_columns()
 
     def _clear_all(self):
-        """Clear all detections and data."""
+        """Clear detections and data with options for single/multi-file mode."""
+        if self.file_list:
+            # Multi-file mode - ask user what to clear
+            response = messagebox.askyesnocancel(
+                "Clear Data",
+                "Clear current file only? \n\n"
+                "Yes = Clear current file only\n" 
+                "No = Clear all files and data\n"
+                "Cancel = Don't clear anything"
+            )
+            
+            if response is None:  # Cancel
+                return
+            elif response:  # Yes - clear current file only
+                self._clear_current_file()
+            else:  # No - clear all files
+                self._clear_all_files()
+        else:
+            # Single file mode - clear normally
+            self._clear_current_file()
+    
+    def _clear_current_file(self):
+        """Clear data for the current file only."""
         self.tree.delete(*self.tree.get_children())
         self.results.clear()
         self.original_measurements.clear()
-        self.original_values.clear()  # Clear stored original values
+        self.original_values.clear()
         self.ctr_map.clear()
+        
+        # Mark current file as not measured
+        if self.file_list and 0 <= self.current_file_index < len(self.file_list):
+            current_file = self.file_list[self.current_file_index]
+            if current_file in self.file_data:
+                self.file_data[current_file] = {
+                    'results': [],
+                    'ctr_map': {},
+                    'original_measurements': {},
+                    'original_radii': {},
+                    'original_values': {},
+                    'measured': False,
+                    'overlay_state': {
+                        'films': [],
+                        'circles': [],
+                        'item_to_shape': {},
+                        'ctr_map': {},
+                        '_shape': (0, 0),
+                        'scale': 1.0
+                    }
+                }
         
         # Reset parameter conversion state
         if self.parameters_converted:
             self._restore_original_parameters()
+        
+        self._clear_overlay()
+        self.main_window.update_image()
+    
+    def _clear_all_files(self):
+        """Clear all files and data completely."""
+        self.tree.delete(*self.tree.get_children())
+        self.results.clear()
+        self.original_measurements.clear()
+        self.original_values.clear()
+        self.ctr_map.clear()
+        
+        # Clear multi-file data
+        self.file_list.clear()
+        self.file_data.clear()
+        self.current_file_index = 0
+        
+        # Reset parameter conversion state
+        if self.parameters_converted:
+            self._restore_original_parameters()
+        
+        # Update navigation controls
+        self._update_navigation_controls()
+        self.current_file_label.config(text="No files loaded", foreground="gray")
         
         self._clear_overlay()
         self.main_window.update_image()
@@ -2810,14 +3163,42 @@ class AutoMeasurementsTab(ttk.Frame):
     # ---------------------------------------------------------------
 
     def export_csv(self):
-        """Export measurements to CSV with the requested format."""
-        if not self.results:
-            messagebox.showwarning("Export", "No data to export.")
+        """Export measurements to CSV with the requested format from all loaded files."""
+        # Store current file data before checking
+        self._store_current_file_data()
+        
+        # Check if any files have data
+        total_measurements = 0
+        unmeasured_files = []
+        
+        for file_path in self.file_list:
+            if file_path in self.file_data:
+                file_results = self.file_data[file_path]['results']
+                total_measurements += len(file_results)
+                if not self.file_data[file_path]['measured']:
+                    unmeasured_files.append(os.path.basename(file_path))
+        
+        # Check current file as well
+        if self.results:
+            total_measurements += len(self.results)
+        
+        if total_measurements == 0:
+            messagebox.showwarning("Export", "No measurement data to export.")
             return
+        
+        # Warn about unmeasured files
+        if unmeasured_files:
+            unmeasured_list = "\n".join(unmeasured_files)
+            response = messagebox.askyesno(
+                "Unmeasured Files", 
+                f"The following files have no measurements:\n\n{unmeasured_list}\n\nDo you want to continue with the export?"
+            )
+            if not response:
+                return
 
         # Ask for file location
         filename = filedialog.asksaveasfilename(
-            title="Save CSV",
+            title="Save CSV (All Files)",
             filetypes=[("CSV files", "*.csv")],
             defaultextension=".csv"
         )
@@ -2840,94 +3221,100 @@ class AutoMeasurementsTab(ttk.Frame):
                 # Write header
                 writer.writerow(cols)
                 
-                # Get the date to use for all rows
-                date_to_use = self.date_var.get() or self.metadata_date or ""
-                
                 # Get uncertainty calculation method
                 uncertainty_method = self.image_processor.config.get("uncertainty_estimation_method", "weighted_average")
                 
-                # Process each circle from the TreeView directly to avoid duplicates
-                processed_items = set()  # Track processed items to avoid duplicates
+                # Export data from all files
+                total_rows = 0
                 
-                for film_id in self.tree.get_children():
-                    if not self.tree.exists(film_id):
+                for file_path in self.file_list:
+                    if file_path not in self.file_data or not self.file_data[file_path]['measured']:
                         continue
                         
-                    film_name = self.tree.item(film_id, "text")
+                    file_data = self.file_data[file_path]
+                    file_results = file_data['results']
                     
-                    for circle_id in self.tree.get_children(film_id):
-                        if not self.tree.exists(circle_id) or circle_id in processed_items:
-                            continue
-                            
-                        processed_items.add(circle_id)
-                        circle_name = self.tree.item(circle_id, "text").replace(" (CTR)", "")
-                        
-                        # Check if this is a CTR circle
-                        is_ctr = (film_name in self.ctr_map and self.ctr_map[film_name] == circle_id)
-                        
-                        item_id = circle_id
+                    if not file_results:
+                        continue
                     
-                        # Get original values (without CTR correction)
-                        orig_data = self.original_measurements.get(item_id, {})
-                        
-                        # Extract numeric values, removing ± symbols
-                        def clean_value(val_str):
-                            """Remove ± symbols and extract numeric value."""
-                            if not val_str:
-                                return ""
-                            # Remove ± and everything after it, then strip whitespace
-                            return str(val_str).split("±")[0].strip()
-                        
-                        def extract_std_from_formatted(val_str):
-                            """Extract STD value after ± symbol."""
-                            if not val_str or "±" not in str(val_str):
-                                return ""
-                            return str(val_str).split("±")[1].strip()
-                        
-                        # Get dose values from TreeView (current displayed values)
-                        tree_values = self.tree.item(circle_id, "values")
-                        current_dose = tree_values[0] if len(tree_values) > 0 else ""
-                        current_std = tree_values[1] if len(tree_values) > 1 else ""
-                        current_avg = tree_values[2] if len(tree_values) > 2 else ""
-                        current_se_avg = tree_values[3] if len(tree_values) > 3 else ""
-                        current_ci95 = tree_values[4] if len(tree_values) > 4 else ""
-                        
-                        # Use data from TreeView as it represents the final corrected values
-                        doses_per_channel = clean_value(current_dose)
-                        std_doses_per_channel = clean_value(current_std)
-                        average = clean_value(current_avg)
-                        
-                        # For SE_average and CI95, extract the numeric value after ± symbol
-                        se_average = extract_std_from_formatted(current_se_avg)
-                        ci95_formatted = extract_std_from_formatted(current_ci95)
-                        
-                        # Get pixel count from results data
-                        pixel_count = ""
-                        for rec in self.results:
-                            if (rec.get("film") == film_name and 
-                                rec.get("circle") == circle_name):
-                                pixel_count = rec.get("pixel_count", "")
-                                break
+                    # Get date for this file (you might want to extract from metadata per file)
+                    date_to_use = self.date_var.get() or self.metadata_date or ""
+                    
+                    # Process results for this file
+                    for result in file_results:
+                        film_name = result['film']
+                        circle_name = result['circle']
                         
                         # Create the row data
                         row_data = [
-                            date_to_use,                    # Date
-                            film_name,                      # Film
-                            circle_name,                    # Circle
-                            doses_per_channel,              # doses_per_channel
-                            std_doses_per_channel,          # STD_doses_per_channel
-                            average,                        # average
-                            se_average,                     # SE_average
-                            ci95_formatted,                 # 95%confident_interval(SE)
-                            pixel_count,                    # pixel_count
-                            uncertainty_method              # uncertaty_calculation_method
+                            date_to_use,                           # Date
+                            film_name,                             # Film  
+                            circle_name,                           # Circle
+                            result.get('dose', ''),                # doses_per_channel
+                            result.get('unc', ''),                 # STD_doses_per_channel
+                            result.get('avg', ''),                 # average
+                            result.get('avg_unc', ''),             # SE_average
+                            "",                                    # 95%confident_interval(SE) - calculated below
+                            result.get('pixel_count', ''),         # pixel_count
+                            uncertainty_method                     # uncertaty_calculation_method
                         ]
+                        
+                        # Calculate 95% CI if SE_average is available
+                        try:
+                            se_val = result.get('avg_unc', '')
+                            if se_val and isinstance(se_val, (int, float)):
+                                ci95_val = float(se_val) * 1.96
+                                row_data[7] = f"{ci95_val:.4f}"
+                            elif se_val and "±" in str(se_val):
+                                # Extract numeric part after ±
+                                se_numeric = float(str(se_val).split("±")[1].strip())
+                                ci95_val = se_numeric * 1.96
+                                row_data[7] = f"{ci95_val:.4f}"
+                        except (ValueError, TypeError, IndexError):
+                            pass
                         
                         # Write the row
                         writer.writerow(row_data)
+                        total_rows += 1
+                
+                # Also export current file data if it has unsaved measurements
+                if self.results and (not self.file_list or self.current_file_index >= len(self.file_list)):
+                    date_to_use = self.date_var.get() or self.metadata_date or ""
+                    
+                    for result in self.results:
+                        film_name = result['film']
+                        circle_name = result['circle']
+                        
+                        row_data = [
+                            date_to_use,                           # Date
+                            film_name,                             # Film
+                            circle_name,                           # Circle  
+                            result.get('dose', ''),                # doses_per_channel
+                            result.get('unc', ''),                 # STD_doses_per_channel
+                            result.get('avg', ''),                 # average
+                            result.get('avg_unc', ''),             # SE_average
+                            "",                                    # 95%confident_interval(SE)
+                            result.get('pixel_count', ''),         # pixel_count
+                            uncertainty_method                     # uncertaty_calculation_method
+                        ]
+                        
+                        # Calculate 95% CI
+                        try:
+                            se_val = result.get('avg_unc', '')
+                            if se_val and isinstance(se_val, (int, float)):
+                                ci95_val = float(se_val) * 1.96
+                                row_data[7] = f"{ci95_val:.4f}"
+                        except (ValueError, TypeError):
+                            pass
+                        
+                        writer.writerow(row_data)
+                        total_rows += 1
             
             # Show success message
-            messagebox.showinfo("Export", f"CSV successfully exported to:\n{filename}")
+            messagebox.showinfo("Export Complete", 
+                              f"CSV successfully exported to:\n{filename}\n\n"
+                              f"Total measurements exported: {total_rows}")
+                              
         except Exception as exc:
             messagebox.showerror("Export Error", f"Error exporting CSV:\n{str(exc)}")
 
