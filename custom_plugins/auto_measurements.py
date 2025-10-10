@@ -56,8 +56,6 @@ def setup(main_window, notebook, image_processor):
     return _AUTO_MEASUREMENTS_INSTANCE.frame
 
 
-# NOTE: _OVERLAY is a global variable used for sharing detection state between plugin and drawing code.
-# In multi-threaded or async contexts, this must be protected for thread safety.
 _OVERLAY: dict | None = None  # Holds last detection for drawing
 
 # Keys used in _OVERLAY:
@@ -349,14 +347,15 @@ class AutoMeasurementsTab(ttk.Frame):
     def _setup_treeview(self):
         """Setup the TreeView widget."""
         # TreeView columns
-        cols = ["dose", "sigma", "avg", "avg_unc"]
+        cols = ["dose", "sigma", "avg", "avg_unc", "ci95"]
 
         self.tree = ttk.Treeview(self.frame, columns=tuple(cols), show="tree headings")
         self.tree.heading("#0", text="Element")
         self.tree.heading("dose", text="Dose")
-        self.tree.heading("sigma", text="Uncertainty")
+        self.tree.heading("sigma", text="STD")
         self.tree.heading("avg", text="Average")
-        self.tree.heading("avg_unc", text="Avg. Uncertainty")
+        self.tree.heading("avg_unc", text="SE of Avg")
+        self.tree.heading("ci95", text="95% CI")
         
         # Column widths
         self.tree.column("#0", width=120, anchor=tk.W)
@@ -364,6 +363,7 @@ class AutoMeasurementsTab(ttk.Frame):
         self.tree.column("sigma", width=100, anchor=tk.CENTER)
         self.tree.column("avg", width=80, anchor=tk.CENTER)
         self.tree.column("avg_unc", width=80, anchor=tk.CENTER)
+        self.tree.column("ci95", width=100, anchor=tk.CENTER)
         
         self.tree.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
@@ -381,6 +381,7 @@ class AutoMeasurementsTab(ttk.Frame):
         self.tree.heading("#0", command=lambda: self._sort_by_column("#0"))
         self.tree.heading("avg", command=lambda: self._sort_by_column("avg"))
         self.tree.heading("avg_unc", command=lambda: self._sort_by_column("avg_unc"))
+        self.tree.heading("ci95", command=lambda: self._sort_by_column("ci95"))
 
     def _setup_detection_params(self):
         """Setup detection parameter frames."""
@@ -1300,8 +1301,6 @@ class AutoMeasurementsTab(ttk.Frame):
                 new_text = current_text.replace(" (CTR)", "")
                 self.tree.item(item_id, text=new_text)
             self.tree.item(item_id, tags=())  # Remove CTR tag
-            # Restore original values for all circles in this film
-            self._restore_original_measurements()
         else:
             # Remove existing CTR if any
             if film_name in self.ctr_map:
@@ -1318,7 +1317,7 @@ class AutoMeasurementsTab(ttk.Frame):
                 self.tree.item(item_id, text=f"{current_text} (CTR)")
             self.tree.item(item_id, tags=("ctr",))  # Apply CTR tag
         
-        # Update CTR subtraction (if any CTR remains)
+        # Update CTR subtraction
         self._update_ctr_subtraction()
         self.main_window.update_image()
 
@@ -1355,11 +1354,20 @@ class AutoMeasurementsTab(ttk.Frame):
         """Restore original measurements without CTR subtraction."""
         for item_id, orig_data in self.original_measurements.items():
             if self.tree.exists(item_id):
+                # Calculate 95% confidence interval: SE * 1.96
+                try:
+                    avg_unc_val = self._clean_numeric_string(orig_data["avg_unc"])
+                    ci95_value = avg_unc_val * 1.96
+                    ci95_str = f"±{ci95_value:.4f}"
+                except (ValueError, TypeError):
+                    ci95_str = ""
+                
                 self.tree.item(item_id, values=(
                     orig_data["dose"],
-                    orig_data["unc"],
+                    orig_data["std"],
                     orig_data["avg"],
-                    orig_data["avg_unc"]
+                    orig_data["avg_unc"],
+                    ci95_str
                 ))
 
     def _apply_ctr_subtraction(self):
@@ -1416,17 +1424,13 @@ class AutoMeasurementsTab(ttk.Frame):
                     current_values[3] = unc_str   # avg_unc
                     self.tree.item(circle_id, values=tuple(current_values))
 
-    def _store_original_measurement(self, item_id: str, dose_str: str, unc_str: str, avg_str: str, avg_unc_str: str, dose_val: float, unc_val: float, avg_val: float, avg_unc_val: float):
+    def _store_original_measurement(self, item_id: str, dose_str: str, std_str: str, avg_str: str, avg_unc_str: str):
         """Store original measurement data before any CTR corrections."""
         self.original_measurements[item_id] = {
             "dose": dose_str,
-            "unc": unc_str,
+            "std": std_str,
             "avg": avg_str,
-            "avg_unc": avg_unc_str,
-            "dose_val": dose_val,
-            "unc_val": unc_val,
-            "avg_val": avg_val,
-            "avg_unc_val": avg_unc_val
+            "avg_unc": avg_unc_str
         }
 
     def _refresh_all_measurements(self):
@@ -1479,6 +1483,7 @@ class AutoMeasurementsTab(ttk.Frame):
                                 # Use combined uncertainty from ImageProcessor
                                 avg_val = float(rgb_mean)
                                 avg_unc = float(rgb_mean_std)
+                                avg_std = float(np.mean(std))
                             else:
                                 dose_str, unc_str = self._format_val_unc(dose, unc, 2)
                                 _, std_str_full = self._format_val_unc(dose, std, 2)
@@ -1487,17 +1492,23 @@ class AutoMeasurementsTab(ttk.Frame):
                                 # For single channel, use combined uncertainty values
                                 avg_val = float(rgb_mean)
                                 avg_unc = float(rgb_mean_std)
+                                avg_std = float(std)
                             
                             # Format average values
                             avg_str, avg_unc_str = self._format_val_unc(avg_val, avg_unc, 2)
                             
+                            # Calculate 95% confidence interval: SE * 1.96
+                            ci95_value = avg_unc * 1.96
+                            ci95_str = f"±{ci95_value:.4f}"
+                            
                             # Update tree values
                             current_values = list(self.tree.item(item, "values"))
-                            if len(current_values) >= 4:
+                            if len(current_values) >= 5:
                                 current_values[0] = dose_str    # dose
-                                current_values[1] = unc_str     # sigma (uncertainty)
+                                current_values[1] = std_str     # STD (standard deviation)
                                 current_values[2] = avg_str     # avg
-                                current_values[3] = avg_unc_str # avg_unc
+                                current_values[3] = avg_unc_str # avg_unc (SE)
+                                current_values[4] = ci95_str    # 95% CI
                                 self.tree.item(item, values=current_values)
                                 
                                 # Update original measurements for CTR calculations
@@ -1640,7 +1651,7 @@ class AutoMeasurementsTab(ttk.Frame):
         for idx, (x, y, w, h) in enumerate(films, 1):
             film_roi = gray[y : y + h, x : x + w]
             film_name = f"RC_{idx}"
-            film_id = self.tree.insert("", "end", text=film_name, values=("", "", "", ""))
+            film_id = self.tree.insert("", "end", text=film_name, values=("", "", "", "", ""))
             _OVERLAY["item_to_shape"][film_id] = ("film", (x, y, w, h))
 
             # 2. Detect circles inside film
@@ -1712,16 +1723,20 @@ class AutoMeasurementsTab(ttk.Frame):
                     avg_unc = float(rgb_mean_std)
 
                 avg_str, avg_unc_str = self._format_val_unc(avg_val, avg_unc, 2)
+                
+                # Calculate 95% confidence interval: SE * 1.96
+                ci95_value = avg_unc * 1.96
+                ci95_str = f"±{ci95_value:.4f}"
 
                 # Create circle item
                 circ_name = f"C{jdx}"
                 circ_id = self.tree.insert(film_id, "end", text=circ_name, 
-                                         values=(dose_str, unc_str, avg_str, avg_unc_str))
+                                         values=(dose_str, std_str, avg_str, avg_unc_str, ci95_str))
                 
                 # Store mapping and original measurements
                 _OVERLAY["item_to_shape"][circ_id] = ("circle", (abs_cx, abs_cy, r_int))
                 self.original_radii[circ_id] = orig_r_int
-                self._store_original_measurement(circ_id, dose_str, unc_str, avg_str, avg_unc_str, dose, unc, avg_val, avg_unc)
+                self._store_original_measurement(circ_id, dose_str, std_str, avg_str, avg_unc_str)
                 
                 # Add to overlay circles
                 _OVERLAY["circles"].append((abs_cx, abs_cy, r_int))
@@ -1906,8 +1921,12 @@ class AutoMeasurementsTab(ttk.Frame):
                 
                 avg_str, avg_unc_str = self._format_val_unc(converted_avg, converted_avg_unc, 2, force_decimals=True)
                 
+                # Calculate 95% confidence interval: SE * 1.96
+                ci95_value = converted_avg_unc * 1.96
+                ci95_str = f"±{ci95_value:.4f}"
+                
                 # Update TreeView
-                self.tree.item(circle_id, values=(dose_str, sigma_str, avg_str, avg_unc_str))
+                self.tree.item(circle_id, values=(dose_str, sigma_str, avg_str, avg_unc_str, ci95_str))
 
     def _restore_original_values(self):
         """Restore original displayed values in pixels."""
@@ -1931,8 +1950,12 @@ class AutoMeasurementsTab(ttk.Frame):
                 
                 avg_str, avg_unc_str = self._format_val_unc(orig_data["avg"], orig_data["avg_unc"], 2, force_decimals=self.parameters_converted)
                 
+                # Calculate 95% confidence interval: SE * 1.96
+                ci95_value = orig_data["avg_unc"] * 1.96
+                ci95_str = f"±{ci95_value:.4f}"
+                
                 # Update TreeView
-                self.tree.item(circle_id, values=(dose_str, sigma_str, avg_str, avg_unc_str))
+                self.tree.item(circle_id, values=(dose_str, sigma_str, avg_str, avg_unc_str, ci95_str))
 
     # ---------------------------------------------------------------
     # Helper methods
@@ -2091,7 +2114,7 @@ class AutoMeasurementsTab(ttk.Frame):
                         unc_parts.append(u_str)
                         std_parts.append(s_str.replace("±", "").strip())
                     dose_str = ", ".join(dose_parts)
-                    unc_str = ", ".join(unc_parts)
+                    std_str = ", ".join(std_parts)
                     
                     # Use combined uncertainty from ImageProcessor
                     avg_val = float(rgb_mean)
@@ -2110,21 +2133,36 @@ class AutoMeasurementsTab(ttk.Frame):
                 
                 avg_str, avg_unc_str = self._format_val_unc(avg_val, avg_unc, 2, force_decimals=self.parameters_converted)
                 
-                # Update original measurements
-                self._store_original_measurement(item_id, dose_str, unc_str, avg_str, avg_unc_str)
+                # Calculate 95% confidence interval: SE * 1.96
+                ci95_value = avg_unc * 1.96
+                ci95_str = f"±{ci95_value:.4f}"
                 
-                # Update TreeView values
-                self.tree.item(item_id, values=(dose_str, unc_str, avg_str, avg_unc_str))
+                # Update original measurements
+                self._store_original_measurement(item_id, dose_str, std_str, avg_str, avg_unc_str)
+                
+                # Update TreeView values (only if item exists)
+                try:
+                    if self.tree.exists(item_id):
+                        self.tree.item(item_id, values=(dose_str, std_str, avg_str, avg_unc_str, ci95_str))
+                    else:
+                        continue
+                except tk.TclError:
+                    # Item no longer exists, skip update
+                    continue
                 
                 # Update cached results for CSV
-                circle_name = self.tree.item(item_id, "text").replace(" (CTR)", "")
+                try:
+                    circle_name = self.tree.item(item_id, "text").replace(" (CTR)", "")
+                except tk.TclError:
+                    # Item no longer exists, skip CSV update
+                    continue
                 film_id = self.tree.parent(item_id)
                 film_name = self.tree.item(film_id, "text") if film_id else None
                 
                 for rec in self.results:
                     if rec["film"] == film_name and rec["circle"] == circle_name:
                         rec["dose"] = dose_str
-                        rec["unc"] = unc_str
+                        rec["unc"] = std_str  # This should be std
                         rec["avg"] = avg_str
                         rec["avg_unc"] = avg_unc_str
                         rec["std"] = avg_std_str
@@ -2174,7 +2212,7 @@ class AutoMeasurementsTab(ttk.Frame):
                         unc_parts.append(u_str)
                         std_parts.append(s_str.replace("±", "").strip())
                     dose_str = ", ".join(dose_parts)
-                    unc_str = ", ".join(unc_parts)
+                    std_str = ", ".join(std_parts)
                     
                     # Use combined uncertainty from ImageProcessor
                     avg_val = float(rgb_mean)
@@ -2193,21 +2231,36 @@ class AutoMeasurementsTab(ttk.Frame):
                     
                 avg_str, avg_unc_str = self._format_val_unc(avg_val, avg_unc, 2, force_decimals=self.parameters_converted)
                 
-                # Update original measurements
-                self._store_original_measurement(item_id, dose_str, unc_str, avg_str, avg_unc_str)
+                # Calculate 95% confidence interval: SE * 1.96
+                ci95_value = avg_unc * 1.96
+                ci95_str = f"±{ci95_value:.4f}"
                 
-                # Update TreeView values
-                self.tree.item(item_id, values=(dose_str, unc_str, avg_str, avg_unc_str))
+                # Update original measurements
+                self._store_original_measurement(item_id, dose_str, std_str, avg_str, avg_unc_str)
+                
+                # Update TreeView values (only if item exists)
+                try:
+                    if self.tree.exists(item_id):
+                        self.tree.item(item_id, values=(dose_str, std_str, avg_str, avg_unc_str, ci95_str))
+                    else:
+                        continue
+                except tk.TclError:
+                    # Item no longer exists, skip update
+                    continue
                 
                 # Update cached results for CSV
-                circle_name = self.tree.item(item_id, "text").replace(" (CTR)", "")
-                film_id = self.tree.parent(item_id)
-                film_name = self.tree.item(film_id, "text") if film_id else None
+                try:
+                    circle_name = self.tree.item(item_id, "text").replace(" (CTR)", "")
+                    film_id = self.tree.parent(item_id)
+                    film_name = self.tree.item(film_id, "text") if film_id else None
+                except tk.TclError:
+                    # Item no longer exists, skip CSV update
+                    continue
                 
                 for rec in self.results:
                     if rec["film"] == film_name and rec["circle"] == circle_name:
                         rec["dose"] = dose_str
-                        rec["unc"] = unc_str
+                        rec["unc"] = std_str  # This should be std
                         rec["avg"] = avg_str
                         rec["avg_unc"] = avg_unc_str
                         rec["std"] = avg_std_str
@@ -2549,7 +2602,7 @@ class AutoMeasurementsTab(ttk.Frame):
 
         film_idx = len([v for v in _OVERLAY["item_to_shape"].values() if v[0] == "film"]) + 1
         film_name = f"RC_{film_idx}M"
-        film_id = self.tree.insert("", "end", text=film_name, values=("", "", "", ""))
+        film_id = self.tree.insert("", "end", text=film_name, values=("", "", "", "", ""))
         _OVERLAY["item_to_shape"][film_id] = ("film", (x, y, w, h))
         _OVERLAY["films"].append((x, y, w, h))
         self.tree.item(film_id, open=True)
@@ -2623,18 +2676,21 @@ class AutoMeasurementsTab(ttk.Frame):
                 avg_unc = float(rgb_mean_std)
             
             avg_str, avg_unc_str = self._format_val_unc(avg_val, avg_unc, 2, force_decimals=self.parameters_converted)
+            # Calculate 95% confidence interval: SE * 1.96
+            ci95_value = avg_unc * 1.96
+            ci95_str = f"±{ci95_value:.4f}"
         else:
-            dose_str = unc_str = avg_str = avg_unc_str = std_str = ""
+            dose_str = unc_str = avg_str = avg_unc_str = ci95_str = ""
             pixel_count = 0
             avg_val = avg_unc = 0.0
 
         circ_id = self.tree.insert(parent_id, "end", text=circ_name, 
-                                 values=(dose_str, unc_str, avg_str, avg_unc_str))
+                                 values=(dose_str, std_str, avg_str, avg_unc_str, ci95_str))
         
         # Store mapping and original measurements
         _OVERLAY["item_to_shape"][circ_id] = ("circle", (cx, cy, r))
         self.original_radii[circ_id] = r
-        self._store_original_measurement(circ_id, dose_str, unc_str, avg_str, avg_unc_str)
+        self._store_original_measurement(circ_id, dose_str, std_str, avg_str, avg_unc_str)
         
         # Add to overlay circles
         _OVERLAY["circles"].append((cx, cy, r))
@@ -2754,7 +2810,7 @@ class AutoMeasurementsTab(ttk.Frame):
     # ---------------------------------------------------------------
 
     def export_csv(self):
-        """Export measurements to CSV."""
+        """Export measurements to CSV with the requested format."""
         if not self.results:
             messagebox.showwarning("Export", "No data to export.")
             return
@@ -2768,194 +2824,111 @@ class AutoMeasurementsTab(ttk.Frame):
         
         if not filename:
             return
-        
+            
         try:
             with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+                # Define CSV columns exactly as requested
                 cols = [
-                    "date", "film", "circle", 
-                    "original_dose", "original_unc", "original_avg", "original_avg_unc",
-<<<<<<< HEAD
-                    "std", "pixel_count"]
-=======
-                    "avg_dose", "uncertainty" 
+                    "Date", "Film", "Circle", 
+                    "doses_per_channel", "STD_doses_per_channel",
+                    "average", "SE_average", "95%confident_interval(SE)",
+                    "pixel_count", "uncertaty_calculation_method"
                 ]
-
-                # Determine if CTR columns are needed based on whether CTR subtraction is enabled
-                # and if there are any CTR circles defined.
-                ctr_columns_needed = self.subtract_ctr_var.get() and bool(self.ctr_map)
->>>>>>> 39d0fcf05271feaf89d15f87209e2112e4e11ce5
                 
-                # Add CTR columns to the list of columns if they are needed
-                if ctr_columns_needed:
-                    cols.extend(["ctr_corrected_avg", "ctr_corrected_avg_unc"])
-
-                # Initialize the DictWriter with the correctly defined fieldnames
-                writer = csv.DictWriter(
-                    csvfile, 
-                    fieldnames=cols
-                )
-
-                # Write header with proper names
-                header_map = {
-                    "date": "Date",
-                    "film": "Film",
-                    "circle": "Circle", 
-                    "original_dose": "Original Dose",
-                    "original_unc": "Original Uncertainty",
-                    "original_avg": "Original Average",
-                    "original_avg_unc": "Original Average Uncertainty",
-<<<<<<< HEAD
-                    "std": "STD",
-                    "pixel_count": "Number of pixels averaged",
-=======
-                    "avg_dose": "Average Dose",
-                    "uncertainty": "Uncertainty",
->>>>>>> 39d0fcf05271feaf89d15f87209e2112e4e11ce5
-                    "ctr_corrected_avg": "CTR Corrected Average",
-                    "ctr_corrected_avg_unc": "CTR Corrected Average Uncertainty"
-                }
-                writer.writerow({field: header_map.get(field, field) for field in cols})
-
-
+                writer = csv.writer(csvfile)
+                
+                # Write header
+                writer.writerow(cols)
+                
                 # Get the date to use for all rows
                 date_to_use = self.date_var.get() or self.metadata_date or ""
-
-                # Sort results by Film, then by Circle
-                try:
-                    sorted_results = sorted(
-                        [r for r in self.results if isinstance(r, dict)],
-                        key=lambda rec: (
-                            str(rec.get("film", "")),
-                            str(rec.get("circle", ""))
-                        )
-                    )
-                except Exception as e:
-                    logging.error(f"Error sorting results: {e}")
-                    sorted_results = [r for r in self.results if isinstance(r, dict)]
-
-                # Process each result
-                for rec in sorted_results:
-                    film_name = rec.get("film", "")
-                    circle_name = rec.get("circle", "")
-
-                    # Find the corresponding tree item for this circle
-                    circle_display_name = circle_name
-                    item_id = None
-                    is_ctr = False
-
-                    # Search through all circle items to find the matching one
-                    for iid, (stype, coords) in (_OVERLAY.get("item_to_shape", {}) if _OVERLAY else {}).items():
-                        if stype == "circle" and self.tree.exists(iid):
-                            parent_id = self.tree.parent(iid)
-                            if parent_id and self.tree.exists(parent_id):
-                                parent_name = self.tree.item(parent_id, "text")
-                                current_circle_name = self.tree.item(iid, "text").replace(" (CTR)", "")
-
-                                # Match by film name and circle name
-                                if parent_name == film_name and current_circle_name == circle_name:
-                                    item_id = iid
-                                    # Check if this is a CTR circle
-                                    if film_name in self.ctr_map and self.ctr_map[film_name] == iid:
-                                        is_ctr = True
-                                        circle_display_name = f"{circle_name} (CTR)"
-                                    break
-
-                                        # Get original values
-                    orig_data = self.original_measurements.get(item_id, {}) if item_id else {}
-
-                    # Get original numeric values
-                    original_dose_val = orig_data.get("dose_val", 0.0) # Ensure these are numeric, default to 0.0
-                    original_unc_val = orig_data.get("unc_val", 0.0)
-                    original_avg_val = orig_data.get("avg_val", 0.0)
-                    original_avg_unc_val = orig_data.get("avg_unc_val", 0.0)
-
-                                        # Initialize corrected_avg and corrected_unc to original values
-                    corrected_avg = original_avg_val
-                    corrected_unc = original_avg_unc_val
+                
+                # Get uncertainty calculation method
+                uncertainty_method = self.image_processor.config.get("uncertainty_estimation_method", "weighted_average")
+                
+                # Process each circle from the TreeView directly to avoid duplicates
+                processed_items = set()  # Track processed items to avoid duplicates
+                
+                for film_id in self.tree.get_children():
+                    if not self.tree.exists(film_id):
+                        continue
+                        
+                    film_name = self.tree.item(film_id, "text")
                     
-<<<<<<< HEAD
-                    # Get values safely
-                    original_avg = orig_data.get("avg", rec.get("avg", ""))
-                    original_avg_unc = orig_data.get("avg_unc", rec.get("avg_unc", ""))
-                    original_dose = orig_data.get("dose", rec.get("dose", ""))
-                    original_unc = orig_data.get("unc", rec.get("unc", ""))
-                    std = rec.get("std", "")
-                    pixel_count = rec.get("pixel_count", "")
+                    for circle_id in self.tree.get_children(film_id):
+                        if not self.tree.exists(circle_id) or circle_id in processed_items:
+                            continue
+                            
+                        processed_items.add(circle_id)
+                        circle_name = self.tree.item(circle_id, "text").replace(" (CTR)", "")
+                        
+                        # Check if this is a CTR circle
+                        is_ctr = (film_name in self.ctr_map and self.ctr_map[film_name] == circle_id)
+                        
+                        item_id = circle_id
                     
-                    # Calculate CTR-corrected values
-                    ctr_corrected_avg = ""
-                    ctr_corrected_unc = ""
-                    
-=======
-                    # Initialize ctr_avg and ctr_unc for the CTR circle itself
-                    ctr_avg_val_for_calc = 0.0
-                    ctr_unc_val_for_calc = 0.0
-
-                    # Apply CTR correction if enabled and applicable
->>>>>>> 39d0fcf05271feaf89d15f87209e2112e4e11ce5
-                    if film_name in self.ctr_map and item_id and self.subtract_ctr_var.get():
-                        ctr_id = self.ctr_map[film_name]
-                        ctr_orig_data = self.original_measurements.get(ctr_id, {})
-
-                        if ctr_orig_data:
-                            try:
-                                ctr_avg_val_for_calc = ctr_orig_data.get("avg_val", 0.0)
-                                ctr_unc_val_for_calc = ctr_orig_data.get("avg_unc_val", 0.0)
-
-                                if item_id == ctr_id:
-                                    # CTR circle: set to 0 ± uncertainty
-                                    corrected_avg = 0.0
-                                    corrected_unc = ctr_unc_val_for_calc
-                                else:
-                                    # Other circles: subtract CTR with error propagation
-                                    corrected_avg = max(0.0, original_avg_val - ctr_avg_val_for_calc)
-                                    corrected_unc = sqrt(original_avg_unc_val**2 + ctr_unc_val_for_calc**2)
-                                
-                            except Exception as e:
-                                logging.error(f"Error calculating CTR-corrected values: {e}")
-                                messagebox.showerror("CTR Calculation Error", f"Error calculating CTR-corrected values for {circle_display_name}: {e}")
-
-                    # Determine final values for avg_dose and uncertainty columns
-                    # These should be the CTR-corrected values if CTR was applied, otherwise original
-                    final_avg_dose = corrected_avg
-                    final_uncertainty = corrected_unc
-
-                    # Create a dictionary for the row
-                    row_data = {
-                        "date": date_to_use,
-                        "film": film_name if isinstance(film_name, str) else "",
-                        "circle": circle_display_name,
-<<<<<<< HEAD
-                        "original_dose": original_dose,
-                        "original_unc": original_unc,
-                        "original_avg": original_avg,
-                        "original_avg_unc": original_avg_unc,
-                        "std": std,
-                        "pixel_count": pixel_count
-=======
-                        "original_dose": original_dose_val, # Use numeric values
-                        "original_unc": original_unc_val,   # Use numeric values
-                        "original_avg": original_avg_val,   # Use numeric values
-                        "original_avg_unc": original_avg_unc_val, # Use numeric values
-                        "avg_dose": final_avg_dose, # Final average dose (numeric)
-                        "uncertainty": final_uncertainty, # Final uncertainty (numeric)
->>>>>>> 39d0fcf05271feaf89d15f87209e2112e4e11ce5
-                    }
-
-                    # Add CTR columns if they were calculated (numeric values)
-                    # Only add if CTR was actually applied to this specific circle
-                    # and if the CTR values are not zero (meaning a subtraction actually occurred)
-                    if self.subtract_ctr_var.get() and bool(self.ctr_map) and (ctr_avg_val_for_calc != 0.0 or ctr_unc_val_for_calc != 0.0):
-                        row_data["ctr_corrected_avg"] = corrected_avg
-                        row_data["ctr_corrected_avg_unc"] = corrected_unc
-
-                    # Write the row
-                    writer.writerow(row_data)
-
+                        # Get original values (without CTR correction)
+                        orig_data = self.original_measurements.get(item_id, {})
+                        
+                        # Extract numeric values, removing ± symbols
+                        def clean_value(val_str):
+                            """Remove ± symbols and extract numeric value."""
+                            if not val_str:
+                                return ""
+                            # Remove ± and everything after it, then strip whitespace
+                            return str(val_str).split("±")[0].strip()
+                        
+                        def extract_std_from_formatted(val_str):
+                            """Extract STD value after ± symbol."""
+                            if not val_str or "±" not in str(val_str):
+                                return ""
+                            return str(val_str).split("±")[1].strip()
+                        
+                        # Get dose values from TreeView (current displayed values)
+                        tree_values = self.tree.item(circle_id, "values")
+                        current_dose = tree_values[0] if len(tree_values) > 0 else ""
+                        current_std = tree_values[1] if len(tree_values) > 1 else ""
+                        current_avg = tree_values[2] if len(tree_values) > 2 else ""
+                        current_se_avg = tree_values[3] if len(tree_values) > 3 else ""
+                        current_ci95 = tree_values[4] if len(tree_values) > 4 else ""
+                        
+                        # Use data from TreeView as it represents the final corrected values
+                        doses_per_channel = clean_value(current_dose)
+                        std_doses_per_channel = clean_value(current_std)
+                        average = clean_value(current_avg)
+                        
+                        # For SE_average and CI95, extract the numeric value after ± symbol
+                        se_average = extract_std_from_formatted(current_se_avg)
+                        ci95_formatted = extract_std_from_formatted(current_ci95)
+                        
+                        # Get pixel count from results data
+                        pixel_count = ""
+                        for rec in self.results:
+                            if (rec.get("film") == film_name and 
+                                rec.get("circle") == circle_name):
+                                pixel_count = rec.get("pixel_count", "")
+                                break
+                        
+                        # Create the row data
+                        row_data = [
+                            date_to_use,                    # Date
+                            film_name,                      # Film
+                            circle_name,                    # Circle
+                            doses_per_channel,              # doses_per_channel
+                            std_doses_per_channel,          # STD_doses_per_channel
+                            average,                        # average
+                            se_average,                     # SE_average
+                            ci95_formatted,                 # 95%confident_interval(SE)
+                            pixel_count,                    # pixel_count
+                            uncertainty_method              # uncertaty_calculation_method
+                        ]
+                        
+                        # Write the row
+                        writer.writerow(row_data)
+            
             # Show success message
             messagebox.showinfo("Export", f"CSV successfully exported to:\n{filename}")
         except Exception as exc:
-            logging.error(f"Error exporting CSV: {exc}")
             messagebox.showerror("Export Error", f"Error exporting CSV:\n{str(exc)}")
 
 
