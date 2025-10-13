@@ -1753,7 +1753,21 @@ class AutoMeasurementsTab(ttk.Frame):
             
             # Add circle
             circle_name = result['circle']
-            values = (result['dose'], result['unc'], result['avg'], result['avg_unc'], "")
+            
+            # Format avg_unc for display (numeric to string with ±)
+            avg_unc_value = result.get('avg_unc', 0.0)
+            if isinstance(avg_unc_value, (int, float)):
+                avg_unc_str = f"±{avg_unc_value:.2g}"
+            else:
+                avg_unc_str = str(avg_unc_value) if avg_unc_value else ""
+            
+            # Calculate 95% CI
+            ci95_str = ""
+            if isinstance(avg_unc_value, (int, float)) and avg_unc_value > 0:
+                ci95_value = avg_unc_value * 1.96
+                ci95_str = f"±{ci95_value:.4f}"
+            
+            values = (result['dose'], result['unc'], result['avg'], avg_unc_str, ci95_str)
             circle_id = self.tree.insert(film_id, "end", text=circle_name, values=values)
             
         # Open all film nodes
@@ -1948,12 +1962,25 @@ class AutoMeasurementsTab(ttk.Frame):
                 default_radius = max(1, int(round(self.default_diameter_var.get() / 2)))
                 circles = [(cx, cy, default_radius) for (cx, cy, _r) in detected_circles]
 
+            # Organize circles as matrix and assign names
+            named_circles = self._organize_circles_as_matrix(circles)
+            
+            # Create mapping from new index to original index for radius lookup
+            circle_to_orig_idx = {}
+            for new_idx, (name, (cx, cy, r)) in enumerate(named_circles):
+                # Find matching circle in original list
+                for orig_idx, (ocx, ocy, _) in enumerate(original_circles):
+                    if cx == ocx and cy == ocy:
+                        circle_to_orig_idx[new_idx] = orig_idx
+                        break
+
             # Process each circle
-            for jdx, (cx, cy, adj_r) in enumerate(circles, 1):
+            for jdx, (circ_name, (cx, cy, adj_r)) in enumerate(named_circles):
                 abs_cx = x + cx
                 abs_cy = y + cy
                 r_int = int(round(adj_r))
-                orig_r_int = int(round(original_circles[jdx - 1][2]))
+                orig_idx = circle_to_orig_idx.get(jdx, jdx)
+                orig_r_int = int(round(original_circles[orig_idx][2]))
 
                 # Measure dose
                 prev_size = self.image_processor.measurement_size
@@ -2008,8 +2035,7 @@ class AutoMeasurementsTab(ttk.Frame):
                 ci95_value = avg_unc * 1.96
                 ci95_str = f"±{ci95_value:.4f}"
 
-                # Create circle item
-                circ_name = f"C{jdx}"
+                # Create circle item (circ_name already comes from matrix organization)
                 circ_id = self.tree.insert(film_id, "end", text=circ_name, 
                                          values=(dose_str, std_str, avg_str, avg_unc_str, ci95_str))
                 
@@ -2038,9 +2064,10 @@ class AutoMeasurementsTab(ttk.Frame):
                     "film": film_name,
                     "circle": circ_name,
                     "dose": dose_str,
-                    "unc": unc_str,
+                    "std_per_channel": std_str,          # STD per channel
+                    "unc": unc_str,                      # SE/Uncertainty per channel
                     "avg": avg_str,
-                    "avg_unc": avg_unc_str,
+                    "avg_unc": avg_unc,                  # Store numeric value directly
                     "std": avg_std_str,
                     "pixel_count": pixel_count,
                     "x": abs_cx,
@@ -2340,6 +2367,57 @@ class AutoMeasurementsTab(ttk.Frame):
             circles = np.uint16(np.around(circles[0]))
             circles = circles.astype(int)
             result = [tuple(c) for c in circles]
+        return result
+
+    def _organize_circles_as_matrix(self, circles: List[Tuple[int, int, int]]) -> List[Tuple[str, Tuple[int, int, int]]]:
+        """
+        Organize circles into a matrix grid (row-column) and assign names like C11, C12, C21, etc.
+        Returns list of tuples (name, (cx, cy, r))
+        """
+        if not circles:
+            return []
+        
+        # Extract center coordinates
+        centers = [(cx, cy, r) for cx, cy, r in circles]
+        
+        # Group circles into rows based on Y coordinate
+        # Use clustering: circles with similar Y are in the same row
+        sorted_by_y = sorted(centers, key=lambda c: c[1])  # Sort by Y
+        
+        rows = []
+        current_row = [sorted_by_y[0]]
+        
+        # Tolerance for grouping into same row (average radius * 0.5)
+        avg_radius = np.mean([r for _, _, r in circles])
+        y_tolerance = avg_radius * 0.5
+        
+        for i in range(1, len(sorted_by_y)):
+            prev_y = current_row[-1][1]
+            curr_y = sorted_by_y[i][1]
+            
+            if abs(curr_y - prev_y) < y_tolerance:
+                # Same row
+                current_row.append(sorted_by_y[i])
+            else:
+                # New row
+                rows.append(current_row)
+                current_row = [sorted_by_y[i]]
+        
+        # Don't forget the last row
+        if current_row:
+            rows.append(current_row)
+        
+        # Sort circles within each row by X coordinate (left to right)
+        for row in rows:
+            row.sort(key=lambda c: c[0])
+        
+        # Assign names based on matrix position
+        result = []
+        for row_idx, row in enumerate(rows, start=1):
+            for col_idx, (cx, cy, r) in enumerate(row, start=1):
+                name = f"C{row_idx}{col_idx}"
+                result.append((name, (cx, cy, r)))
+        
         return result
 
     def _apply_diameter_restriction(self, *args):
@@ -3048,19 +3126,6 @@ class AutoMeasurementsTab(ttk.Frame):
         # Add to overlay circles
         _OVERLAY["circles"].append((cx, cy, r))
 
-        # Store for CTR detection and results
-        film_name = self.tree.item(parent_id, "text") if parent_id else None
-        self.results.append({
-            "film": film_name,
-            "circle": circ_name,
-            "dose": dose_str,
-            "unc": unc_str,
-            "avg": avg_str,
-            "avg_unc": avg_unc_str,
-            "x": cx,
-            "y": cy,
-        })
-
         # Store original values for unit conversion
         if isinstance(dose, tuple):
             dose_values = list(dose)
@@ -3079,14 +3144,16 @@ class AutoMeasurementsTab(ttk.Frame):
         if parent_id:
             self.tree.item(parent_id, open=True)
 
-        # Add to results
+        # Store for CTR detection and results
+        film_name = self.tree.item(parent_id, "text") if parent_id else None
         self.results.append({
             "film": film_name,
             "circle": circ_name,
             "dose": dose_str,
-            "unc": unc_str,
+            "std_per_channel": std_str,          # STD per channel
+            "unc": unc_str,                      # SE/Uncertainty per channel
             "avg": avg_str,
-            "avg_unc": avg_unc_str,
+            "avg_unc": avg_unc,                  # Store numeric value directly
             "std": avg_std_str,
             "pixel_count": pixel_count,
             "x": cx,
@@ -3210,6 +3277,7 @@ class AutoMeasurementsTab(ttk.Frame):
             with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
                 # Define CSV columns exactly as requested
                 cols = [
+                    "Filename",                        # New column for file name
                     "Date", "Film", "Circle", 
                     "doses_per_channel", "STD_doses_per_channel",
                     "average", "SE_average", "95%confident_interval(SE)",
@@ -3240,20 +3308,35 @@ class AutoMeasurementsTab(ttk.Frame):
                     # Get date for this file (you might want to extract from metadata per file)
                     date_to_use = self.date_var.get() or self.metadata_date or ""
                     
+                    # Extract filename without path
+                    file_name = os.path.basename(file_path)
+                    
                     # Process results for this file
                     for result in file_results:
                         film_name = result['film']
                         circle_name = result['circle']
                         
+                        # Get SE_average numeric value and format for CSV
+                        se_average = result.get('avg_unc', 0.0)
+                        if isinstance(se_average, str):
+                            se_average = se_average.replace('±', '').strip()
+                        else:
+                            se_average = f"{se_average:.4f}" if se_average > 0 else ""
+                        
+                        # Get STD_doses_per_channel and remove ± symbols
+                        std_doses = result.get('std_per_channel', '')
+                        std_doses = str(std_doses).replace('±', '').strip() if std_doses else ''
+                        
                         # Create the row data
                         row_data = [
+                            file_name,                             # Filename (without path)
                             date_to_use,                           # Date
                             film_name,                             # Film  
                             circle_name,                           # Circle
                             result.get('dose', ''),                # doses_per_channel
-                            result.get('unc', ''),                 # STD_doses_per_channel
+                            std_doses,                             # STD_doses_per_channel (without ±)
                             result.get('avg', ''),                 # average
-                            result.get('avg_unc', ''),             # SE_average
+                            se_average,                            # SE_average (without ±)
                             "",                                    # 95%confident_interval(SE) - calculated below
                             result.get('pixel_count', ''),         # pixel_count
                             uncertainty_method                     # uncertaty_calculation_method
@@ -3261,16 +3344,11 @@ class AutoMeasurementsTab(ttk.Frame):
                         
                         # Calculate 95% CI if SE_average is available
                         try:
-                            se_val = result.get('avg_unc', '')
-                            if se_val and isinstance(se_val, (int, float)):
-                                ci95_val = float(se_val) * 1.96
-                                row_data[7] = f"{ci95_val:.4f}"
-                            elif se_val and "±" in str(se_val):
-                                # Extract numeric part after ±
-                                se_numeric = float(str(se_val).split("±")[1].strip())
+                            se_numeric = result.get('avg_unc', 0.0)
+                            if se_numeric and se_numeric > 0:
                                 ci95_val = se_numeric * 1.96
-                                row_data[7] = f"{ci95_val:.4f}"
-                        except (ValueError, TypeError, IndexError):
+                                row_data[8] = f"{ci95_val:.4f}"  # Updated index (was 7, now 8)
+                        except (ValueError, TypeError):
                             pass
                         
                         # Write the row
@@ -3281,18 +3359,35 @@ class AutoMeasurementsTab(ttk.Frame):
                 if self.results and (not self.file_list or self.current_file_index >= len(self.file_list)):
                     date_to_use = self.date_var.get() or self.metadata_date or ""
                     
+                    # Get current file name
+                    current_file_name = ""
+                    if hasattr(self.image_processor, 'image_path') and self.image_processor.image_path:
+                        current_file_name = os.path.basename(self.image_processor.image_path)
+                    
                     for result in self.results:
                         film_name = result['film']
                         circle_name = result['circle']
                         
+                        # Get SE_average numeric value and format for CSV
+                        se_average = result.get('avg_unc', 0.0)
+                        if isinstance(se_average, str):
+                            se_average = se_average.replace('±', '').strip()
+                        else:
+                            se_average = f"{se_average:.4f}" if se_average > 0 else ""
+                        
+                        # Get STD_doses_per_channel and remove ± symbols
+                        std_doses = result.get('std_per_channel', '')
+                        std_doses = str(std_doses).replace('±', '').strip() if std_doses else ''
+                        
                         row_data = [
+                            current_file_name,                     # Filename (without path)
                             date_to_use,                           # Date
                             film_name,                             # Film
                             circle_name,                           # Circle  
                             result.get('dose', ''),                # doses_per_channel
-                            result.get('unc', ''),                 # STD_doses_per_channel
+                            std_doses,                             # STD_doses_per_channel (without ±)
                             result.get('avg', ''),                 # average
-                            result.get('avg_unc', ''),             # SE_average
+                            se_average,                            # SE_average (without ±)
                             "",                                    # 95%confident_interval(SE)
                             result.get('pixel_count', ''),         # pixel_count
                             uncertainty_method                     # uncertaty_calculation_method
@@ -3300,10 +3395,10 @@ class AutoMeasurementsTab(ttk.Frame):
                         
                         # Calculate 95% CI
                         try:
-                            se_val = result.get('avg_unc', '')
-                            if se_val and isinstance(se_val, (int, float)):
-                                ci95_val = float(se_val) * 1.96
-                                row_data[7] = f"{ci95_val:.4f}"
+                            se_numeric = result.get('avg_unc', 0.0)
+                            if se_numeric and se_numeric > 0:
+                                ci95_val = se_numeric * 1.96
+                                row_data[8] = f"{ci95_val:.4f}"  # Updated index (was 7, now 8)
                         except (ValueError, TypeError):
                             pass
                         

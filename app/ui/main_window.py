@@ -249,6 +249,14 @@ class MainWindow:
             # Update window title
             self.parent.title(f"Radiochromic Film Analyzer - {os.path.basename(file_path)}")
             
+            # Notify AutoMeasurement plugin about image loaded from main menu
+            try:
+                from custom_plugins.auto_measurements import _AUTO_MEASUREMENTS_INSTANCE
+                if _AUTO_MEASUREMENTS_INSTANCE is not None:
+                    _AUTO_MEASUREMENTS_INSTANCE.on_main_menu_image_loaded(file_path)
+            except Exception as e:
+                logger.debug(f"Could not notify AutoMeasurement plugin: {str(e)}")
+            
             logger.info(f"Loaded image: {file_path}")
         except Exception as e:
             logger.error(f"Error updating UI after loading image: {str(e)}", exc_info=True)
