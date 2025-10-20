@@ -175,7 +175,7 @@ The Radiochromic-Scanning-Tool is a specialized application designed for the ana
 
 ## Keyboard Shortcuts
 
-- **Ctrl+right click**: Select circle as control
+- **Ctrl+Left click**: Select circle as control
 - **Ctrl+Mouse Wheel**: Adjust measurement size
 - **Mouse Wheel**: Zoom in/out
 
