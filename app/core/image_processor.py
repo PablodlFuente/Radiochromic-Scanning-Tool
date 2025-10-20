@@ -1861,14 +1861,26 @@ class ImageProcessor:
 
     def _find_fit_parameters_file(self):
         """Return absolute path to *fit_parameters.csv* if it exists, else None."""
+        # Get calibration folder from config
+        calibration_folder = self.config.get("calibration_folder", "default")
+        
         candidate_dirs = [
             os.path.join(os.getcwd(), "calibration_data"),
             os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "calibration_data"),
         ]
+        
+        # If a specific calibration folder is selected, check subdirectory first
+        if calibration_folder != "default":
+            priority_dirs = [
+                os.path.join(os.getcwd(), "calibration_data", calibration_folder),
+                os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "calibration_data", calibration_folder),
+            ]
+            candidate_dirs = priority_dirs + candidate_dirs
 
         for d in candidate_dirs:
             path = os.path.join(d, "fit_parameters.csv")
             if os.path.isfile(path):
+                logger.info(f"Using calibration file: {path}")
                 return path
 
         return None

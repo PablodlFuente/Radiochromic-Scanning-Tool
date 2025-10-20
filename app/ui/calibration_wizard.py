@@ -17,6 +17,9 @@ from types import ModuleType
 from typing import Optional
 from tkinter import messagebox
 
+# Import ConfigManager to access calibration folder setting
+from app.utils.config_manager import ConfigManager
+
 # Fully-qualified import path of the internal calibration module copied
 # into this repository.
 _MODULE_NAME = "app.calibration.calibration_app"
@@ -48,8 +51,17 @@ class CalibrationWizardWindow(tk.Toplevel):
         except Exception:
             pass
 
+        # Get calibration folder from config
+        config_manager = ConfigManager()
+        config = config_manager.load_config()
+        calibration_folder = config.get("calibration_folder", "default")
+        
         # Directory where all CSV outputs will be stored
-        self._data_dir = os.path.join(os.getcwd(), "calibration_data")
+        if calibration_folder == "default":
+            self._data_dir = os.path.join(os.getcwd(), "calibration_data")
+        else:
+            self._data_dir = os.path.join(os.getcwd(), "calibration_data", calibration_folder)
+        
         os.makedirs(self._data_dir, exist_ok=True)
 
         # Preserve original working directory so we can restore it when the

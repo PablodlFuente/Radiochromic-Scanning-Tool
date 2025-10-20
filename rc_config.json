@@ -5,14 +5,15 @@
         "C:/Users/pablo/Downloads/scans_070525 1/scans_070525/RC15_16.tiff"
     ],
     "auto_measure": false,
-    "colormap": "magma",
+    "colormap": "cividis",
     "use_gpu": false,
     "gpu_force_enabled": false,
     "use_multithreading": true,
-    "num_threads": 7,
+    "num_threads": 8,
     "max_memory_percent": 75,
     "max_cache_mb": 512,
-    "log_level": "INFO",
+    "log_level": "WARNING",
     "detailed_logging": false,
-    "uncertainty_estimation_method": "dersimonian_laird"
+    "uncertainty_estimation_method": "dersimonian_laird",
+    "calibration_folder": "CUN_2025_04_25"
 }

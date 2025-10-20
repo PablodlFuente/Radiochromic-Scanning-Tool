@@ -78,6 +78,9 @@ class MainWindow:
         # Calibration menu
         self.calibration_menu = tk.Menu(self.menu_bar, tearoff=0)
         self.menu_bar.add_cascade(label="Calibration", menu=self.calibration_menu)
+        self.calibration_menu.add_command(label="Choose Calibration...", 
+                                         command=self.open_settings)
+        self.calibration_menu.add_separator()
         self.calibration_menu.add_command(label="Start Calibration Wizard", 
                                          command=self.start_calibration_wizard)
         
@@ -249,14 +252,6 @@ class MainWindow:
             # Update window title
             self.parent.title(f"Radiochromic Film Analyzer - {os.path.basename(file_path)}")
             
-            # Notify AutoMeasurement plugin about image loaded from main menu
-            try:
-                from custom_plugins.auto_measurements import _AUTO_MEASUREMENTS_INSTANCE
-                if _AUTO_MEASUREMENTS_INSTANCE is not None:
-                    _AUTO_MEASUREMENTS_INSTANCE.on_main_menu_image_loaded(file_path)
-            except Exception as e:
-                logger.debug(f"Could not notify AutoMeasurement plugin: {str(e)}")
-            
             logger.info(f"Loaded image: {file_path}")
         except Exception as e:
             logger.error(f"Error updating UI after loading image: {str(e)}", exc_info=True)
@@ -330,29 +325,57 @@ class MainWindow:
             font=("Arial", 14, "bold")
         ).pack(anchor=tk.W, pady=(0, 20))
         
-        # Image processing section
+        # Calibration section
         ttk.Label(
             main_frame, 
-            text="Image Processing", 
+            text="Calibration", 
             font=("Arial", 11, "bold")
         ).pack(anchor=tk.W, pady=(10, 5))
         
-        # Remove background option
-        remove_background_var = tk.BooleanVar(
-            value=self.app_config.get("remove_background", False)
-        )
+        # Get available calibration folders
+        calibration_base_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "calibration_data")
+        calibration_folders = ["default"]  # Default uses calibration_data root
         
-        ttk.Checkbutton(
-            main_frame, 
-            text="Remove white background when loading images", 
-            variable=remove_background_var
-        ).pack(anchor=tk.W, padx=10, pady=5)
+        try:
+            if os.path.exists(calibration_base_dir):
+                # List all subdirectories in calibration_data
+                for item in os.listdir(calibration_base_dir):
+                    item_path = os.path.join(calibration_base_dir, item)
+                    if os.path.isdir(item_path):
+                        calibration_folders.append(item)
+        except Exception as e:
+            logger.error(f"Error scanning calibration folders: {e}")
+        
+        # Calibration folder selection
+        calibration_frame = ttk.Frame(main_frame)
+        calibration_frame.pack(fill=tk.X, padx=10, pady=5)
         
         ttk.Label(
-            main_frame, 
-            text="This option detects and crops the useful area of the image,\n"
-             "removing the white background to reduce size."
-        ).pack(anchor=tk.W, padx=10, pady=5)
+            calibration_frame,
+            text="Calibration folder:"
+        ).pack(side=tk.LEFT, padx=(0, 10))
+        
+        calibration_folder_var = tk.StringVar(
+            value=self.app_config.get("calibration_folder", "default")
+        )
+        
+        calibration_combobox = ttk.Combobox(
+            calibration_frame,
+            textvariable=calibration_folder_var,
+            values=calibration_folders,
+            state="readonly",
+            width=20
+        )
+        calibration_combobox.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        # Description
+        ttk.Label(
+            main_frame,
+            text="Select which calibration data to use.\n'default' uses files in calibration_data root folder.",
+            foreground="gray",
+            justify=tk.LEFT,
+            font=("Arial", 9)
+        ).pack(anchor=tk.W, padx=10, pady=(5, 10))
         
         # Measurement section
         ttk.Label(
@@ -658,7 +681,6 @@ class MainWindow:
         
         def save_settings():
             # Update config
-            self.app_config["remove_background"] = remove_background_var.get()
             self.app_config["auto_measure"] = auto_measure_var.get()
             self.app_config["colormap"] = colormap_var.get()
             self.app_config["use_gpu"] = use_gpu_var.get()
@@ -670,6 +692,7 @@ class MainWindow:
             self.app_config["log_level"] = log_level_var.get()
             self.app_config["detailed_logging"] = detailed_logging_var.get()
             self.app_config["uncertainty_estimation_method"] = uncertainty_method_var.get()
+            self.app_config["calibration_folder"] = calibration_folder_var.get()
             
             # Save configuration to file
             try:
