@@ -186,8 +186,6 @@ The Radiochromic-Scanning-Tool is a specialized application designed for the ana
 
 ## Recent Updates
 
-### Version 2.0 - October 2025
-
 #### Matrix-Based Circle Naming System
 - **Spatial Organization**: Circles are automatically organized into a grid matrix based on their physical position
 - **Intuitive Naming**: Circles named as C{row}{column} (e.g., C11, C12, C21, C34)
