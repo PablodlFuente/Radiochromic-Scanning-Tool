@@ -94,21 +94,24 @@ def process(image: np.ndarray):
                       (int((x + w_rect) * sx), int((y + h_rect) * sy)),
                       (0, 255, 0), 2)
     
-    # Draw circles
-    # Build a set of CTR circle coordinates for faster lookup
-    ctr_coords = set()
-    for ctr_id in _OVERLAY.get("ctr_map", {}).values():
-        if ctr_id in _OVERLAY.get("item_to_shape", {}):
-            shape_info = _OVERLAY["item_to_shape"][ctr_id]
-            if shape_info[0] == "circle":
-                ctr_coords.add(shape_info[1])  # (cx, cy, r)
+    # Build a set of CTR circle coordinates for fast lookup
+    ctr_coords_set = set()
+    item_to_shape = _OVERLAY.get("item_to_shape", {})
+    ctr_map = _OVERLAY.get("ctr_map", {})
     
+    for film_name, ctr_id in ctr_map.items():
+        if ctr_id in item_to_shape:
+            shape_type, coords = item_to_shape[ctr_id]
+            if shape_type == "circle" and len(coords) == 3:
+                ctr_coords_set.add(coords)  # (cx, cy, r)
+    
+    # Draw circles
     for (cx, cy, r) in _OVERLAY.get("circles", []):
-        # Check if this circle is a CTR circle
-        is_ctr = (cx, cy, r) in ctr_coords
+        # Check if this circle is a CTR by comparing coordinates
+        is_ctr = (cx, cy, r) in ctr_coords_set
         
         if is_ctr:
-            # Draw dashed circle (green)
+            # Draw dashed circle (green) for CTR
             _draw_dashed_circle(out, (int(cx * sx), int(cy * sy)), int(r * sx), (0, 255, 0), 2)
         else:
             # Draw normal circle (green)
@@ -219,11 +222,6 @@ class AutoMeasurementsTab(ttk.Frame):
         self.original_parameters = {}
         self.parameters_converted = False
         self.updating_parameters_programmatically = False  # New flag
-        
-        # Check if there's already an image loaded when plugin is initialized
-        # Use after() to ensure UI is fully constructed before checking
-        if self.image_processor.has_image():
-            self.frame.after(100, self._auto_enable_metadata_if_available)
 
     def _setup_ui(self):
         """Setup the user interface."""
@@ -231,8 +229,6 @@ class AutoMeasurementsTab(ttk.Frame):
         metadata_frame = ttk.Frame(self.frame)
         metadata_frame.pack(fill=tk.X, padx=10, pady=5)
         
-        # Start with False to avoid auto-activation on init
-        # Will be set to True when user loads image or manually checks it
         self.use_metadata_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(metadata_frame, text="Use Metadata", variable=self.use_metadata_var,
                         command=self._update_unit_conversion).pack(side=tk.LEFT)
@@ -470,7 +466,7 @@ class AutoMeasurementsTab(ttk.Frame):
         ttk.Entry(circle_frame, textvariable=self.default_diameter_var, width=6).grid(row=3, column=1)
         
         # Add diameter restriction checkbox
-        self.restrict_diameter_var = tk.BooleanVar(value=True)
+        self.restrict_diameter_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             circle_frame,
             text="Use default diameter for all circles",
@@ -1233,6 +1229,10 @@ class AutoMeasurementsTab(ttk.Frame):
             return
         for item_id in list(sel):
             self._delete_item_recursive(item_id)
+        
+        # IMPORTANT: Store current file data after deletion to persist changes
+        self._store_current_file_data()
+        
         self.main_window.update_image()
 
     def _on_right_click(self, event):
@@ -1334,11 +1334,6 @@ class AutoMeasurementsTab(ttk.Frame):
         if self.ctr_map.get(film_name) == item_id:
             # Remove CTR status
             self.ctr_map.pop(film_name, None)
-            
-            # Update _OVERLAY['ctr_map']
-            if _OVERLAY and 'ctr_map' in _OVERLAY:
-                _OVERLAY['ctr_map'].pop(film_name, None)
-            
             current_text = self.tree.item(item_id, "text")
             if "(CTR)" in current_text:
                 new_text = current_text.replace(" (CTR)", "")
@@ -1397,11 +1392,6 @@ class AutoMeasurementsTab(ttk.Frame):
             
             # Set new CTR
             self.ctr_map[film_name] = item_id
-            
-            # Update _OVERLAY['ctr_map']
-            if _OVERLAY and 'ctr_map' in _OVERLAY:
-                _OVERLAY['ctr_map'][film_name] = item_id
-            
             current_text = self.tree.item(item_id, "text")
             if "(CTR)" not in current_text:
                 self.tree.item(item_id, text=f"{current_text} (CTR)")
@@ -1413,7 +1403,6 @@ class AutoMeasurementsTab(ttk.Frame):
 
     def _detect_ctr_automatically(self, film_name: str, film_circles: list):
         """Automatically detect CTR circle based on dose threshold."""
-        global _OVERLAY
         ctr_candidate = None
         min_dose = float('inf')
         
@@ -1426,11 +1415,6 @@ class AutoMeasurementsTab(ttk.Frame):
         if ctr_candidate:
             circle_id = ctr_candidate["circle_id"]
             self.ctr_map[film_name] = circle_id
-            
-            # Update _OVERLAY['ctr_map']
-            if _OVERLAY and 'ctr_map' in _OVERLAY:
-                _OVERLAY['ctr_map'][film_name] = circle_id
-            
             current_text = self.tree.item(circle_id, "text")
             self.tree.item(circle_id, text=f"{current_text} (CTR)")
             self.tree.item(circle_id, tags=("ctr",))
@@ -1725,22 +1709,19 @@ class AutoMeasurementsTab(ttk.Frame):
             for item_id, (shape_type, coords) in _OVERLAY.get('item_to_shape', {}).items():
                 item_name = self.tree.item(item_id, 'text') if self.tree.exists(item_id) else None
                 if item_name:
+                    # Remove " (CTR)" suffix for consistent naming
+                    item_name_clean = item_name.replace(" (CTR)", "")
                     if shape_type == 'film':
-                        shapes_by_name[('film', item_name)] = coords
+                        shapes_by_name[('film', item_name_clean)] = coords
                     elif shape_type == 'circle':
                         # Get parent film name
                         parent_id = self.tree.parent(item_id)
                         parent_name = self.tree.item(parent_id, 'text') if parent_id else None
                         if parent_name:
-                            # Remove " (CTR)" suffix for consistent naming
-                            item_name_clean = item_name.replace(" (CTR)", "")
                             shapes_by_name[('circle', parent_name, item_name_clean)] = coords
-                            # Also store the original radius using clean name
+                            # Also store the original radius with clean name
                             if item_id in self.original_radii:
                                 radii_by_name[(parent_name, item_name_clean)] = self.original_radii[item_id]
-                            elif len(coords) >= 3:
-                                # Fallback: extract radius from coords (cx, cy, r)
-                                radii_by_name[(parent_name, item_name_clean)] = coords[2]
             
             # Convert ctr_map from {film_name: circle_id} to {film_name: circle_name}
             for film_name, circle_id in self.ctr_map.items():
@@ -1824,7 +1805,6 @@ class AutoMeasurementsTab(ttk.Frame):
                 _OVERLAY['films'] = []
                 _OVERLAY['circles'] = []
                 _OVERLAY['item_to_shape'] = {}
-                _OVERLAY['ctr_map'] = {}  # Will be rebuilt in _update_treeview_from_data
             else:
                 # Clear overlay if no saved state
                 _OVERLAY = {
@@ -1853,84 +1833,11 @@ class AutoMeasurementsTab(ttk.Frame):
                 'scale': 1.0
             }
     
-    def _auto_enable_metadata_with_retry(self, attempts=0, max_attempts=5):
-        """Try to enable metadata with retry mechanism."""
-        # Try to get resolution
-        resolution = self._get_resolution_from_metadata()
-        
-        if resolution is not None and resolution > 0:
-            # Success! Enable metadata
-            self.stored_resolution = resolution
-            logging.info(f"Metadata found! Resolution: {resolution:.2f} DPI (attempt {attempts + 1})")
-            self.use_metadata_var.set(True)
-            self._apply_metadata_conversion()
-        elif attempts < max_attempts:
-            # Retry after a delay
-            delay = 100 * (attempts + 1)  # Increasing delay: 100ms, 200ms, 300ms, etc.
-            logging.info(f"Metadata not found on attempt {attempts + 1}, retrying in {delay}ms...")
-            self.frame.after(delay, lambda: self._auto_enable_metadata_with_retry(attempts + 1, max_attempts))
-        else:
-            logging.info(f"No metadata found after {max_attempts} attempts")
-    
-    def _auto_enable_metadata_if_available(self):
-        """Check if metadata is available and auto-enable the checkbox if found."""
-        logging.info("_auto_enable_metadata_if_available called")
-        
-        # Check if we already have stored resolution
-        if hasattr(self, 'stored_resolution') and self.stored_resolution is not None:
-            logging.info(f"Using stored resolution: {self.stored_resolution:.2f} DPI")
-            # Already have resolution, enable checkbox and apply conversion
-            if not self.use_metadata_var.get():
-                self.use_metadata_var.set(True)
-                logging.info("Checkbox enabled with stored resolution")
-                # Apply conversion to parameters
-                self._apply_metadata_conversion()
-            else:
-                logging.info("Checkbox already enabled")
-            return
-        
-        # Try to get resolution from metadata (even if has_image() returns False, try anyway)
-        logging.info("Attempting to get resolution from metadata...")
-        resolution = self._get_resolution_from_metadata()
-        
-        if resolution is not None and resolution > 0:
-            # Metadata found! Enable checkbox, store resolution and apply conversion
-            self.stored_resolution = resolution
-            logging.info(f"Metadata found! Resolution: {resolution:.2f} DPI")
-            
-            # Always set checkbox and apply conversion when metadata is found
-            self.use_metadata_var.set(True)
-            logging.info(f"Auto-enabled metadata usage. Resolution: {resolution:.2f} DPI")
-            # Apply conversion to parameters
-            self._apply_metadata_conversion()
-        else:
-            # No metadata found
-            logging.info(f"No valid metadata found. Resolution: {resolution}")
-
-    
-    def _apply_metadata_conversion(self):
-        """Apply metadata conversion to parameters without showing messages."""
-        if not hasattr(self, 'stored_resolution') or self.stored_resolution is None:
-            return
-        
-        # Calculate conversion factor
-        conversion_factor = 25.4 / self.stored_resolution
-        
-        # Update labels and convert parameters
-        self._convert_parameters_to_mm(conversion_factor)
-        
-        # Update resolution and conversion labels
-        self.resolution_label.config(text=f"Resolution: {self.stored_resolution:.2f} DPI")
-        self.conversion_label.config(text=f"(1 px = {conversion_factor:.4f} mm)", foreground="blue")
-    
     def _load_file(self, file_path):
         """Load a specific image file and its associated data."""
         try:
             # Load the image through the main window
             self.main_window.load_image(file_path)
-            
-            # Force check for metadata after loading with retry mechanism
-            self._auto_enable_metadata_with_retry(attempts=0)
             
             # Load associated measurement data
             self._load_file_data(file_path)
@@ -2022,29 +1929,19 @@ class AutoMeasurementsTab(ttk.Frame):
                                             avg_unc_str)
             
             # Restore circle shape mapping
-            # Use clean name (without CTR suffix) for lookup
-            circle_name_clean = circle_name.replace(" (CTR)", "")
-            circle_key = ('circle', film_name, circle_name_clean)
+            circle_key = ('circle', film_name, circle_name)
             if circle_key in shapes_by_name:
                 new_item_to_shape[circle_id] = ('circle', shapes_by_name[circle_key])
             else:
                 # Fallback: use coordinates from result
                 cx, cy = result.get('x', 0), result.get('y', 0)
-                # Try to find radius from multiple sources
-                r = result.get('r', None)  # First try from result itself
-                if r is None:
-                    # Then try from radii_by_name
-                    radii_key = (film_name, circle_name_clean)
-                    if radii_key in radii_by_name:
-                        r = radii_by_name[radii_key]
-                    else:
-                        # Try to find radius from original_radii by matching coordinates
-                        r = 20  # default fallback
-                        for coords_key, radius in self.original_radii.items():
-                            if isinstance(coords_key, tuple) and len(coords_key) >= 2:
-                                if coords_key[0] == cx and coords_key[1] == cy:
-                                    r = radius
-                                    break
+                # Try to find radius from original_radii by matching coordinates
+                r = 20  # default
+                for coords_key, radius in self.original_radii.items():
+                    if isinstance(coords_key, tuple) and len(coords_key) >= 2:
+                        if coords_key[0] == cx and coords_key[1] == cy:
+                            r = radius
+                            break
                 new_item_to_shape[circle_id] = ('circle', (cx, cy, r))
         
         # Update _OVERLAY with new mapping
@@ -2157,11 +2054,6 @@ class AutoMeasurementsTab(ttk.Frame):
                             self.tree.item(child_id, tags=("ctr",))
                             break
             self.ctr_map = new_ctr_map
-            
-            # Update _OVERLAY['ctr_map'] with the new mapping
-            if _OVERLAY:
-                _OVERLAY['ctr_map'] = new_ctr_map.copy()
-            
             # Clear temporary storage
             del self._ctr_map_by_name
             
@@ -2215,9 +2107,6 @@ class AutoMeasurementsTab(ttk.Frame):
         if not self.image_processor.has_image():
             messagebox.showwarning("AutoMeasurements", "Carga una imagen primero.")
             return
-
-        # Check if metadata is available and auto-enable checkbox
-        self._auto_enable_metadata_if_available()
 
         # Get image for detection
         img_rgb = (
@@ -2473,7 +2362,6 @@ class AutoMeasurementsTab(ttk.Frame):
                     "pixel_count": pixel_count,
                     "x": abs_cx,
                     "y": abs_cy,
-                    "r": r,                              # Store radius
                     # Store raw numeric values for CSV export
                     "dose_numeric": dose,                # Raw dose values (tuple or float)
                     "std_numeric": std,                  # Raw std values (tuple or float)
@@ -2546,12 +2434,9 @@ class AutoMeasurementsTab(ttk.Frame):
                 logging.info("No stored resolution found, attempting to detect new.")
                 resolution = self._get_resolution_from_metadata()
                 if resolution is None or resolution <= 0:
-                    logging.warning(f"Invalid resolution detected: {resolution}. Disabling metadata usage.")
-                    messagebox.showwarning("Metadata Not Found", 
-                                         "No se pudo encontrar información de resolución (DPI) en los metadatos de la imagen.\n\n"
-                                         "El checkbox 'Use Metadata' se ha desmarcado automáticamente.")
+                    logging.error(f"Invalid resolution detected: {resolution}")
+                    messagebox.showerror("Error", "Resolución no disponible para conversión de unidades.")
                     self.use_metadata_var.set(False)
-                    self.updating_parameters_programmatically = False
                     return
                 self.stored_resolution = resolution
                 logging.info(f"New resolution stored: {resolution:.2f} DPI")
@@ -3145,6 +3030,11 @@ class AutoMeasurementsTab(ttk.Frame):
 
     def _delete_item_recursive(self, item_id):
         """Recursively delete item and clean up data."""
+        # Get item info before deletion for results cleanup
+        item_text = self.tree.item(item_id, "text")
+        parent_id = self.tree.parent(item_id)
+        parent_text = self.tree.item(parent_id, "text") if parent_id else None
+        
         # First delete children recursively
         for child in self.tree.get_children(item_id):
             self._delete_item_recursive(child)
@@ -3157,8 +3047,13 @@ class AutoMeasurementsTab(ttk.Frame):
                 if coords in _OVERLAY.get("films", []):
                     _OVERLAY["films"].remove(coords)
                 # Remove any CTR mapping for this film
-                film_name = self.tree.item(item_id, "text")
+                film_name = item_text
                 self.ctr_map.pop(film_name, None)
+                
+                # Remove all circles from this film from results
+                self.results = [rec for rec in self.results 
+                              if rec["film"] != film_name]
+                
             elif shape_type == "circle":
                 if coords in _OVERLAY.get("circles", []):
                     _OVERLAY["circles"].remove(coords)
@@ -3167,21 +3062,18 @@ class AutoMeasurementsTab(ttk.Frame):
                     if ctr_id == item_id:
                         self.ctr_map.pop(film_name)
                         break
+                
+                # Remove this specific circle from results
+                circle_name_clean = item_text.replace(" (CTR)", "")
+                self.results = [rec for rec in self.results 
+                              if not (rec["film"] == parent_text and 
+                                     rec["circle"].replace(" (CTR)", "") == circle_name_clean)]
 
         # Clean up stored data
         self.original_measurements.pop(item_id, None)
-        self.original_values.pop(item_id, None)  # Remove from stored values
+        self.original_values.pop(item_id, None)
         self.original_radii.pop(item_id, None)
-
-        # Remove from results
-        if item_id in _OVERLAY.get("item_to_shape", {}):
-            shape_type = _OVERLAY["item_to_shape"][item_id][0]
-            if shape_type == "circle":
-                circ_name = self.tree.item(item_id, "text").replace(" (CTR)", "")
-                film_item = self.tree.parent(item_id)
-                film_name = self.tree.item(film_item, "text") if film_item else None
-                self.results = [rec for rec in self.results 
-                              if not (rec["film"] == film_name and rec["circle"] == circ_name)]
+        self.detected_radii.pop(item_id, None)
 
         # Finally delete from TreeView
         self.tree.delete(item_id)
@@ -3576,7 +3468,6 @@ class AutoMeasurementsTab(ttk.Frame):
             "pixel_count": pixel_count,
             "x": cx,
             "y": cy,
-            "r": r,                              # Store radius
             # Store raw numeric values for CSV export
             "dose_numeric": dose if res else 0.0,
             "std_numeric": std if res else 0.0,
@@ -3697,54 +3588,6 @@ class AutoMeasurementsTab(ttk.Frame):
         except (ValueError, TypeError):
             return str(value)
 
-    def _get_export_values_for_result(self, result, film_name, circle_name):
-        """Get the correct values for export, considering CTR subtraction if enabled."""
-        # Start with original numeric values from result
-        dose_numeric = result.get('dose_numeric', result.get('dose', 0.0))
-        std_numeric = result.get('std_numeric', result.get('std_per_channel', 0.0))
-        avg_numeric = result.get('avg_numeric', result.get('avg', 0.0))
-        avg_unc_numeric = result.get('avg_unc_numeric', result.get('avg_unc', 0.0))
-        
-        # If CTR subtraction is enabled, apply it
-        if self.subtract_ctr_var.get() and film_name in self.ctr_map:
-            ctr_id = self.ctr_map[film_name]
-            
-            # Check if this is the CTR circle itself
-            circle_name_clean = circle_name.replace(" (CTR)", "")
-            is_ctr_circle = False
-            
-            if self.tree.exists(ctr_id):
-                ctr_circle_name = self.tree.item(ctr_id, 'text').replace(" (CTR)", "")
-                is_ctr_circle = (ctr_circle_name == circle_name_clean)
-            
-            if is_ctr_circle:
-                # For CTR circle, set average to 0 but keep uncertainty
-                avg_numeric = 0.0
-                # dose_numeric and std_numeric remain unchanged
-            else:
-                # For other circles, subtract CTR average from average
-                # Get CTR's original measurements
-                ctr_orig_data = self.original_measurements.get(ctr_id)
-                if ctr_orig_data:
-                    try:
-                        ctr_avg = self._clean_numeric_string(ctr_orig_data["avg"])
-                        ctr_unc = self._clean_numeric_string(ctr_orig_data["avg_unc"])
-                        
-                        # Subtract CTR average
-                        avg_numeric = max(0.0, avg_numeric - ctr_avg)
-                        
-                        # Propagate uncertainty: sqrt(unc1^2 + unc2^2)
-                        avg_unc_numeric = sqrt(avg_unc_numeric**2 + ctr_unc**2)
-                    except (ValueError, TypeError):
-                        pass  # Keep original values if error
-        
-        return {
-            'dose': dose_numeric,
-            'std': std_numeric,
-            'avg': avg_numeric,
-            'avg_unc': avg_unc_numeric,
-        }
-    
     def export_csv(self):
         """Export measurements to CSV with the requested format from all loaded files."""
         # Store current file data before checking
@@ -3832,16 +3675,14 @@ class AutoMeasurementsTab(ttk.Frame):
                         film_name = result['film']
                         circle_name = result['circle']
                         
-                        # Get correct values (with CTR subtraction if enabled)
-                        export_values = self._get_export_values_for_result(result, film_name, circle_name)
-                        
                         # Format all numeric values for CSV with scientific notation
-                        doses_formatted = self._format_for_csv(export_values['dose'])
-                        std_formatted = self._format_for_csv(export_values['std'])
-                        avg_formatted = self._format_for_csv(export_values['avg'])
+                        # Use raw numeric values if available, otherwise use formatted strings
+                        doses_formatted = self._format_for_csv(result.get('dose_numeric', result.get('dose', '')))
+                        std_formatted = self._format_for_csv(result.get('std_numeric', result.get('std_per_channel', '')))
+                        avg_formatted = self._format_for_csv(result.get('avg_numeric', result.get('avg', '')))
                         
                         # Get SE_average numeric value and format for CSV
-                        se_average = export_values['avg_unc']
+                        se_average = result.get('avg_unc_numeric', result.get('avg_unc', 0.0))
                         se_average_formatted = self._format_for_csv(se_average)
                         
                         # Create the row data
@@ -3887,16 +3728,14 @@ class AutoMeasurementsTab(ttk.Frame):
                         film_name = result['film']
                         circle_name = result['circle']
                         
-                        # Get correct values (with CTR subtraction if enabled)
-                        export_values = self._get_export_values_for_result(result, film_name, circle_name)
-                        
                         # Format all numeric values for CSV with scientific notation
-                        doses_formatted = self._format_for_csv(export_values['dose'])
-                        std_formatted = self._format_for_csv(export_values['std'])
-                        avg_formatted = self._format_for_csv(export_values['avg'])
+                        # Use raw numeric values if available, otherwise use formatted strings
+                        doses_formatted = self._format_for_csv(result.get('dose_numeric', result.get('dose', '')))
+                        std_formatted = self._format_for_csv(result.get('std_numeric', result.get('std_per_channel', '')))
+                        avg_formatted = self._format_for_csv(result.get('avg_numeric', result.get('avg', '')))
                         
                         # Get SE_average numeric value and format for CSV
-                        se_average = export_values['avg_unc']
+                        se_average = result.get('avg_unc_numeric', result.get('avg_unc', 0.0))
                         se_average_formatted = self._format_for_csv(se_average)
                         
                         row_data = [
