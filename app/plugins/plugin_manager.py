@@ -53,25 +53,42 @@ class PluginManager:
     # Public API
     # ------------------------------------------------------------------
     def scan_plugins(self) -> None:
-        """Discover and import all .py files in *plugins_dir*."""
+        """Discover and import all .py files and packages in *plugins_dir*."""
         self._plugins.clear()
         self._active.clear()
 
-        for file in sorted(os.listdir(self.plugins_dir)):
-            if not file.endswith(".py"):
-                continue
-            path = os.path.join(self.plugins_dir, file)
-            name = os.path.splitext(file)[0]
-            try:
-                module = self._load_module(name, path)
-                if module is not None and hasattr(module, "process"):
-                    self._plugins[name] = module
-                    self._active[name] = True  # default enabled
-                    logger.info("Loaded plugin '%s'", name)
-                else:
-                    logger.warning("Plugin '%s' ignored – no 'process' function", name)
-            except Exception as exc:
-                logger.error("Failed to load plugin '%s': %s", name, exc, exc_info=True)
+        for item in sorted(os.listdir(self.plugins_dir)):
+            item_path = os.path.join(self.plugins_dir, item)
+            
+            # Case 1: Single .py file
+            if item.endswith(".py"):
+                name = os.path.splitext(item)[0]
+                try:
+                    module = self._load_module(name, item_path)
+                    if module is not None and hasattr(module, "process"):
+                        self._plugins[name] = module
+                        self._active[name] = True  # default enabled
+                        logger.info("Loaded plugin '%s' (single file)", name)
+                    else:
+                        logger.warning("Plugin '%s' ignored – no 'process' function", name)
+                except Exception as exc:
+                    logger.error("Failed to load plugin '%s': %s", name, exc, exc_info=True)
+            
+            # Case 2: Package directory (must have __init__.py)
+            elif os.path.isdir(item_path) and not item.startswith('__'):
+                init_file = os.path.join(item_path, "__init__.py")
+                if os.path.exists(init_file):
+                    name = item
+                    try:
+                        module = self._load_package(name, item_path)
+                        if module is not None and hasattr(module, "process"):
+                            self._plugins[name] = module
+                            self._active[name] = True  # default enabled
+                            logger.info("Loaded plugin '%s' (package)", name)
+                        else:
+                            logger.warning("Plugin package '%s' ignored – no 'process' function", name)
+                    except Exception as exc:
+                        logger.error("Failed to load plugin package '%s': %s", name, exc, exc_info=True)
 
     def load_plugin_file(self, source_path: str) -> str | None:
         """Copy *source_path* into *plugins_dir* and load it.
@@ -212,6 +229,36 @@ class PluginManager:
         loader.exec_module(module)
         sys.modules[mod_name] = module
         return module
+    
+    def _load_package(self, pkg_name: str, pkg_path: str, *, force_reload: bool = False) -> ModuleType | None:
+        """Load a plugin package from a directory with __init__.py.
+        
+        Args:
+            pkg_name: Name of the package (directory name)
+            pkg_path: Full path to the package directory
+            force_reload: Whether to force reload if already in sys.modules
+        
+        Returns:
+            The loaded module or None if loading failed
+        """
+        # Construct the full module name: custom_plugins.package_name
+        full_mod_name = f"custom_plugins.{pkg_name}"
+        
+        if full_mod_name in sys.modules and not force_reload:
+            return sys.modules[full_mod_name]
+        
+        # Add parent directory to sys.path if not already there
+        parent_dir = os.path.dirname(pkg_path)
+        if parent_dir not in sys.path:
+            sys.path.insert(0, parent_dir)
+        
+        try:
+            # Import the package
+            module = importlib.import_module(full_mod_name)
+            return module
+        except Exception as exc:
+            logger.error(f"Failed to import package {full_mod_name}: {exc}", exc_info=True)
+            return None
 
 
 # ----------------------------------------------------------------------

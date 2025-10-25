@@ -237,6 +237,19 @@ class MainWindow:
             
             logger.debug("Calling fit_to_screen after loading image")
             
+            # Update _OVERLAY shape in plugin (if plugin is loaded)
+            if hasattr(self.image_processor, 'original_image') and self.image_processor.original_image is not None:
+                try:
+                    # Import and call plugin's update function
+                    from custom_plugins import auto_measurements
+                    if hasattr(auto_measurements, 'update_overlay_shape'):
+                        auto_measurements.update_overlay_shape(self.image_processor.original_image.shape)
+                        logger.debug(f"Updated plugin overlay shape to {self.image_processor.original_image.shape[:2]}")
+                except ImportError:
+                    pass  # Plugin not loaded yet
+                except Exception as e:
+                    logger.warning(f"Could not update plugin overlay shape: {e}")
+            
             # Update UI
             self.update_status(f"Loaded image: {os.path.basename(file_path)}")
             
@@ -882,7 +895,8 @@ class MainWindow:
             "A tool for analyzing radiochromic films and calculating dose.\n\n"
             "Created by Pablo de la Fuente Fernández\n"
             "Licensed under the GNU GPL v3\n\n"
-            "Version 1.0.0"
+            "Version 1.0.0\n\n"
+            "Tester: Paula Martinez Bononad"
         )
     
     def update_status(self, message):
