@@ -150,6 +150,9 @@ class AutoMeasurementsTab(ttk.Frame):
         self._dim_vars = []
         self._last_cursor = None
         self.preview_tag = "draw_preview"  # Unique tag for canvas preview items
+        
+        # Store original canvas bindings to restore after drawing mode
+        self._original_bindings = {}
 
         # Add sorting state variables
         self.sort_column = None
@@ -2473,6 +2476,14 @@ class AutoMeasurementsTab(ttk.Frame):
         self.draw_dims = dims
         self._open_dims_window()
         
+        # Save references to ImagePanel's original methods before overriding
+        if hasattr(self.main_window, 'image_panel'):
+            image_panel = self.main_window.image_panel
+            self._original_bindings = {
+                '<Motion>': image_panel._on_mouse_move,
+                '<Button-1>': image_panel._on_click
+            }
+        
         self._canvas.config(cursor="crosshair")
         self._canvas.delete(self.preview_tag)
         self._canvas.bind("<Motion>", self._on_draw_move)
@@ -2589,8 +2600,13 @@ class AutoMeasurementsTab(ttk.Frame):
         if hasattr(self, "_canvas") and self._canvas is not None:
             self._canvas.delete(self.preview_tag)
             self._canvas.config(cursor="")
-            self._canvas.unbind("<Motion>")
-            self._canvas.unbind("<Button-1>")
+            
+            # Restore original ImagePanel bindings
+            if hasattr(self, "_original_bindings") and self._original_bindings:
+                for event_type, callback in self._original_bindings.items():
+                    if callback:
+                        self._canvas.bind(event_type, callback)
+                self._original_bindings.clear()
 
         try:
             self.frame.winfo_toplevel().unbind("<Escape>")
