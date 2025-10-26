@@ -276,3 +276,5 @@ This project is licensed under the GNU GPL v3 - see the LICENSE file for details
 
 - This software was developed for research purposes in the field of medical physics and radiophysics. It is provided “as is”, without any warranty of any kind. The developer assumes no responsibility or liability for any use, misuse, or results obtained from the use of this software. Use of this software is entirely at your own risk.
 
+- This software was developed partially with the assistance of GitHub Copilot.
+

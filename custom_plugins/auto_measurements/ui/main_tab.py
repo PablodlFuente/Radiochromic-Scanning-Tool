@@ -1046,15 +1046,21 @@ class AutoMeasurementsTab(ttk.Frame):
         return self.ctr_manager.detect_ctr_automatically(film_name, film_circles)
 
     def _update_ctr_subtraction(self):
-        """Apply or remove CTR subtraction based on checkbox state."""
-        if not self.subtract_ctr_var.get():
-            self.ctr_manager.restore_original_measurements()
+        """Apply or remove CTR subtraction based on checkbox state and CTR availability."""
+        # CRITICAL: If no CTR is selected, ALWAYS restore original values
+        # regardless of checkbox state. Checkbox only applies when CTR exists.
+        has_ctr = len(self.ctr_manager.ctr_map) > 0
+        
+        if not has_ctr or not self.subtract_ctr_var.get():
+            # Restore original if: 1) No CTR selected, OR 2) Checkbox unchecked
+            self.ctr_manager.restore_original_measurements(self.results)
         else:
+            # Apply CTR only if: 1) CTR selected, AND 2) Checkbox checked
             self.ctr_manager.apply_ctr_subtraction(self.results)
 
     def _restore_original_measurements(self):
         """Restore original measurements (delegates to CTR manager)."""
-        self.ctr_manager.restore_original_measurements()
+        self.ctr_manager.restore_original_measurements(self.results)
 
     def _apply_ctr_subtraction(self):
         """Apply CTR subtraction (delegates to CTR manager)."""
@@ -1134,8 +1140,8 @@ class AutoMeasurementsTab(ttk.Frame):
                                 current_values[4] = ci95_str    # 95% CI
                                 self.tree.item(item, values=current_values)
                                 
-                                # Update original measurements for CTR calculations (full precision)
-                                self._store_original_measurement(item, str(dose), unc_str, str(avg_val), str(avg_unc))
+                                # Update original measurements for CTR calculations (use formatted values)
+                                self._store_original_measurement(item, dose_str, std_str, avg_str, avg_unc_str)
                                 
                     finally:
                         self.image_processor.measurement_size = prev_size
@@ -1244,10 +1250,14 @@ class AutoMeasurementsTab(ttk.Frame):
                 except (ValueError, TypeError):
                     avg_display = 0.0
             
+            # Get numeric values for formatting (preserve full precision)
+            dose_for_format = result.get('dose_numeric', result.get('dose', 0.0))
+            std_for_format = result.get('std_numeric', result.get('std_per_channel', result.get('unc', 0.0)))
+            
             # Format values for TreeView display
             dose_str, sigma_str, avg_str, avg_unc_str, ci95_str = self.formatter.format_for_treeview(
-                result.get('dose', 0.0),
-                result.get('std_per_channel', result.get('unc', 0.0)),
+                dose_for_format,
+                std_for_format,
                 avg_display,
                 avg_unc_value,
                 sig=2
@@ -1257,30 +1267,14 @@ class AutoMeasurementsTab(ttk.Frame):
             circle_id = self.tree.insert(film_id, "end", text=circle_name, values=values)
             
             # Store original measurements with new TreeView ID
-            # This is needed for CTR subtraction to work correctly
-            # HYBRID SOLUTION: Prefer avg_original (saved before CTR) over avg_numeric (after CTR)
-            # This ensures original values are preserved when navigating between files
-            avg_for_orig = result.get('avg_original', result.get('avg_numeric', result.get('avg', 0.0)))
-            avg_unc_for_orig = result.get('avg_unc_original', result.get('avg_unc_numeric', avg_unc_value))
-            
-            # Convert to string format expected by _store_original_measurement
-            if isinstance(avg_for_orig, (int, float)):
-                avg_str_for_orig = str(avg_for_orig)
-            else:
-                avg_str_for_orig = str(avg_for_orig)
-            
-            if isinstance(avg_unc_for_orig, (int, float)):
-                avg_unc_str_for_orig = str(avg_unc_for_orig)
-            else:
-                avg_unc_str_for_orig = str(avg_unc_for_orig)
-            
-            # Store original measurement with new TreeView ID
-            # Use avg_original if available (set by CTR subtraction), otherwise use current values
+            # IMPORTANT: Store FORMATTED values (avg_str, avg_unc_str) not raw numeric values
+            # This ensures restore_original_measurements displays correctly formatted values
+            # The formatter has already been applied above, so use those formatted strings
             self._store_original_measurement(circle_id, 
-                                            result['dose'], 
-                                            result.get('std_per_channel', result.get('unc', '')), 
-                                            avg_str_for_orig,
-                                            avg_unc_str_for_orig)
+                                            dose_str,      # Already formatted by format_for_treeview
+                                            sigma_str,     # Already formatted by format_for_treeview
+                                            avg_str,       # Already formatted by format_for_treeview  
+                                            avg_unc_str)   # Already formatted by format_for_treeview
             
             # Restore circle shape mapping
             circle_key = ('circle', film_name, circle_name)
@@ -1691,22 +1685,18 @@ class AutoMeasurementsTab(ttk.Frame):
                     avg_std = float(np.mean(std))
                     avg_std_str = f"{avg_std}"
                 else:
-                    dose_str = f"{dose}"
-                    unc_str = f"±{unc}"
-                    std_str = f"{std}"
-                    avg_std_str = std_str
-                    
                     # For single channel, use combined uncertainty values
                     avg_val = float(rgb_mean)
                     avg_unc = float(rgb_mean_std)
 
-                # Format with full precision (all decimals)
-                avg_str = f"{avg_val}"
-                avg_unc_str = f"±{avg_unc}"
-                
-                # Calculate 95% confidence interval: SE * 1.96
-                ci95_value = avg_unc * 1.96
-                ci95_str = f"±{ci95_value}"
+                # Format for TreeView display using formatter
+                dose_str, std_str, avg_str, avg_unc_str, ci95_str = self.formatter.format_for_treeview(
+                    dose,
+                    std,
+                    avg_val,
+                    avg_unc,
+                    sig=2
+                )
 
                 # Create circle item (circ_name already comes from matrix organization)
                 circ_id = self.tree.insert(film_id, "end", text=circ_name, 
@@ -1739,16 +1729,16 @@ class AutoMeasurementsTab(ttk.Frame):
                 self.results.append({
                     "film": film_name,
                     "circle": circ_name,
-                    "dose": dose_str,
-                    "std_per_channel": std_str,          # STD per channel
-                    "unc": unc_str,                      # SE/Uncertainty per channel
+                    "dose": dose,                        # Raw numeric dose (NOT formatted string)
+                    "std_per_channel": std,              # Raw numeric STD per channel (NOT formatted string)
+                    "unc": unc,                          # Raw numeric SE/Uncertainty per channel
                     "avg": avg_val,                      # Store numeric value (not formatted string)
                     "avg_unc": avg_unc,                  # Store numeric value directly
-                    "std": avg_std_str,
+                    "std": avg_std,                      # Raw numeric average std
                     "pixel_count": pixel_count,
                     "x": abs_cx,
                     "y": abs_cy,
-                    # Store raw numeric values for CSV export
+                    # Store raw numeric values for CSV export (redundant but kept for compatibility)
                     "dose_numeric": dose,                # Raw dose values (tuple or float)
                     "std_numeric": std,                  # Raw std values (tuple or float)
                     "unc_numeric": unc,                  # Raw uncertainty values (tuple or float)
@@ -2045,20 +2035,18 @@ class AutoMeasurementsTab(ttk.Frame):
                     avg_std = float(np.mean(std))
                     avg_std_str = f"{avg_std}"
                 else:
-                    dose_str = f"{dose}"
-                    std_str = f"{std}"
-                    avg_std_str = std_str
-                    
                     # For single channel, use combined uncertainty values
                     avg_val = float(rgb_mean)
                     avg_unc = float(rgb_mean_std)
                 
-                avg_str = f"{avg_val}"
-                avg_unc_str = f"±{avg_unc}"
-                
-                # Calculate 95% confidence interval: SE * 1.96
-                ci95_value = avg_unc * 1.96
-                ci95_str = f"±{ci95_value}"
+                # Format for TreeView display using formatter
+                dose_str, std_str, avg_str, avg_unc_str, ci95_str = self.formatter.format_for_treeview(
+                    dose,
+                    std,
+                    avg_val,
+                    avg_unc,
+                    sig=2
+                )
                 
                 # Update original measurements
                 self._store_original_measurement(item_id, dose_str, std_str, avg_str, avg_unc_str)
@@ -2150,20 +2138,18 @@ class AutoMeasurementsTab(ttk.Frame):
                     avg_std = float(np.mean(std))
                     avg_std_str = f"{avg_std}"
                 else:
-                    dose_str = f"{dose}"
-                    std_str = f"{std}"
-                    avg_std_str = std_str
-                    
                     # For single channel, use combined uncertainty values
                     avg_val = float(rgb_mean)
                     avg_unc = float(rgb_mean_std)
                     
-                avg_str = f"{avg_val}"
-                avg_unc_str = f"±{avg_unc}"
-                
-                # Calculate 95% confidence interval: SE * 1.96
-                ci95_value = avg_unc * 1.96
-                ci95_str = f"±{ci95_value}"
+                # Format for TreeView display using formatter
+                dose_str, std_str, avg_str, avg_unc_str, ci95_str = self.formatter.format_for_treeview(
+                    dose,
+                    std,
+                    avg_val,
+                    avg_unc,
+                    sig=2
+                )
                 
                 # Update original measurements
                 self._store_original_measurement(item_id, dose_str, std_str, avg_str, avg_unc_str)
@@ -2191,10 +2177,16 @@ class AutoMeasurementsTab(ttk.Frame):
                     if rec["film"] == film_name and rec["circle"] == circle_name:
                         rec["dose"] = dose_str
                         rec["unc"] = std_str  # This should be std
-                        rec["avg"] = avg_str
-                        rec["avg_unc"] = avg_unc_str
+                        rec["avg"] = avg_val  # Store numeric value, not formatted string
+                        rec["avg_unc"] = avg_unc  # Store numeric value
                         rec["std"] = avg_std_str
                         rec["pixel_count"] = pixel_count
+                        # Also update the _numeric fields for CSV export
+                        rec["avg_numeric"] = avg_val
+                        rec["avg_unc_numeric"] = avg_unc
+                        rec["dose_numeric"] = dose
+                        rec["std_numeric"] = std
+                        rec["unc_numeric"] = unc
                         break
 
             _get_parent_module()._OVERLAY["circles"] = new_circles
@@ -2715,20 +2707,18 @@ class AutoMeasurementsTab(ttk.Frame):
                 avg_std = float(np.mean(std))
                 avg_std_str = f"{avg_std}"
             else:
-                dose_str = f"{dose}"
-                unc_str = f"±{unc}"
-                std_str = f"{std}"
-                avg_std_str = std_str
-                
                 # For single channel, use combined uncertainty values
                 avg_val = float(rgb_mean)
                 avg_unc = float(rgb_mean_std)
             
-            avg_str = f"{avg_val}"
-            avg_unc_str = f"±{avg_unc}"
-            # Calculate 95% confidence interval: SE * 1.96
-            ci95_value = avg_unc * 1.96
-            ci95_str = f"±{ci95_value}"
+            # Format for TreeView display using formatter
+            dose_str, std_str, avg_str, avg_unc_str, ci95_str = self.formatter.format_for_treeview(
+                dose,
+                std,
+                avg_val,
+                avg_unc,
+                sig=2
+            )
         else:
             dose_str = unc_str = avg_str = avg_unc_str = ci95_str = ""
             pixel_count = 0
@@ -2766,26 +2756,27 @@ class AutoMeasurementsTab(ttk.Frame):
             self.tree.item(parent_id, open=True)
 
         # Store for CTR detection and results
+        # Store result
         film_name = self.tree.item(parent_id, "text") if parent_id else None
         self.results.append({
             "film": film_name,
             "circle": circ_name,
-            "dose": dose_str,
-            "std_per_channel": std_str,          # STD per channel
-            "unc": unc_str,                      # SE/Uncertainty per channel
-            "avg": avg_val,                      # Store numeric value (not formatted string)
-            "avg_unc": avg_unc,                  # Store numeric value directly
-            "std": avg_std_str,
+            "dose": dose if res else 0.0,               # Raw numeric dose (NOT formatted string)
+            "std_per_channel": std if res else 0.0,     # Raw numeric STD per channel (NOT formatted string)
+            "unc": unc if res else 0.0,                 # Raw numeric SE/Uncertainty per channel
+            "avg": avg_val,                             # Store numeric value (not formatted string)
+            "avg_unc": avg_unc,                         # Store numeric value directly
+            "std": avg_std if res else 0.0,             # Raw numeric average std
             "pixel_count": pixel_count,
             "x": cx,
             "y": cy,
-            # Store raw numeric values for CSV export
+            # Store raw numeric values for CSV export (redundant but kept for compatibility)
             "dose_numeric": dose if res else 0.0,
             "std_numeric": std if res else 0.0,
             "unc_numeric": unc if res else 0.0,
             "avg_numeric": avg_val,
             "std_avg_numeric": avg_std if res else 0.0,
-            "avg_unc_numeric": avg_unc,          # Raw SE/uncertainty value (float)
+            "avg_unc_numeric": avg_unc,                 # Raw SE/uncertainty value (float)
         })
 
         self.main_window.update_image()

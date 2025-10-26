@@ -76,13 +76,12 @@ class MeasurementFormatter:
     def format_for_treeview(dose_values, sigma_values, avg_value, avg_unc_value, sig: int = 2):
         """Format measurement values for TreeView display with consistent decimals.
         
-        This formats SE with 2 significant figures and adjusts all other values
-        to have the same number of decimal places. This is ONLY for TreeView display,
-        CSV export uses full precision.
-        
-        For multi-channel (RGB) data:
-        - Each STD value formatted with 2 sig figs independently
-        - Each Dose value gets decimals matching its corresponding STD
+        Formatting rules (TreeView only, CSV uses full precision):
+        - doses_per_channel: Always 3 decimals
+        - STD_doses_per_channel: Always 3 decimals
+        - SE_average: 2 significant figures
+        - average: Same decimal places as SE_average
+        - 95%confident_interval(SE): Same decimal places as SE_average
         
         Args:
             dose_values: List of dose values or single value or formatted string
@@ -111,13 +110,13 @@ class MeasurementFormatter:
         ci95_value = avg_unc_value * 1.96
         ci95_str = f"±{ci95_value:.{decimals}f}"
         
-        # Handle dose and sigma (can be lists or single values or already formatted)
+        # Handle dose and sigma - ALWAYS 3 decimals for TreeView
         if isinstance(dose_values, str):
             # Already formatted as string, keep it
             dose_str = dose_values
-            sigma_str = sigma_values if isinstance(sigma_values, str) else f"±{sigma_values}"
+            sigma_str = sigma_values if isinstance(sigma_values, str) else f"±{sigma_values:.3f}"
         elif isinstance(sigma_values, (list, tuple)) and len(sigma_values) > 1:
-            # Multi-channel: format each STD with 2 sig figs, match decimals in corresponding Dose
+            # Multi-channel: format all with 3 decimals
             sigma_parts = []
             dose_parts = []
             
@@ -127,41 +126,21 @@ class MeasurementFormatter:
             else:
                 dose_list = [dose_values] * len(sigma_values)
             
-            # Format each channel independently
+            # Format each channel with 3 decimals
             for dose_val, sigma_val in zip(dose_list, sigma_values):
-                # Format sigma with 2 sig figs
-                sigma_fmt = MeasurementFormatter.format_significant(sigma_val, sig)
-                sigma_parts.append(f"±{sigma_fmt}")
-                
-                # Count decimals in this sigma
-                if "." in sigma_fmt:
-                    sigma_decimals = len(sigma_fmt.split(".")[1])
-                else:
-                    sigma_decimals = 0
-                
-                # Format dose with matching decimals
-                dose_parts.append(f"{dose_val:.{sigma_decimals}f}")
+                dose_parts.append(f"{dose_val:.3f}")
+                sigma_parts.append(f"±{sigma_val:.3f}")
             
             dose_str = ", ".join(dose_parts)
             sigma_str = ", ".join(sigma_parts)
         elif isinstance(sigma_values, (list, tuple)) and len(sigma_values) == 1:
-            # Single channel in list format
-            sigma_fmt = MeasurementFormatter.format_significant(sigma_values[0], sig)
-            if "." in sigma_fmt:
-                sigma_decimals = len(sigma_fmt.split(".")[1])
-            else:
-                sigma_decimals = 0
-            dose_str = f"{dose_values[0]:.{sigma_decimals}f}"
-            sigma_str = f"±{sigma_fmt}"
+            # Single channel in list format - 3 decimals
+            dose_str = f"{dose_values[0]:.3f}"
+            sigma_str = f"±{sigma_values[0]:.3f}"
         else:
-            # Single value (not a list)
-            sigma_fmt = MeasurementFormatter.format_significant(sigma_values, sig)
-            if "." in sigma_fmt:
-                sigma_decimals = len(sigma_fmt.split(".")[1])
-            else:
-                sigma_decimals = 0
-            dose_str = f"{dose_values:.{sigma_decimals}f}"
-            sigma_str = f"±{sigma_fmt}"
+            # Single value (not a list) - 3 decimals
+            dose_str = f"{dose_values:.3f}"
+            sigma_str = f"±{sigma_values:.3f}"
         
         return dose_str, sigma_str, avg_str, avg_unc_str, ci95_str
 

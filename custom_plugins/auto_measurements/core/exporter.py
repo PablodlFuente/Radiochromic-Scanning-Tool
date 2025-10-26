@@ -99,18 +99,31 @@ class CSVExporter:
         Returns:
             dict: Dictionary with 'dose', 'std', 'avg', 'avg_unc' numeric values
         """
-        import logging
-        
-        # Get numeric values from result (these are already CTR-corrected if applicable)
+        # Get numeric values from result - prefer _numeric keys for consistency
         dose_numeric = result.get('dose_numeric', result.get('dose', 0.0))
         std_numeric = result.get('std_numeric', result.get('std_per_channel', 0.0))
+        
+        # Use avg_numeric which contains:
+        #   - When NO CTR: Original calculated average (full precision)
+        #   - When CTR active: CTR-corrected value (full precision)
         avg_numeric = result.get('avg_numeric', result.get('avg', 0.0))
         avg_unc_numeric = result.get('avg_unc_numeric', result.get('avg_unc', 0.0))
         
-        # Debug logging
-        logging.debug(f"Export values for {result.get('circle', 'unknown')}: avg_numeric={avg_numeric}, avg_unc_numeric={avg_unc_numeric}")
+        # Defensive parsing: handle edge case where values might still be strings
+        if isinstance(dose_numeric, str) and dose_numeric.strip():
+            try:
+                dose_numeric = tuple(float(x.strip()) for x in dose_numeric.split(',')) if ',' in dose_numeric else float(dose_numeric)
+            except (ValueError, AttributeError):
+                dose_numeric = 0.0
         
-        # Convert to float if strings
+        if isinstance(std_numeric, str) and std_numeric.strip():
+            try:
+                std_clean = std_numeric.replace('±', '').strip()
+                std_numeric = tuple(float(x.strip()) for x in std_clean.split(',')) if ',' in std_clean else float(std_clean)
+            except (ValueError, AttributeError):
+                std_numeric = 0.0
+        
+        # Convert to float if strings (defensive programming)
         if isinstance(avg_numeric, str):
             try:
                 avg_numeric = float(avg_numeric.replace('±', '').strip())

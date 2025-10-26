@@ -348,9 +348,15 @@ class ImageProcessor:
             # Report progress
             self._report_progress("loading", 30, "Processing image")
             
-            # Convert BGR to RGB if color image
-            if len(image.shape) == 3 and image.shape[2] == 3:
-                image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            # Convert BGR/BGRA to RGB
+            if len(image.shape) == 3:
+                if image.shape[2] == 4:
+                    # RGBA image: convert to RGB by removing alpha channel
+                    logger.info("Converting RGBA image to RGB")
+                    image = cv2.cvtColor(image, cv2.COLOR_BGRA2RGB)
+                elif image.shape[2] == 3:
+                    # BGR image: convert to RGB
+                    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             
             # Check image size and downsample if necessary for memory efficiency
             height, width = image.shape[:2]
