@@ -1,8 +1,9 @@
-__pycache__/
+**/__pycache__/
 *.py[cod]
 temp
 logs
 recent_files.json
+rc_config.json
 .idea
 .venv
 Improvements.txt
