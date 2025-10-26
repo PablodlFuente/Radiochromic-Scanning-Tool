@@ -874,6 +874,10 @@ class MainWindow:
                 if success:
                     self.image_panel.display_image(is_adjustment=True)
                     self.update_status("Applied calibration to current image")
+                    
+                    # Notify plugins about calibration change
+                    from app.plugins.plugin_manager import plugin_manager
+                    plugin_manager.notify_config_change(self.app_config)
                 else:
                     # Revert checkbox on failure
                     self.calibration_var.set(False)
@@ -886,6 +890,10 @@ class MainWindow:
                 self.image_processor.reprocess_current_image()
                 self.image_panel.display_image(is_adjustment=True)
                 self.update_status("Calibration disabled (RGB view)")
+                
+                # Notify plugins about calibration change
+                from app.plugins.plugin_manager import plugin_manager
+                plugin_manager.notify_config_change(self.app_config)
     
     def show_about(self):
         """Show the about dialog."""

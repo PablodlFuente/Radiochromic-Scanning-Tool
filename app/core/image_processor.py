@@ -56,6 +56,9 @@ class ImageProcessor:
         # Measurement settings
         self.measurement_shape = "circular"
         self.measurement_size = 20
+        self.measurement_size_rect = (40, 40)  # (width, height) for rectangular measurements
+        self.line_orientation = "horizontal"  # "horizontal", "vertical", or "manual" for line measurements
+        self.manual_line_points = None  # [(x1, y1), (x2, y2)] for manual line measurements
         self.auto_measure = config.get("auto_measure", False)
         
         # Measurement data
@@ -1136,6 +1139,42 @@ class ImageProcessor:
             
             return mean, std_dev
     
+    def _bresenham_line(self, x0, y0, x1, y1):
+        """
+        Generate coordinates of pixels along a line using Bresenham's algorithm.
+        
+        Args:
+            x0, y0: Starting point coordinates
+            x1, y1: Ending point coordinates
+            
+        Returns:
+            list: List of (x, y) tuples representing pixels along the line
+        """
+        coordinates = []
+        dx = abs(x1 - x0)
+        dy = abs(y1 - y0)
+        sx = 1 if x0 < x1 else -1
+        sy = 1 if y0 < y1 else -1
+        err = dx - dy
+        
+        x, y = x0, y0
+        
+        while True:
+            coordinates.append((x, y))
+            
+            if x == x1 and y == y1:
+                break
+            
+            e2 = 2 * err
+            if e2 > -dy:
+                err -= dy
+                x += sx
+            if e2 < dx:
+                err += dx
+                y += sy
+        
+        return coordinates
+    
     def _calculate_combined_uncertainty(self, means, std_errors):
         """
         Calculate combined uncertainty using the configured estimation method.
@@ -1392,12 +1431,14 @@ class ImageProcessor:
                         return mean, std_dev, std_err, mean, std_err, pixel_count
 
                 elif self.measurement_shape == "rectangular":
-                    # For rectangular regions, we can use integral images for faster calculation
+                    # For rectangular regions, use width and height from measurement_size_rect
+                    width, height = self.measurement_size_rect
+                    
                     # Calculate region boundaries
-                    x1 = max(0, img_x - actual_size // 2)
-                    y1 = max(0, img_y - actual_size // 2)
-                    x2 = min(self.current_image.shape[1] - 1, img_x + actual_size // 2)
-                    y2 = min(self.current_image.shape[0] - 1, img_y + actual_size // 2)
+                    x1 = max(0, img_x - width // 2)
+                    y1 = max(0, img_y - height // 2)
+                    x2 = min(self.current_image.shape[1] - 1, img_x + width // 2)
+                    y2 = min(self.current_image.shape[0] - 1, img_y + height // 2)
                 
                     # Ensure x1 < x2 and y1 < y2
                     if x1 >= x2 or y1 >= y2:
@@ -1456,17 +1497,87 @@ class ImageProcessor:
                         # For grayscale, we don't need combined uncertainty (only one channel)
                         return mean, std_dev, std_err, mean, std_err, pixel_count
                 elif self.measurement_shape == "line":
-                    # For line profiles, we need to get pixels along the line
-                    # For simplicity, we'll take a horizontal line of 'actual_size' length
-                    x_start = max(0, img_x - actual_size // 2)
-                    x_end = min(self.current_image.shape[1] - 1, img_x + actual_size // 2)
-                    y_fixed = img_y
-                
-                    if x_start >= x_end:
-                        logger.warning("Invalid region for line measurement")
+                    # For line profiles, get pixels along the line based on orientation
+                    orientation = getattr(self, 'line_orientation', 'horizontal')
+                    
+                    if orientation == "horizontal":
+                        # Horizontal line - vary X, keep Y fixed
+                        # Use full width of image as line length
+                        x_start = 0
+                        x_end = self.current_image.shape[1] - 1
+                        y_fixed = img_y
+                        
+                        if y_fixed < 0 or y_fixed >= self.current_image.shape[0]:
+                            logger.warning("Invalid Y position for horizontal line measurement")
+                            return None
+                        
+                        if len(self.current_image.shape) == 3:  # Color image
+                            line_pixels = self.current_image[y_fixed, x_start:x_end+1, :]
+                        else:  # Grayscale
+                            line_pixels = self.current_image[y_fixed, x_start:x_end+1]
+                        
+                        # Coordinates are (row, col) pairs for each pixel
+                        coordinates = np.column_stack([
+                            np.full(x_end - x_start + 1, y_fixed),
+                            np.arange(x_start, x_end + 1)
+                        ])
+                        
+                    elif orientation == "vertical":
+                        # Vertical line - vary Y, keep X fixed
+                        # Use full height of image as line length
+                        y_start = 0
+                        y_end = self.current_image.shape[0] - 1
+                        x_fixed = img_x
+                        
+                        if x_fixed < 0 or x_fixed >= self.current_image.shape[1]:
+                            logger.warning("Invalid X position for vertical line measurement")
+                            return None
+                        
+                        if len(self.current_image.shape) == 3:  # Color image
+                            line_pixels = self.current_image[y_start:y_end+1, x_fixed, :]
+                        else:  # Grayscale
+                            line_pixels = self.current_image[y_start:y_end+1, x_fixed]
+                        
+                        # Coordinates are (row, col) pairs for each pixel
+                        coordinates = np.column_stack([
+                            np.arange(y_start, y_end + 1),
+                            np.full(y_end - y_start + 1, x_fixed)
+                        ])
+                        
+                    elif orientation == "manual":
+                        # Manual line - use Bresenham's algorithm to get pixels between two points
+                        if self.manual_line_points is None or len(self.manual_line_points) < 2:
+                            logger.warning("Manual line orientation selected but no points defined")
+                            return None
+                        
+                        x1, y1 = self.manual_line_points[0]
+                        x2, y2 = self.manual_line_points[1]
+                        
+                        # Get line pixels using Bresenham's algorithm
+                        line_coords = self._bresenham_line(x1, y1, x2, y2)
+                        
+                        # Filter out coordinates outside image bounds
+                        valid_coords = []
+                        for x, y in line_coords:
+                            if 0 <= y < self.current_image.shape[0] and 0 <= x < self.current_image.shape[1]:
+                                valid_coords.append((y, x))  # (row, col)
+                        
+                        if len(valid_coords) == 0:
+                            logger.warning("Manual line is completely outside image bounds")
+                            return None
+                        
+                        coordinates = np.array(valid_coords)
+                        
+                        # Extract pixel values
+                        if len(self.current_image.shape) == 3:  # Color image
+                            line_pixels = self.current_image[coordinates[:, 0], coordinates[:, 1], :]
+                        else:  # Grayscale
+                            line_pixels = self.current_image[coordinates[:, 0], coordinates[:, 1]]
+                    
+                    else:
+                        logger.warning(f"Unknown line orientation: {orientation}")
                         return None
-                
-                    line_pixels = self.current_image[y_fixed, x_start:x_end+1]
+                    
                     pixel_count = len(line_pixels)
                 
                     if len(self.current_image.shape) == 3:  # Color image
@@ -1478,7 +1589,7 @@ class ImageProcessor:
                         rgb_mean, rgb_mean_std = self._calculate_combined_uncertainty(means, std_err)
                     
                         self.last_measurement_raw_data = line_pixels
-                        self.last_measurement_coordinates = np.arange(x_start - img_x, x_end - img_x + 1)
+                        self.last_measurement_coordinates = coordinates
                         self.last_auto_measure_time = time.time()
                     
                         return (
@@ -1495,7 +1606,7 @@ class ImageProcessor:
                         std_err = std_dev / np.sqrt(pixel_count) if pixel_count > 0 else 0
                     
                         self.last_measurement_raw_data = line_pixels
-                        self.last_measurement_coordinates = np.arange(x_start - img_x, x_end - img_x + 1)
+                        self.last_measurement_coordinates = coordinates
                         self.last_auto_measure_time = time.time()
                     
                         # For grayscale, we don't need combined uncertainty (only one channel)

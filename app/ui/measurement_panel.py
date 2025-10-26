@@ -35,6 +35,10 @@ class MeasurementPanel:
         self.current_measurement_data = None
         self.has_valid_measurement = False  # Flag to track if we have a valid measurement
         
+        # Manual line selection state
+        self.manual_line_points = []  # Will store [(x1, y1), (x2, y2)]
+        self.selecting_manual_line = False
+        
         # Create UI
         self._create_ui()
         
@@ -45,37 +49,51 @@ class MeasurementPanel:
         # Shape options
         ttk.Label(self.frame, text="Measurement shape:").pack(anchor=tk.W, padx=10, pady=5)
         
-        # Shape radio buttons
+        # Shape radio buttons in HORIZONTAL layout
         self.shape_var = tk.StringVar(value="circular")
+        shape_buttons_frame = ttk.Frame(self.frame)
+        shape_buttons_frame.pack(anchor=tk.W, padx=20, pady=2)
         
         ttk.Radiobutton(
-            self.frame, 
+            shape_buttons_frame, 
             text="Circular", 
             variable=self.shape_var, 
             value="circular",
             command=self._on_shape_change
-        ).pack(anchor=tk.W, padx=20, pady=2)
+        ).pack(side=tk.LEFT, padx=5)
         
         ttk.Radiobutton(
-            self.frame, 
-            text="Square", 
+            shape_buttons_frame, 
+            text="Rectangular", 
             variable=self.shape_var, 
-            value="square",
+            value="rectangular",
             command=self._on_shape_change
-        ).pack(anchor=tk.W, padx=20, pady=2)
+        ).pack(side=tk.LEFT, padx=5)
         
-        # Size control
-        ttk.Label(self.frame, text="Size (pixels):").pack(anchor=tk.W, padx=10, pady=10)
+        ttk.Radiobutton(
+            shape_buttons_frame, 
+            text="Line", 
+            variable=self.shape_var, 
+            value="line",
+            command=self._on_shape_change
+        ).pack(side=tk.LEFT, padx=5)
         
-        # Frame for size control
-        size_frame = ttk.Frame(self.frame)
-        size_frame.pack(fill=tk.X, padx=10, pady=5)
+        # Size control section
+        self.size_label = ttk.Label(self.frame, text="Size (pixels):")
+        self.size_label.pack(anchor=tk.W, padx=10, pady=10)
         
-        # Size spinbox
+        # Frame for size controls (will show/hide based on shape)
+        self.size_frame = ttk.Frame(self.frame)
+        self.size_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        # Circular/Square: Single size spinbox
+        self.single_size_frame = ttk.Frame(self.size_frame)
         self.size_var = tk.IntVar(value=20)
+        # Add trace to auto-update when value changes
+        self.size_var.trace_add('write', lambda *args: self._on_size_change())
         
         self.size_spinbox = ttk.Spinbox(
-            size_frame, 
+            self.single_size_frame, 
             from_=5, 
             to=500, 
             textvariable=self.size_var, 
@@ -84,9 +102,92 @@ class MeasurementPanel:
         )
         self.size_spinbox.pack(side=tk.LEFT)
         
-        # Bind events for tooltip
+        # Bind events for auto-update and tooltip
+        self.size_spinbox.bind("<Return>", lambda e: self._on_size_change())
+        self.size_spinbox.bind("<FocusOut>", lambda e: self._on_size_change())
         self.size_spinbox.bind("<Enter>", self._show_tooltip)
         self.size_spinbox.bind("<Leave>", self._hide_tooltip)
+        
+        # Rectangular: Size X and Size Y in HORIZONTAL layout
+        self.rect_size_frame = ttk.Frame(self.size_frame)
+        
+        ttk.Label(self.rect_size_frame, text="Width:").pack(side=tk.LEFT, padx=5)
+        self.size_x_var = tk.IntVar(value=40)
+        # Add trace to auto-update when value changes
+        self.size_x_var.trace_add('write', lambda *args: self._on_size_change())
+        
+        self.size_x_spinbox = ttk.Spinbox(
+            self.rect_size_frame,
+            from_=5,
+            to=500,
+            textvariable=self.size_x_var,
+            width=10,
+            command=self._on_size_change
+        )
+        self.size_x_spinbox.pack(side=tk.LEFT, padx=5)
+        # Bind events for auto-update
+        self.size_x_spinbox.bind("<Return>", lambda e: self._on_size_change())
+        self.size_x_spinbox.bind("<FocusOut>", lambda e: self._on_size_change())
+        
+        ttk.Label(self.rect_size_frame, text="Height:").pack(side=tk.LEFT, padx=10)
+        self.size_y_var = tk.IntVar(value=40)
+        # Add trace to auto-update when value changes
+        self.size_y_var.trace_add('write', lambda *args: self._on_size_change())
+        
+        self.size_y_spinbox = ttk.Spinbox(
+            self.rect_size_frame,
+            from_=5,
+            to=500,
+            textvariable=self.size_y_var,
+            width=10,
+            command=self._on_size_change
+        )
+        self.size_y_spinbox.pack(side=tk.LEFT, padx=5)
+        # Bind events for auto-update
+        self.size_y_spinbox.bind("<Return>", lambda e: self._on_size_change())
+        self.size_y_spinbox.bind("<FocusOut>", lambda e: self._on_size_change())
+        
+        # Line: Orientation selection in HORIZONTAL layout
+        self.line_orientation_frame = ttk.Frame(self.size_frame)
+        
+        ttk.Label(self.line_orientation_frame, text="Orientation:").pack(side=tk.LEFT, padx=5)
+        self.line_orientation_var = tk.StringVar(value="horizontal")
+        
+        ttk.Radiobutton(
+            self.line_orientation_frame,
+            text="Horizontal",
+            variable=self.line_orientation_var,
+            value="horizontal",
+            command=self._on_line_orientation_change
+        ).pack(side=tk.LEFT, padx=5)
+        
+        ttk.Radiobutton(
+            self.line_orientation_frame,
+            text="Vertical",
+            variable=self.line_orientation_var,
+            value="vertical",
+            command=self._on_line_orientation_change
+        ).pack(side=tk.LEFT, padx=5)
+        
+        ttk.Radiobutton(
+            self.line_orientation_frame,
+            text="Manual",
+            variable=self.line_orientation_var,
+            value="manual",
+            command=self._on_line_orientation_change
+        ).pack(side=tk.LEFT, padx=5)
+        
+        # Button to start manual line selection (hidden, kept for compatibility)
+        self.select_line_button = ttk.Button(
+            self.line_orientation_frame,
+            text="Select Line Points",
+            command=self._start_manual_line_selection,
+            state=tk.DISABLED
+        )
+        # Don't pack it - it's auto-started now
+        
+        # Initially show single size frame (for circular)
+        self.single_size_frame.pack(fill=tk.X)
         
         # Auto-measurement option
         ttk.Separator(self.frame, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=10, pady=5)
@@ -130,40 +231,50 @@ class MeasurementPanel:
         self.pixel_count_label = ttk.Label(self.results_frame, text="Pixels: --")
         self.pixel_count_label.pack(anchor=tk.W, pady=2)
         
-        # Histogram section
+        # Visualization section (Histogram or Line Profile)
         ttk.Separator(self.frame, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=10, pady=10)
-        ttk.Label(self.frame, text="Histogram:").pack(anchor=tk.W, padx=10, pady=5)
+        self.viz_title_label = ttk.Label(self.frame, text="Histogram:")
+        self.viz_title_label.pack(anchor=tk.W, padx=10, pady=5)
         
-        # Create a frame for the histogram
-        self.histogram_frame = ttk.Frame(self.frame)
-        self.histogram_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        # Create a frame for the visualization (histogram or line profile)
+        self.visualization_frame = ttk.Frame(self.frame)
+        self.visualization_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         
-        # Create matplotlib figure for histogram
-        self.histogram_fig = Figure(figsize=(4, 2), dpi=100)
-        self.histogram_canvas = FigureCanvasTkAgg(self.histogram_fig, master=self.histogram_frame)
-        self.histogram_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        # Create matplotlib figure for visualization
+        self.viz_fig = Figure(figsize=(4, 2), dpi=100)
+        self.viz_canvas = FigureCanvasTkAgg(self.viz_fig, master=self.visualization_frame)
+        self.viz_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
         
         # Visualization buttons frame
-        viz_buttons_frame = ttk.Frame(self.frame)
-        viz_buttons_frame.pack(fill=tk.X, pady=10)
+        self.viz_buttons_frame = ttk.Frame(self.frame)
+        self.viz_buttons_frame.pack(fill=tk.X, pady=10)
         
-        # 3D View button
+        # 3D View button (only for non-line measurements)
         self.view_3d_button = ttk.Button(
-            viz_buttons_frame,
+            self.viz_buttons_frame,
             text="3D View",
             command=self._show_3d_view,
             state=tk.DISABLED  # Initially disabled
         )
         self.view_3d_button.pack(side=tk.LEFT, padx=(10, 5))
         
-        # 2D View button
+        # 2D View button (only for non-line measurements)
         self.view_2d_button = ttk.Button(
-            viz_buttons_frame,
+            self.viz_buttons_frame,
             text="2D View",
             command=self._show_2d_view,
             state=tk.DISABLED  # Initially disabled
         )
         self.view_2d_button.pack(side=tk.LEFT, padx=5)
+        
+        # Interactive Graph button (only for line measurements)
+        self.interactive_graph_button = ttk.Button(
+            self.viz_buttons_frame,
+            text="Interactive Graph",
+            command=self._show_interactive_graph,
+            state=tk.DISABLED  # Initially disabled
+        )
+        # Don't pack yet - will be shown/hidden based on shape
         
         # Set initial values in image processor
         self._on_shape_change()
@@ -231,6 +342,62 @@ class MeasurementPanel:
         shape = self.shape_var.get()
         self.image_processor.set_measurement_shape(shape)
         
+        # Show/hide size controls based on shape
+        self.single_size_frame.pack_forget()
+        self.rect_size_frame.pack_forget()
+        self.line_orientation_frame.pack_forget()
+        
+        if shape == "circular":
+            # Show single size control
+            self.single_size_frame.pack(fill=tk.X)
+            self.size_label.config(text="Size (pixels):")
+            # Update visualization title
+            self.viz_title_label.config(text="Histogram:")
+            # Show 3D/2D buttons, hide Interactive Graph
+            self.view_3d_button.pack(side=tk.LEFT, padx=5)
+            self.view_2d_button.pack(side=tk.LEFT, padx=5)
+            self.interactive_graph_button.pack_forget()
+            # Enable 3D/2D buttons if we have a measurement
+            if self.has_valid_measurement:
+                self.view_3d_button.config(state=tk.NORMAL)
+                self.view_2d_button.config(state=tk.NORMAL)
+            
+        elif shape == "rectangular":
+            # Show width and height controls
+            self.rect_size_frame.pack(fill=tk.X)
+            self.size_label.config(text="Size:")
+            # Update visualization title
+            self.viz_title_label.config(text="Histogram:")
+            # Show 3D/2D buttons, hide Interactive Graph
+            self.view_3d_button.pack(side=tk.LEFT, padx=5)
+            self.view_2d_button.pack(side=tk.LEFT, padx=5)
+            self.interactive_graph_button.pack_forget()
+            # Enable 3D/2D buttons if we have a measurement
+            if self.has_valid_measurement:
+                self.view_3d_button.config(state=tk.NORMAL)
+                self.view_2d_button.config(state=tk.NORMAL)
+            
+        elif shape == "line":
+            # Show orientation selection, no size control
+            self.line_orientation_frame.pack(fill=tk.X)
+            self.size_label.config(text="")
+            # Update visualization title
+            orientation = self.line_orientation_var.get()
+            if orientation == "manual":
+                axis_label = "Custom"
+            else:
+                axis_label = "X" if orientation == "horizontal" else "Y"
+            self.viz_title_label.config(text=f"Line Profile (vs {axis_label}):")
+            # Hide 3D/2D buttons, show Interactive Graph
+            self.view_3d_button.pack_forget()
+            self.view_2d_button.pack_forget()
+            self.interactive_graph_button.pack(side=tk.LEFT, padx=5)
+            # Enable Interactive Graph button if we have a measurement
+            if self.has_valid_measurement:
+                self.interactive_graph_button.config(state=tk.NORMAL)
+            else:
+                self.interactive_graph_button.config(state=tk.DISABLED)
+        
         # Find the main window to update the measurement display
         root = self.frame.winfo_toplevel()
         if hasattr(root, 'main_window') and hasattr(root.main_window, 'image_panel'):
@@ -251,10 +418,78 @@ class MeasurementPanel:
         
         logger.debug(f"Measurement shape changed to {shape}")
     
+    def _on_line_orientation_change(self):
+        """Handle line orientation change."""
+        orientation = self.line_orientation_var.get()
+        # Store orientation in image processor (we'll add this attribute)
+        self.image_processor.line_orientation = orientation
+        
+        # Clear any previous manual line visualization
+        root = self.frame.winfo_toplevel()
+        if hasattr(root, 'main_window') and hasattr(root.main_window, 'image_panel'):
+            image_panel = root.main_window.image_panel
+            image_panel.canvas.delete('manual_line_marker')
+        
+        # Handle manual orientation
+        if orientation == "manual":
+            # Hide the Select Line Points button - auto-start instead
+            self.select_line_button.pack_forget()
+            # Auto-start manual line selection
+            self._start_manual_line_selection()
+        else:
+            # Make sure button is hidden for non-manual modes
+            self.select_line_button.pack_forget()
+            # Restore normal canvas bindings if we were in manual mode
+            if self.selecting_manual_line:
+                self._cancel_manual_line_selection()
+        
+        # Update visualization title
+        if orientation == "manual":
+            axis_label = "Custom"
+        else:
+            axis_label = "X" if orientation == "horizontal" else "Y"
+        self.viz_title_label.config(text=f"Line Profile (vs {axis_label}):")
+        
+        # Redraw if measurement is visible (only for non-manual orientations)
+        if orientation != "manual":
+            root = self.frame.winfo_toplevel()
+            if hasattr(root, 'main_window') and hasattr(root.main_window, 'image_panel'):
+                image_panel = root.main_window.image_panel
+                if image_panel.measured_area_visible:
+                    image_panel._draw_measured_area(image_panel.measured_x, image_panel.measured_y)
+                    results = self.image_processor.measure_area(image_panel.measured_x, image_panel.measured_y)
+                    if results:
+                        image_panel.last_measurement_results = results
+                        self.update_results(results)
+        
+        logger.debug(f"Line orientation changed to {orientation}")
+    
     def _on_size_change(self):
         """Handle size change."""
-        size = self.size_var.get()
-        self.image_processor.set_measurement_size(size)
+        shape = self.shape_var.get()
+        
+        try:
+            if shape == "circular":
+                size = self.size_var.get()
+                if size < 5 or size > 500:  # Validate range
+                    return
+                self.image_processor.set_measurement_size(size)
+                logger.debug(f"Circular measurement size changed to {size}")
+            elif shape == "rectangular":
+                # For rectangular, we need to store both width and height
+                width = self.size_x_var.get()
+                height = self.size_y_var.get()
+                if width < 5 or width > 500 or height < 5 or height > 500:  # Validate range
+                    return
+                # Store as tuple in image processor
+                self.image_processor.measurement_size_rect = (width, height)
+                # Also update the main size for compatibility
+                self.image_processor.set_measurement_size(max(width, height))
+                logger.debug(f"Rectangular measurement size changed to {width}x{height}")
+            # Line shape doesn't use size
+        except tk.TclError:
+            # Value is invalid (e.g., empty string while typing)
+            return
         
         # Find the main window to update the measurement display
         root = self.frame.winfo_toplevel()
@@ -264,7 +499,7 @@ class MeasurementPanel:
             if image_panel.measurement_visible:
                 image_panel._draw_measurement_shape(image_panel.last_mouse_x, image_panel.last_mouse_y)
             
-            # Redraw measured area if visible
+            # Redraw measured area if visible and recalculate measurement
             if image_panel.measured_area_visible:
                 image_panel._draw_measured_area(image_panel.measured_x, image_panel.measured_y)
                 
@@ -273,8 +508,6 @@ class MeasurementPanel:
                 if results:
                     image_panel.last_measurement_results = results
                     self.update_results(results)
-        
-        logger.debug(f"Measurement size changed to {size}")
     
     def _on_auto_measure_change(self):
         """Handle auto measure change."""
@@ -344,6 +577,7 @@ class MeasurementPanel:
             self.pixel_count_label.config(text="Pixels: --")
             self.view_3d_button.config(state=tk.DISABLED)
             self.view_2d_button.config(state=tk.DISABLED)
+            self.interactive_graph_button.config(state=tk.DISABLED)
             self._clear_histogram()
             self.current_measurement_data = None
             self.has_valid_measurement = False
@@ -388,18 +622,27 @@ class MeasurementPanel:
                 text=f"STD err: ({std_err[0]:.4f}, {std_err[1]:.4f}, {std_err[2]:.4f})"
             )
             
-            # Enable view buttons for RGB data
-            self.view_3d_button.config(state=tk.NORMAL)
-            self.view_2d_button.config(state=tk.NORMAL)
+            # Enable view buttons for RGB data based on shape
+            shape = self.shape_var.get()
+            if shape == "line":
+                self.interactive_graph_button.config(state=tk.NORMAL)
+            else:
+                self.view_3d_button.config(state=tk.NORMAL)
+                self.view_2d_button.config(state=tk.NORMAL)
         else:
             # Grayscale value
             self.average_label.config(text=f"Average: {average:.2f}")
             self.std_dev_label.config(text=f"Standard deviation: {std_dev:.2f}")
             self.std_err_label.config(text=f"STD err: {std_err:.4f}")
             
-            # Enable only 2D View button for grayscale data
-            self.view_3d_button.config(state=tk.DISABLED)
-            self.view_2d_button.config(state=tk.NORMAL)
+            # Enable buttons based on shape
+            shape = self.shape_var.get()
+            if shape == "line":
+                self.interactive_graph_button.config(state=tk.NORMAL)
+            else:
+                # Enable only 2D View button for grayscale data
+                self.view_3d_button.config(state=tk.DISABLED)
+                self.view_2d_button.config(state=tk.NORMAL)
         
         # Update pixel count
         self.pixel_count_label.config(text=f"Pixels: {pixel_count}")
@@ -422,16 +665,109 @@ class MeasurementPanel:
             self._update_histogram()
     
     def _update_histogram(self):
-        """Update the histogram with measurement data."""
-        # Clear the previous histogram
-        self.histogram_fig.clear()
+        """Update the visualization (histogram or line profile) with measurement data."""
+        # Clear the previous plot
+        self.viz_fig.clear()
         
+        # Check if this is a line measurement
+        shape = self.shape_var.get()
+        is_line = (shape == "line")
+        
+        if is_line:
+            self._update_line_profile()
+        else:
+            self._update_histogram_plot()
+    
+    def _update_line_profile(self):
+        """Update line profile plot for line measurements."""
+        # Get the raw pixel data from the image processor
+        raw_data = self.image_processor.get_last_measurement_raw_data()
+        coords = self.image_processor.last_measurement_coordinates
+        
+        if raw_data is None or len(raw_data) == 0:
+            # No data to display
+            self.viz_canvas.draw()
+            return
+        
+        ax = self.viz_fig.add_subplot(111)
+        orientation = self.line_orientation_var.get()
+        
+        # Calculate positions for x-axis
+        if coords is not None and len(coords) > 0:
+            if orientation == "manual":
+                # For manual lines, calculate distance along the line
+                distances = np.sqrt(
+                    (coords[:, 1] - coords[0, 1])**2 + 
+                    (coords[:, 0] - coords[0, 0])**2
+                )
+                positions = distances
+                axis_label = "Distance (pixels)"
+            elif orientation == "horizontal":
+                # Horizontal line - use column (X) coordinates
+                positions = coords[:, 1]
+                axis_label = "X Position (pixels)"
+            else:  # vertical
+                # Vertical line - use row (Y) coordinates
+                positions = coords[:, 0]
+                axis_label = "Y Position (pixels)"
+        else:
+            # Fallback to simple indexing
+            positions = np.arange(len(raw_data))
+            axis_label = "Position (pixels)"
+        
+        # Check if calibration is applied
+        if self.image_processor.calibration_applied:
+            # Show single dose series
+            if len(raw_data.shape) > 1 and raw_data.shape[1] == 3:
+                # RGB - average the channels for dose
+                dose_profile = np.mean(raw_data, axis=1)
+            else:
+                # Grayscale dose
+                dose_profile = raw_data
+            
+            ax.plot(positions, dose_profile, 'k-', linewidth=1.5, label='Dose')
+            ax.set_ylabel('Dose (Gy)')
+            title = f'Dose Profile - {orientation.capitalize()} Line'
+            ax.set_title(title)
+            ax.legend()
+            
+        else:
+            # No calibration - show RGB channels separately
+            if len(raw_data.shape) > 1 and raw_data.shape[1] == 3:
+                # RGB data - plot 3 series
+                colors = ['r', 'g', 'b']
+                labels = ['Red', 'Green', 'Blue']
+                for i in range(3):
+                    ax.plot(positions, raw_data[:, i], color=colors[i], linewidth=1.5, alpha=0.7, label=labels[i])
+                ax.set_ylabel('Pixel Value')
+                title = f'RGB Profile - {orientation.capitalize()} Line'
+                ax.set_title(title)
+                ax.set_ylim(0, 255)
+                ax.legend()
+            else:
+                # Grayscale data
+                ax.plot(positions, raw_data, 'k-', linewidth=1.5, label='Intensity')
+                ax.set_ylabel('Pixel Value')
+                title = f'Intensity Profile - {orientation.capitalize()} Line'
+                ax.set_title(title)
+                ax.set_ylim(0, 255)
+                ax.legend()
+        
+        ax.set_xlabel(axis_label)
+        ax.grid(True, alpha=0.3)
+        
+        # Adjust layout and draw
+        self.viz_fig.tight_layout()
+        self.viz_canvas.draw()
+    
+    def _update_histogram_plot(self):
+        """Update histogram plot for circular/rectangular measurements."""
         # Get the raw pixel data from the image processor
         raw_data = self.image_processor.get_last_measurement_raw_data()
         
         if raw_data is None or len(raw_data) == 0:
             # No data to display
-            self.histogram_canvas.draw()
+            self.viz_canvas.draw()
             return
         
         # Check if we have RGB or grayscale data
@@ -439,11 +775,11 @@ class MeasurementPanel:
             if self.image_processor.calibration_applied:
                 # Dose-calibrated RGB: plot histogram of the per-pixel average dose only
                 averaged = np.mean(raw_data, axis=1)
-                ax = self.histogram_fig.add_subplot(111)
+                ax = self.viz_fig.add_subplot(111)
 
                 cleaned = averaged[~np.isnan(averaged)]
                 if cleaned.size == 0:
-                    self.histogram_canvas.draw()
+                    self.viz_canvas.draw()
                     return
 
                 data_min = float(np.min(cleaned))
@@ -459,7 +795,7 @@ class MeasurementPanel:
                 ax.set_ylabel('Frequency')
             else:
                 # Standard RGB image – plot per-channel histograms
-                ax = self.histogram_fig.add_subplot(111)
+                ax = self.viz_fig.add_subplot(111)
                 colors = ['r', 'g', 'b']
                 labels = ['Red', 'Green', 'Blue']
                 for i in range(3):
@@ -472,13 +808,13 @@ class MeasurementPanel:
                 ax.set_ylabel('Frequency')
         else:
             # Single-channel data: could be standard grayscale or dose-calibrated values
-            ax = self.histogram_fig.add_subplot(111)
+            ax = self.viz_fig.add_subplot(111)
 
             if self.image_processor.calibration_applied:
                 # Dose data – adjust axis to data range
                 cleaned = raw_data[~np.isnan(raw_data)]
                 if cleaned.size == 0:
-                    self.histogram_canvas.draw()
+                    self.viz_canvas.draw()
                     return
                 data_min = float(np.min(cleaned))
                 data_max = float(np.max(cleaned))
@@ -500,13 +836,13 @@ class MeasurementPanel:
             ax.set_ylabel('Frequency')
 
         # Adjust layout and draw
-        self.histogram_fig.tight_layout()
-        self.histogram_canvas.draw()
+        self.viz_fig.tight_layout()
+        self.viz_canvas.draw()
     
     def _clear_histogram(self):
-        """Clear the histogram."""
-        self.histogram_fig.clear()
-        self.histogram_canvas.draw()
+        """Clear the visualization (histogram or line profile)."""
+        self.viz_fig.clear()
+        self.viz_canvas.draw()
     
     def _show_3d_view(self):
         """Show 3D view of RGB channels."""
@@ -837,6 +1173,219 @@ class MeasurementPanel:
             text="Close",
             command=view_window.destroy
         ).pack(pady=10)
+    
+    def _start_manual_line_selection(self):
+        """Start manual line selection mode - user clicks 2 points on canvas."""
+        # Clear previous points
+        self.manual_line_points = []
+        self.selecting_manual_line = True
+        
+        # Get the image panel from main window
+        root = self.frame.winfo_toplevel()
+        if not hasattr(root, 'main_window'):
+            return
+        
+        image_panel = root.main_window.image_panel
+        
+        # Clear any previous markers
+        image_panel.canvas.delete('manual_line_marker')
+        
+        # Bind click event to image panel canvas
+        # Save original binding if exists
+        if not hasattr(self, '_original_canvas_click_binding'):
+            original_binding = image_panel.canvas.bind("<Button-1>")
+            self._original_canvas_click_binding = original_binding
+        
+        # Set our custom click handler
+        image_panel.canvas.bind("<Button-1>", self._on_manual_line_click)
+    
+    def _on_manual_line_click(self, event):
+        """Handle click events during manual line selection."""
+        # Get the image panel
+        root = self.frame.winfo_toplevel()
+        if not hasattr(root, 'main_window'):
+            return
+        
+        image_panel = root.main_window.image_panel
+        
+        # Convert canvas coordinates to image coordinates
+        canvas_x = image_panel.canvas.canvasx(event.x)
+        canvas_y = image_panel.canvas.canvasy(event.y)
+        
+        # Get image coordinates using image_processor
+        img_x, img_y, _ = self.image_processor.get_pixel_info(canvas_x, canvas_y)
+        
+        if img_x is None or img_y is None:
+            return  # Click outside image
+        
+        # Add point
+        self.manual_line_points.append((img_x, img_y))
+        
+        # Draw marker on canvas - convert image coords back to canvas coords
+        zoom = self.image_processor.get_zoom()
+        marker_canvas_x = img_x * zoom
+        marker_canvas_y = img_y * zoom
+        
+        marker_size = 5
+        marker_id = image_panel.canvas.create_oval(
+            marker_canvas_x - marker_size, marker_canvas_y - marker_size,
+            marker_canvas_x + marker_size, marker_canvas_y + marker_size,
+            outline='green', width=2, fill='green', tags='manual_line_marker'
+        )
+        
+        # If we have 2 points, complete the selection
+        if len(self.manual_line_points) >= 2:
+            # Draw line between points
+            x1, y1 = self.manual_line_points[0]
+            x2, y2 = self.manual_line_points[1]
+            
+            # Convert to canvas coordinates
+            canvas_x1 = x1 * zoom
+            canvas_y1 = y1 * zoom
+            canvas_x2 = x2 * zoom
+            canvas_y2 = y2 * zoom
+            
+            image_panel.canvas.create_line(
+                canvas_x1, canvas_y1, canvas_x2, canvas_y2,
+                fill='green', width=2, tags='manual_line_marker'
+            )
+            
+            # Complete selection
+            self._finish_manual_line_selection()
+    
+    def _finish_manual_line_selection(self):
+        """Complete manual line selection and perform measurement."""
+        # Get the image panel
+        root = self.frame.winfo_toplevel()
+        if not hasattr(root, 'main_window'):
+            return
+        
+        image_panel = root.main_window.image_panel
+        
+        # Restore original click binding
+        if hasattr(self, '_original_canvas_click_binding'):
+            if self._original_canvas_click_binding:
+                image_panel.canvas.bind("<Button-1>", self._original_canvas_click_binding)
+            else:
+                image_panel.canvas.unbind("<Button-1>")
+        
+        # Update button state
+        self.selecting_manual_line = False
+        
+        # Update image processor with manual line points
+        if len(self.manual_line_points) >= 2:
+            self.image_processor.manual_line_points = self.manual_line_points[:2]
+            
+            # Remove temporary markers (will be redrawn as measured_area)
+            image_panel.canvas.delete('manual_line_marker')
+            
+            # Calculate midpoint in image coordinates
+            x1, y1 = self.manual_line_points[0]
+            x2, y2 = self.manual_line_points[1]
+            mid_img_x = (x1 + x2) // 2
+            mid_img_y = (y1 + y2) // 2
+            
+            # Convert to canvas coordinates for measurement
+            zoom = self.image_processor.get_zoom()
+            mid_canvas_x = mid_img_x * zoom
+            mid_canvas_y = mid_img_y * zoom
+            
+            # Store measured position
+            image_panel.measured_img_x = mid_img_x
+            image_panel.measured_img_y = mid_img_y
+            image_panel.measured_x = mid_canvas_x
+            image_panel.measured_y = mid_canvas_y
+            image_panel.measured_area_visible = True
+            
+            # Update position label
+            image_panel.position_label.config(text=f"Pos: {mid_img_x},{mid_img_y}")
+            
+            # Perform measurement at midpoint (using canvas coordinates)
+            results = self.image_processor.measure_area(mid_canvas_x, mid_canvas_y)
+            
+            if results:
+                image_panel.last_measurement_results = results
+                self.update_results(results)
+                
+            # Draw measured area (this will draw the green line)
+            image_panel._draw_measured_area(mid_canvas_x, mid_canvas_y)
+        
+        # Clear manual line points for next time
+        self.manual_line_points = []
+    
+    def _cancel_manual_line_selection(self):
+        """Cancel manual line selection without performing measurement."""
+        # Get the image panel
+        root = self.frame.winfo_toplevel()
+        if not hasattr(root, 'main_window'):
+            return
+        
+        image_panel = root.main_window.image_panel
+        
+        # Restore original click binding
+        if hasattr(self, '_original_canvas_click_binding'):
+            if self._original_canvas_click_binding:
+                image_panel.canvas.bind("<Button-1>", self._original_canvas_click_binding)
+            else:
+                image_panel.canvas.unbind("<Button-1>")
+            delattr(self, '_original_canvas_click_binding')
+        
+        # Clear state
+        self.selecting_manual_line = False
+        self.manual_line_points = []
+        
+        # Clear visual markers
+        image_panel.canvas.delete('manual_line_marker')
+    
+    def _show_interactive_graph(self):
+        """Open an interactive matplotlib window for line profile visualization."""
+        if not self.has_valid_measurement or self.current_measurement_data is None:
+            return
+        
+        # Get the line profile data from the image processor
+        raw_data = self.image_processor.get_last_measurement_raw_data()
+        coordinates = self.image_processor.get_last_measurement_coordinates()
+        
+        if raw_data is None or coordinates is None or len(raw_data) == 0:
+            return
+        
+        # Import matplotlib.pyplot for interactive window
+        import matplotlib.pyplot as plt
+        
+        # Create new figure
+        fig, ax = plt.subplots(figsize=(10, 6))
+        
+        # Calculate position along line
+        if len(coordinates) > 0:
+            distances = np.sqrt(
+                (coordinates[:, 1] - coordinates[0, 1])**2 + 
+                (coordinates[:, 0] - coordinates[0, 0])**2
+            )
+        else:
+            distances = np.arange(len(raw_data))
+        
+        # Plot based on calibration state
+        if self.image_processor.calibration_applied:
+            # Plot dose values
+            dose_values = np.mean(raw_data, axis=1)
+            ax.plot(distances, dose_values, 'b-', linewidth=2, label='Dose')
+            ax.set_ylabel('Dose (Gy)', fontsize=12)
+            ax.set_title('Line Profile - Dose', fontsize=14, fontweight='bold')
+        else:
+            # Plot RGB channels
+            ax.plot(distances, raw_data[:, 0], 'r-', linewidth=2, label='Red', alpha=0.7)
+            ax.plot(distances, raw_data[:, 1], 'g-', linewidth=2, label='Green', alpha=0.7)
+            ax.plot(distances, raw_data[:, 2], 'b-', linewidth=2, label='Blue', alpha=0.7)
+            ax.set_ylabel('Pixel Value', fontsize=12)
+            ax.set_title('Line Profile - RGB Channels', fontsize=14, fontweight='bold')
+        
+        ax.set_xlabel('Position (pixels)', fontsize=12)
+        ax.legend(fontsize=10)
+        ax.grid(True, alpha=0.3)
+        
+        # Enable toolbar for zoom, pan, save
+        plt.tight_layout()
+        plt.show()
     
     def is_auto_measure_enabled(self):
         """Check if auto-measurement is enabled."""

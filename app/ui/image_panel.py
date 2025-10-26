@@ -894,50 +894,121 @@ class ImagePanel:
         """Draw the measurement shape at the specified position."""
         # Get measurement settings
         shape, size = self.image_processor.get_measurement_settings()
-        
-        # Apply zoom
-        size_px = size * self.image_processor.get_zoom()
+        zoom = self.image_processor.get_zoom()
         
         # Draw shape
         self.canvas.delete("measurement_shape")
         
         if shape == "circular":
+            # Circular measurement
+            size_px = size * zoom
             self.canvas.create_oval(
                 x - size_px, y - size_px,
                 x + size_px, y + size_px,
                 outline="red", tags="measurement_shape"
             )
-        else:  # square
+        elif shape == "rectangular":
+            # Rectangular measurement with separate width and height
+            width, height = getattr(self.image_processor, 'measurement_size_rect', (size, size))
+            width_px = width * zoom / 2
+            height_px = height * zoom / 2
             self.canvas.create_rectangle(
-                x - size_px, y - size_px,
-                x + size_px, y + size_px,
+                x - width_px, y - height_px,
+                x + width_px, y + height_px,
                 outline="red", tags="measurement_shape"
             )
+        elif shape == "line":
+            # Line measurement - show full width or height crosshair
+            orientation = getattr(self.image_processor, 'line_orientation', 'horizontal')
+            if orientation == "horizontal":
+                # Horizontal line across full width
+                self.canvas.create_line(
+                    0, y, self.canvas.winfo_width(), y,
+                    fill="red", width=1, tags="measurement_shape"
+                )
+            elif orientation == "vertical":
+                # Vertical line across full height
+                self.canvas.create_line(
+                    x, 0, x, self.canvas.winfo_height(),
+                    fill="red", width=1, tags="measurement_shape"
+                )
+            # For manual orientation, don't draw preview - waiting for user to click points
     
     def _draw_measured_area(self, x, y):
         """Draw the measured area at the specified position."""
         # Get measurement settings
         shape, size = self.image_processor.get_measurement_settings()
-        
-        # Apply zoom
-        size_px = size * self.image_processor.get_zoom()
+        zoom = self.image_processor.get_zoom()
         
         # Draw shape
         self.canvas.delete("measured_area")
         
         if shape == "circular":
-            # Fixed: Corrected the coordinates for the circular shape
+            # Circular measurement
+            size_px = size * zoom
             self.canvas.create_oval(
                 x - size_px, y - size_px,
                 x + size_px, y + size_px,
                 outline="green", width=2, tags="measured_area"
             )
-        else:  # square
+        elif shape == "rectangular":
+            # Rectangular measurement with separate width and height
+            width, height = getattr(self.image_processor, 'measurement_size_rect', (size, size))
+            width_px = width * zoom / 2
+            height_px = height * zoom / 2
             self.canvas.create_rectangle(
-                x - size_px, y - size_px,
-                x + size_px, y + size_px,
+                x - width_px, y - height_px,
+                x + width_px, y + height_px,
                 outline="green", width=2, tags="measured_area"
             )
+        elif shape == "line":
+            # Line measurement - show full width or height line
+            orientation = getattr(self.image_processor, 'line_orientation', 'horizontal')
+            if orientation == "horizontal":
+                # Horizontal line across full width
+                self.canvas.create_line(
+                    0, y, self.canvas.winfo_width(), y,
+                    fill="green", width=2, tags="measured_area"
+                )
+            elif orientation == "vertical":
+                # Vertical line across full height
+                self.canvas.create_line(
+                    x, 0, x, self.canvas.winfo_height(),
+                    fill="green", width=2, tags="measured_area"
+                )
+            elif orientation == "manual":
+                # Manual line - draw between the two selected points
+                if hasattr(self.image_processor, 'manual_line_points') and self.image_processor.manual_line_points:
+                    points = self.image_processor.manual_line_points
+                    if len(points) >= 2:
+                        x1, y1 = points[0]
+                        x2, y2 = points[1]
+                        
+                        # Convert to canvas coordinates
+                        zoom = self.image_processor.get_zoom()
+                        canvas_x1 = x1 * zoom
+                        canvas_y1 = y1 * zoom
+                        canvas_x2 = x2 * zoom
+                        canvas_y2 = y2 * zoom
+                        
+                        # Draw line between points
+                        self.canvas.create_line(
+                            canvas_x1, canvas_y1, canvas_x2, canvas_y2,
+                            fill="green", width=2, tags="measured_area"
+                        )
+                        
+                        # Draw endpoint markers
+                        marker_size = 5
+                        self.canvas.create_oval(
+                            canvas_x1 - marker_size, canvas_y1 - marker_size,
+                            canvas_x1 + marker_size, canvas_y1 + marker_size,
+                            outline='green', width=2, fill='green', tags="measured_area"
+                        )
+                        self.canvas.create_oval(
+                            canvas_x2 - marker_size, canvas_y2 - marker_size,
+                            canvas_x2 + marker_size, canvas_y2 + marker_size,
+                            outline='green', width=2, fill='green', tags="measured_area"
+                        )
 
     def set_zoom_callback(self, callback):
         """Set the callback for zoom changes."""

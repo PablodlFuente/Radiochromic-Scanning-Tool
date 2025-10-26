@@ -179,18 +179,18 @@ def _draw_dashed_circle(img, center, radius, color, thickness):
 # -------------------------------------------------------------------------
 
 def on_config_change(config, image_processor):
-    """Handle configuration changes - refresh measurements if uncertainty method changed."""
+    """Handle configuration changes - refresh measurements when calibration or uncertainty method changes."""
     global _AUTO_MEASUREMENTS_INSTANCE
     
     try:
         if _AUTO_MEASUREMENTS_INSTANCE is not None:
-            # Force refresh of all existing measurements with new uncertainty method
+            # Force refresh of all existing measurements with new calibration/uncertainty settings
             _AUTO_MEASUREMENTS_INSTANCE._refresh_all_measurements()
-            logging.info("Auto-measurements refreshed due to uncertainty method change")
+            logging.info("Auto-measurements refreshed due to configuration change (calibration or uncertainty method)")
         else:
-            logging.debug("Auto-measurements instance not available for config change notification")
+            logging.warning("Auto-measurements instance not available for config change notification")
     except Exception as e:
-        logging.error(f"Error refreshing auto-measurements after config change: {e}")
+        logging.error(f"Error refreshing auto-measurements after config change: {e}", exc_info=True)
 
 
 __all__ = ['TAB_TITLE', 'setup', 'process', 'on_config_change']

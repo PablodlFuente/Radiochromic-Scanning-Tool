@@ -1,10 +1,4 @@
-app/core/__pycache__
-app/__pycache__
-app/ui/__pycache__
-app/plugins/__pycache__
-app/utils/__pycache__
-app/calibration/__pycache__
-app/custom_plugins/__pycache__
+__pycache__/
 temp
 logs
 recent_files.json
