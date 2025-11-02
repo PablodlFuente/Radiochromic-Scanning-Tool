@@ -4,6 +4,20 @@
 
 The Radiochromic-Scanning-Tool is a specialized application designed for the analysis and measurement of radiochromic films used in medical physics and radiation dosimetry. This tool provides precise measurements, visualization, and analysis capabilities for researchers and medical physicists.
 
+<h3 align="center">Main Interface</h3>
+<p align="center">
+  <img src="./images/main_interface.png" alt="Main Interface" width="700"/>
+</p>
+
+<h3 align="center">Image Interface</h3>
+<p align="center">
+  <img src="./images/image_interface.png" alt="Image Interface" width="700"/>
+</p>
+
+<h3 align="center">Auto Measurements Interface</h3>
+<p align="center">
+  <img src="./images/AutoMeasurements_interface.png" alt="Auto Measurements Interface" width="700"/>
+</p>
 ## Features
 
 - **Image Processing**: Open, view, and analyse radiochromic film images.
