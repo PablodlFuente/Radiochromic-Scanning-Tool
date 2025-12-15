@@ -342,6 +342,16 @@ class MeasurementPanel:
         shape = self.shape_var.get()
         self.image_processor.set_measurement_shape(shape)
         
+        # If changing away from line shape, cancel manual line selection if active
+        if shape != "line" and self.selecting_manual_line:
+            self._cancel_manual_line_selection()
+        
+        # Clear manual line markers when changing shape
+        root = self.frame.winfo_toplevel()
+        if hasattr(root, 'main_window') and hasattr(root.main_window, 'image_panel'):
+            image_panel = root.main_window.image_panel
+            image_panel.canvas.delete('manual_line_marker')
+        
         # Show/hide size controls based on shape
         self.single_size_frame.pack_forget()
         self.rect_size_frame.pack_forget()
@@ -1221,16 +1231,22 @@ class MeasurementPanel:
         # Add point
         self.manual_line_points.append((img_x, img_y))
         
-        # Draw marker on canvas - convert image coords back to canvas coords
+        # Draw X marker on canvas - convert image coords back to canvas coords
         zoom = self.image_processor.get_zoom()
         marker_canvas_x = img_x * zoom
         marker_canvas_y = img_y * zoom
         
-        marker_size = 5
-        marker_id = image_panel.canvas.create_oval(
+        marker_size = 6
+        # Draw X with two diagonal lines
+        image_panel.canvas.create_line(
             marker_canvas_x - marker_size, marker_canvas_y - marker_size,
             marker_canvas_x + marker_size, marker_canvas_y + marker_size,
-            outline='green', width=2, fill='green', tags='manual_line_marker'
+            fill='green', width=2, tags='manual_line_marker'
+        )
+        image_panel.canvas.create_line(
+            marker_canvas_x - marker_size, marker_canvas_y + marker_size,
+            marker_canvas_x + marker_size, marker_canvas_y - marker_size,
+            fill='green', width=2, tags='manual_line_marker'
         )
         
         # If we have 2 points, complete the selection
@@ -1261,16 +1277,6 @@ class MeasurementPanel:
             return
         
         image_panel = root.main_window.image_panel
-        
-        # Restore original click binding
-        if hasattr(self, '_original_canvas_click_binding'):
-            if self._original_canvas_click_binding:
-                image_panel.canvas.bind("<Button-1>", self._original_canvas_click_binding)
-            else:
-                image_panel.canvas.unbind("<Button-1>")
-        
-        # Update button state
-        self.selecting_manual_line = False
         
         # Update image processor with manual line points
         if len(self.manual_line_points) >= 2:
@@ -1306,16 +1312,24 @@ class MeasurementPanel:
             if results:
                 image_panel.last_measurement_results = results
                 self.update_results(results)
-                
+            
             # Draw measured area (this will draw the green line)
             image_panel._draw_measured_area(mid_canvas_x, mid_canvas_y)
         
-        # Clear manual line points for next time
-        self.manual_line_points = []
+        # Check if we're still in manual mode
+        if self.line_orientation_var.get() == "manual":
+            # Clear points for next selection but keep selecting mode active
+            self.manual_line_points = []
+            self.selecting_manual_line = True
+            # Don't restore bindings - keep custom click handler active for next line
+        else:
+            # Not in manual mode anymore, restore original bindings
+            self._restore_original_bindings()
+            self.manual_line_points = []
+            self.selecting_manual_line = False
     
-    def _cancel_manual_line_selection(self):
-        """Cancel manual line selection without performing measurement."""
-        # Get the image panel
+    def _restore_original_bindings(self):
+        """Restore original canvas click bindings."""
         root = self.frame.winfo_toplevel()
         if not hasattr(root, 'main_window'):
             return
@@ -1329,13 +1343,21 @@ class MeasurementPanel:
             else:
                 image_panel.canvas.unbind("<Button-1>")
             delattr(self, '_original_canvas_click_binding')
+    
+    def _cancel_manual_line_selection(self):
+        """Cancel manual line selection without performing measurement."""
+        # Restore original bindings
+        self._restore_original_bindings()
         
         # Clear state
         self.selecting_manual_line = False
         self.manual_line_points = []
         
         # Clear visual markers
-        image_panel.canvas.delete('manual_line_marker')
+        root = self.frame.winfo_toplevel()
+        if hasattr(root, 'main_window') and hasattr(root.main_window, 'image_panel'):
+            image_panel = root.main_window.image_panel
+            image_panel.canvas.delete('manual_line_marker')
     
     def _show_interactive_graph(self):
         """Open an interactive matplotlib window for line profile visualization."""

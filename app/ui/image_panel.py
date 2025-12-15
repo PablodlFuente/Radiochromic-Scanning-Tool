@@ -997,17 +997,29 @@ class ImagePanel:
                             fill="green", width=2, tags="measured_area"
                         )
                         
-                        # Draw endpoint markers
-                        marker_size = 5
-                        self.canvas.create_oval(
+                        # Draw endpoint X markers
+                        marker_size = 6
+                        # First endpoint
+                        self.canvas.create_line(
                             canvas_x1 - marker_size, canvas_y1 - marker_size,
                             canvas_x1 + marker_size, canvas_y1 + marker_size,
-                            outline='green', width=2, fill='green', tags="measured_area"
+                            fill='green', width=2, tags="measured_area"
                         )
-                        self.canvas.create_oval(
+                        self.canvas.create_line(
+                            canvas_x1 - marker_size, canvas_y1 + marker_size,
+                            canvas_x1 + marker_size, canvas_y1 - marker_size,
+                            fill='green', width=2, tags="measured_area"
+                        )
+                        # Second endpoint
+                        self.canvas.create_line(
                             canvas_x2 - marker_size, canvas_y2 - marker_size,
                             canvas_x2 + marker_size, canvas_y2 + marker_size,
-                            outline='green', width=2, fill='green', tags="measured_area"
+                            fill='green', width=2, tags="measured_area"
+                        )
+                        self.canvas.create_line(
+                            canvas_x2 - marker_size, canvas_y2 + marker_size,
+                            canvas_x2 + marker_size, canvas_y2 - marker_size,
+                            fill='green', width=2, tags="measured_area"
                         )
 
     def set_zoom_callback(self, callback):

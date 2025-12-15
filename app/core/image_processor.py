@@ -1878,10 +1878,11 @@ class ImageProcessor:
             # Apply contrast, brightness, and saturation
             if self.contrast != 1.0 or self.brightness != 1.0 or self.saturation != 1.0:
                 # Convert to PIL Image for easier adjustments
-                if len(image.shape) == 3:
-                    pil_image = Image.fromarray(image)
+                pil_ready = self._prepare_image_for_display(image)
+                if len(pil_ready.shape) == 3:
+                    pil_image = Image.fromarray(pil_ready)
                 else:
-                    pil_image = Image.fromarray(image).convert("L")
+                    pil_image = Image.fromarray(pil_ready).convert("L")
             
                 # Apply contrast
                 if self.contrast != 1.0:
@@ -1931,6 +1932,7 @@ class ImageProcessor:
             # Apply user plugins (if any)
             from app.plugins.plugin_manager import plugin_manager
             image = plugin_manager.apply_plugins(image)
+            image = self._prepare_image_for_display(image)
 
             # Convert to PIL Image for display
             if len(image.shape) == 3:
@@ -1975,6 +1977,47 @@ class ImageProcessor:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _prepare_image_for_display(self, image):
+        """Convert numpy arrays to uint8 for safe Pillow/Tk display."""
+        if image is None:
+            return None
+
+        np_image = np.asarray(image)
+
+        # Common case: already uint8
+        if np_image.dtype == np.uint8:
+            return np_image
+
+        # Boolean masks become 0/255
+        if np.issubdtype(np_image.dtype, np.bool_):
+            return np_image.astype(np.uint8) * 255
+
+        # 16-bit images: scale from full 16-bit range (0-65535) to 8-bit (0-255)
+        if np_image.dtype == np.uint16:
+            return (np_image / 256).astype(np.uint8)
+
+        # Signed 16-bit: shift to unsigned range first
+        if np_image.dtype == np.int16:
+            shifted = np_image.astype(np.int32) + 32768
+            return (shifted / 256).astype(np.uint8)
+
+        # Float images: assume 0-1 range or normalize if outside
+        if np.issubdtype(np_image.dtype, np.floating):
+            float_image = np.nan_to_num(np_image, nan=0.0, posinf=1.0, neginf=0.0)
+            max_val = float_image.max()
+            # If values are in 0-1 range, scale directly
+            if max_val <= 1.0:
+                return (np.clip(float_image, 0.0, 1.0) * 255.0).astype(np.uint8)
+            # Otherwise normalize
+            min_val = float_image.min()
+            if max_val == min_val:
+                return np.zeros_like(float_image, dtype=np.uint8)
+            scaled = (float_image - min_val) / (max_val - min_val)
+            return (scaled * 255.0).astype(np.uint8)
+
+        # Other integer types: clip to 0-255
+        return np.clip(np_image, 0, 255).astype(np.uint8)
 
     def _find_fit_parameters_file(self):
         """Return absolute path to *fit_parameters.csv* if it exists, else None."""
