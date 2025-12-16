@@ -105,6 +105,8 @@ class MainWindow:
         # Help menu
         self.help_menu = tk.Menu(self.menu_bar, tearoff=0)
         self.menu_bar.add_cascade(label="Help", menu=self.help_menu)
+        self.help_menu.add_command(label="Check for Updates...", command=self.check_for_updates)
+        self.help_menu.add_separator()
         self.help_menu.add_command(label="About", command=self.show_about)
     
     def _create_main_layout(self):
@@ -942,6 +944,135 @@ class MainWindow:
             "Version 1.0.0\n\n"
             "Tester: Paula Martinez Bononad"
         )
+    
+    def check_for_updates(self):
+        """Check for updates from GitHub and offer to update if available."""
+        from app.utils.updater import UpdateChecker
+        
+        # Create update checker
+        updater = UpdateChecker()
+        
+        # Create a progress dialog
+        update_window = tk.Toplevel(self.parent)
+        update_window.title("Check for Updates")
+        update_window.geometry("450x300")
+        update_window.resizable(False, False)
+        update_window.grab_set()  # Modal
+        
+        # Center the window
+        update_window.update_idletasks()
+        x = (update_window.winfo_screenwidth() - 450) // 2
+        y = (update_window.winfo_screenheight() - 300) // 2
+        update_window.geometry(f"+{x}+{y}")
+        
+        # Main frame
+        main_frame = ttk.Frame(update_window, padding=20)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Title
+        ttk.Label(
+            main_frame, 
+            text="Software Update", 
+            font=("Arial", 14, "bold")
+        ).pack(anchor=tk.W, pady=(0, 15))
+        
+        # Status text widget
+        status_text = tk.Text(main_frame, height=8, width=50, state=tk.DISABLED, wrap=tk.WORD)
+        status_text.pack(fill=tk.BOTH, expand=True, pady=(0, 15))
+        
+        # Button frame
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill=tk.X)
+        
+        update_btn = ttk.Button(button_frame, text="Update Now", state=tk.DISABLED)
+        update_btn.pack(side=tk.RIGHT, padx=5)
+        
+        close_btn = ttk.Button(button_frame, text="Close", command=update_window.destroy)
+        close_btn.pack(side=tk.RIGHT, padx=5)
+        
+        def append_status(text):
+            """Append text to the status widget."""
+            status_text.config(state=tk.NORMAL)
+            status_text.insert(tk.END, text + "\n")
+            status_text.see(tk.END)
+            status_text.config(state=tk.DISABLED)
+            update_window.update()
+        
+        def check_updates_thread():
+            """Background thread to check for updates."""
+            try:
+                self.parent.after(0, lambda: append_status("Checking for updates..."))
+                
+                # Use the updater module to check for updates
+                result = updater.check_for_updates()
+                
+                if not result['success']:
+                    self.parent.after(0, lambda: append_status(f"❌ Error: {result['error']}"))
+                    return
+                
+                local_commit = result['local_commit']
+                remote_commit = result['remote_commit']
+                commits_behind = result['commits_behind']
+                
+                self.parent.after(0, lambda: append_status(f"Local version: {local_commit}"))
+                self.parent.after(0, lambda: append_status(f"Latest version: {remote_commit}"))
+                
+                if not result['has_updates']:
+                    self.parent.after(0, lambda: append_status("\n✅ You are running the latest version!"))
+                else:
+                    self.parent.after(0, lambda: append_status(f"\n⚠️ You are {commits_behind} commit(s) behind."))
+                    self.parent.after(0, lambda: append_status("Click 'Update Now' to download the latest version."))
+                    
+                    # Enable update button
+                    def enable_update():
+                        update_btn.config(state=tk.NORMAL, command=do_update)
+                    self.parent.after(0, enable_update)
+                    
+            except Exception as e:
+                self.parent.after(0, lambda: append_status(f"❌ Error: {str(e)}"))
+        
+        def do_update():
+            """Perform the update."""
+            update_btn.config(state=tk.DISABLED)
+            threading.Thread(target=perform_update_thread, daemon=True).start()
+        
+        def perform_update_thread():
+            """Background thread to perform the update."""
+            try:
+                self.parent.after(0, lambda: append_status("\nPulling latest changes..."))
+                
+                # Check for local changes
+                if updater.has_local_changes():
+                    self.parent.after(0, lambda: append_status("Stashing local changes..."))
+                
+                # Pull the updates
+                result = updater.pull_updates()
+                
+                if result['success']:
+                    self.parent.after(0, lambda: append_status("✅ Update successful!"))
+                    self.parent.after(0, lambda: append_status("\n⚠️ Please restart the application to apply changes."))
+                    
+                    # Show restart prompt
+                    def prompt_restart():
+                        if messagebox.askyesno(
+                            "Update Complete",
+                            "The application has been updated successfully.\n\n"
+                            "Would you like to restart now to apply the changes?"
+                        ):
+                            # Close the update window
+                            update_window.destroy()
+                            # Restart the application
+                            updater.restart_application()
+                    
+                    self.parent.after(0, prompt_restart)
+                else:
+                    self.parent.after(0, lambda: append_status(f"❌ Error during update:\n{result['error']}"))
+                    
+            except Exception as e:
+                self.parent.after(0, lambda: append_status(f"❌ Error: {str(e)}"))
+        
+        # Start checking in background
+        threading.Thread(target=check_updates_thread, daemon=True).start()
     
     def update_status(self, message):
         """Update the status bar message."""

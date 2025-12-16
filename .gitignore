@@ -9,3 +9,4 @@ rc_config.json
 Improvements.txt
 .github
 .gitignore
+calibration_data/*.csv
