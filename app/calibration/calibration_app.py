@@ -5,6 +5,7 @@ matplotlib.use('TkAgg') # Ensure TkAgg backend is used for matplotlib with Tkint
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from PIL import Image, ImageTk
+import cv2
 import os
 import re
 import numpy as np
@@ -78,6 +79,7 @@ class CalibrationApp:
         self._initialize_csv_file()  # Create fresh calibration CSV
         self.excluded_points: set[tuple[str,int]] = set() # Set to keep track of excluded calibration points as (channel, index) tuples
         self._manual_override: dict[str, tuple[float,float,float]] = {} # store manual parameters keyed by channel when user overrides
+        self.calibration_bit_depth = 8  # Default to 8-bit, updated when images are loaded
 
         # Initial default text. It will be updated by _on_image_canvas_configure
         self.image_canvas.create_text(1, 1, text="No image selected", font=("Arial", 24), fill="gray", tags="default_text")
@@ -388,9 +390,40 @@ class CalibrationApp:
         image_path = self.image_files[idx]
         self.current_image_path = image_path # Set current image path here
         try:
-            pil_img = Image.open(image_path)
+            # Use OpenCV to load image preserving 16-bit depth
+            cv_img = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
+            if cv_img is None:
+                raise ValueError(f"Could not load image: {image_path}")
+            
+            # Convert BGR to RGB
+            if len(cv_img.shape) == 3:
+                cv_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
+            
+            # Store the original numpy array for measurements (preserves 16-bit)
+            self.original_image_array = cv_img.copy()
+            
+            # Detect bit depth from numpy dtype
+            if cv_img.dtype == np.uint16:
+                self.calibration_bit_depth = 16
+                print(f"Detected 16-bit image (dtype={cv_img.dtype}): {image_path}")
+                print(f"  Value range: min={cv_img.min()}, max={cv_img.max()}")
+                # Convert to 8-bit for PIL display only
+                display_img = (cv_img / 256).astype(np.uint8)
+            else:
+                self.calibration_bit_depth = 8
+                print(f"Detected 8-bit image (dtype={cv_img.dtype}): {image_path}")
+                display_img = cv_img
+            
+            # Create PIL image for display
+            pil_img = Image.fromarray(display_img)
+            
             pil_img = self._crop_white_border(pil_img)
-            self.original_pil_image = pil_img  # Store processed image
+            self.original_pil_image = pil_img  # Store processed image for display
+            
+            # Also crop the numpy array to match
+            if hasattr(self, 'last_crop_bbox') and self.last_crop_bbox:
+                left, top, right, bottom = self.last_crop_bbox
+                self.original_image_array = self.original_image_array[top:bottom, left:right]
 
             # Calculate initial zoom_factor to fit the image
             # Ensure canvas has correct dimensions before calculating fit
@@ -667,7 +700,15 @@ class CalibrationApp:
             dose_value = "N/A"
 
         pil_image = self.original_pil_image
-        img_array = np.array(pil_image)
+        # Use the numpy array that preserves original bit depth (16-bit if applicable)
+        if hasattr(self, 'original_image_array') and self.original_image_array is not None:
+            img_array = self.original_image_array
+            print(f"DEBUG ROI: Using original_image_array with dtype={img_array.dtype}, shape={img_array.shape}")
+            if img_array.dtype == np.uint16:
+                print(f"DEBUG ROI: 16-bit array, value range: min={img_array.min()}, max={img_array.max()}")
+        else:
+            img_array = np.array(pil_image)
+            print(f"DEBUG ROI: Fallback to pil_image array with dtype={img_array.dtype}")
         img_h, img_w = img_array.shape[:2]
 
         x_center_orig = roi_data['x_img']
@@ -728,6 +769,7 @@ class CalibrationApp:
             num_pixels = pixels_in_roi.shape[0]
             mean_rgb = np.mean(pixels_in_roi, axis=0)
             std_dev_rgb = np.std(pixels_in_roi, axis=0)
+            print(f"DEBUG ROI: pixels_in_roi dtype={pixels_in_roi.dtype}, mean_rgb={mean_rgb}")
             roi_data.update({
                 'mean_r': mean_rgb[0] if len(mean_rgb) > 0 else 'N/A',
                 'mean_g': mean_rgb[1] if len(mean_rgb) > 1 else 'N/A',
@@ -849,96 +891,34 @@ class CalibrationApp:
             self.calibrate_button.config(state=tk.DISABLED)
 
     def perform_calibration(self):
-        if self.plot_window and self.plot_window.winfo_exists():
-            self.plot_window.lift()
-            return
-
+        """Open the fit calibration window directly."""
+        # Check if we have enough data
         doses = []
-        mean_r_values = []
-        mean_g_values = []
-        mean_b_values = []
-        std_r_values = []
-        std_g_values = []
-        std_b_values = []
-
         for idx, img_path in enumerate(self.image_files):
             try:
                 dose_str = self.gray_values[idx]
                 dose = float(dose_str)
-            except (ValueError, IndexError) as e:
-                print(f"Skipping image {os.path.basename(img_path)} for calibration: Invalid or missing dose ('{dose_str}'). Error: {e}")
+            except (ValueError, IndexError):
                 continue
 
             if img_path not in self.image_rois or not self.image_rois[img_path]:
-                print(f"Skipping image {os.path.basename(img_path)} for calibration: No ROI data.")
                 continue
             
             roi_data = self.image_rois[img_path][0]
             try:
-                mean_r = float(roi_data['mean_r'])
-                mean_g = float(roi_data['mean_g'])
-                mean_b = float(roi_data['mean_b'])
-            except (KeyError, ValueError, TypeError) as e:
-                print(f"Skipping image {os.path.basename(img_path)} for calibration: Invalid or missing mean RGB values. Error: {e} Data: {roi_data}")
+                float(roi_data['mean_r'])
+                float(roi_data['mean_g'])
+                float(roi_data['mean_b'])
+            except (KeyError, ValueError, TypeError):
                 continue
             
             doses.append(dose)
-            mean_r_values.append(mean_r)
-            mean_g_values.append(mean_g)
-            mean_b_values.append(mean_b)
 
-            # Try to get standard deviations, append None if not valid
-            try:
-                std_r = float(roi_data['std_r'])
-            except (KeyError, ValueError, TypeError):
-                std_r = None # Matplotlib handles None in yerr by not drawing the error bar
-            try:
-                std_g = float(roi_data['std_g'])
-            except (KeyError, ValueError, TypeError):
-                std_g = None
-            try:
-                std_b = float(roi_data['std_b'])
-            except (KeyError, ValueError, TypeError):
-                std_b = None
-
-            std_r_values.append(std_r)
-            std_g_values.append(std_g)
-            std_b_values.append(std_b)
-
-        if not doses or len(doses) < 2: # Need at least 2 points to plot a meaningful curve
-            messagebox.showinfo("Calibration Plot", "Not enough valid data points (minimum 2 required) with both dose and measured RGB values to plot.")
+        if len(doses) < 2:
+            messagebox.showinfo("Calibration", "Not enough valid data points (minimum 2 required) with both dose and measured RGB values.")
             return
 
-        self.plot_window = tk.Toplevel(self.root)
-        self.plot_window.title("Calibration Curve")
-        self.plot_window.geometry("800x600")
-
-        fig, ax = plt.subplots()
-        ax.errorbar(doses, mean_r_values, yerr=std_r_values, fmt='o', color='red', label='Red Channel', capsize=5, elinewidth=1, markeredgewidth=1)
-        ax.errorbar(doses, mean_g_values, yerr=std_g_values, fmt='o', color='green', label='Green Channel', capsize=5, elinewidth=1, markeredgewidth=1)
-        ax.errorbar(doses, mean_b_values, yerr=std_b_values, fmt='o', color='blue', label='Blue Channel', capsize=5, elinewidth=1, markeredgewidth=1)
-
-        ax.set_xlabel("Dose (Gy)")
-        ax.set_ylabel("Mean Pixel Value")
-        ax.set_title("Film Calibration Curve")
-        ax.legend()
-        ax.grid(True)
-
-        canvas = FigureCanvasTkAgg(fig, master=self.plot_window)
-        # Create and pack toolbar first
-        toolbar = NavigationToolbar2Tk(canvas, self.plot_window)
-        toolbar.update()
-        toolbar.pack(side=tk.TOP, fill=tk.X)
-        
-        # Then pack the canvas widget
-        canvas_widget = canvas.get_tk_widget()
-        canvas_widget.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-        canvas.draw() # Draw after packing everything
-        
-        self.plot_window.protocol("WM_DELETE_WINDOW", self._on_close_plot_window)
-        self.plot_window.lift()
-
-        # Open fit window automatically after calibration plot
+        # Open fit window directly
         self.open_fit_window()
 
     def _on_close_plot_window(self):
@@ -1099,43 +1079,12 @@ class CalibrationApp:
         tk.Button(controls_frame, text="Save Spline", command=self._save_spline_csv).pack(side=tk.RIGHT, padx=5)
 
         # prepare results dict before plotting
-        self.latest_fit_results = {ch:{"params":[],"errors":[],"r2":None} for ch in ("R","G","B")}
+        self.latest_fit_results = {}
 
         self.fit_fig.canvas.mpl_connect('button_press_event', self._on_fit_click)
 
         self._update_fit_plot()
         self._manual_override.clear() # clear manual overrides when opening fit window
-
-        # fill entry boxes & r2 labels
-        for ch in ("R","G","B"):
-            res = self.latest_fit_results.get(f"Fit {ch}") or self.latest_fit_results.get(f"Spline {ch}") or {}
-            params = res.get("params")
-            if params is not None and hasattr(params, '__len__') and len(params) == 3:
-                a, b, c = params
-                for val, pname in zip((a, b, c), ("a", "b", "c")):
-                    self.param_entries[ch][pname].delete(0,tk.END)
-                    self.param_entries[ch][pname].insert(0, f"{val:.5g}")
-                self.param_entries[ch]["r2_label"].config(text=f"{res['r2']:.4f}")
-                # Rellenar errores si están disponibles y son finitos
-                errors = res.get("errors")
-                if errors is not None and hasattr(errors, '__len__') and len(errors) == 3:
-                    for err_val, pname in zip(errors, ("a", "b", "c")):
-                        err_entry = self.param_entries[ch][f"σ{pname}"]
-                        err_entry.configure(state='normal')
-                        err_entry.delete(0, tk.END)
-                        if not (err_val is None or np.isnan(err_val)):
-                            err_entry.insert(0, str(err_val))
-                        err_entry.configure(state='readonly')
-            else:
-                for pname in ("a", "b", "c"):
-                    self.param_entries[ch][pname].delete(0,tk.END)
-                self.param_entries[ch]["r2_label"].config(text="")
-                # limpiar errores
-                for pname in ("σa","σb","σc"):
-                    err_entry = self.param_entries[ch][pname]
-                    err_entry.configure(state='normal')
-                    err_entry.delete(0, tk.END)
-                    err_entry.configure(state='readonly')
 
         self.fit_canvas.draw()
 
@@ -1158,7 +1107,8 @@ class CalibrationApp:
         try:
             with open(fname, 'w', newline='', encoding='utf-8') as f:  # Added encoding='utf-8'
                 w = csv.writer(f)
-                w.writerow(["Channel", "a", "σa", "b", "σb", "c", "σc", "R2"])
+                # Include bit_depth in header to indicate calibration bit depth
+                w.writerow(["Channel", "a", "σa", "b", "σb", "c", "σc", "R2", "bit_depth"])
                 for ch in ("R", "G", "B"):
                     a = self.param_entries[ch]['a'].get().strip()
                     σa = self.param_entries[ch]['σa'].get().strip()
@@ -1167,8 +1117,9 @@ class CalibrationApp:
                     c = self.param_entries[ch]['c'].get().strip()
                     σc = self.param_entries[ch]['σc'].get().strip()
                     r2text = self.param_entries[ch]['r2_label'].cget('text')
-                    w.writerow([ch, a, σa, b, σb, c, σc, r2text])
-            messagebox.showinfo("Fit saved", f"Fit parameters saved to {os.path.abspath(fname)}")
+                    # Include calibration bit depth so apply_calibration knows what to expect
+                    w.writerow([ch, a, σa, b, σb, c, σc, r2text, self.calibration_bit_depth])
+            messagebox.showinfo("Fit saved", f"Fit parameters saved to {os.path.abspath(fname)}\\nCalibration bit depth: {self.calibration_bit_depth}-bit")
         except Exception as e:
             messagebox.showerror("Save error", str(e))
         self.fit_window.destroy()
@@ -1494,22 +1445,37 @@ class CalibrationApp:
     # -------- helper to crop white border -------- #
     def _crop_white_border(self, pil_img, thresh: int = 240):
         """Detect white border (scanner background) and crop it out and auto-zoom."""
+        self.last_crop_bbox = None  # Reset crop bbox
         try:
-            # Convert to grayscale and create binary mask where film pixels are dark (below threshold)
-            gray = pil_img.convert('L')
-            # Create binary image: 255 for film, 0 for background
-            bw = gray.point(lambda p: 255 if p < thresh else 0)
-            bbox = bw.getbbox()
-            if bbox is None:
+            # Convert to grayscale for detection (this is just for mask, not affecting original)
+            # For 16-bit images, need to scale threshold
+            temp_arr = np.array(pil_img)
+            if temp_arr.dtype == np.uint16:
+                # Scale threshold from 8-bit (0-255) to 16-bit (0-65535)
+                thresh_scaled = int(thresh * 256)
+                gray_arr = np.mean(temp_arr, axis=-1) if temp_arr.ndim == 3 else temp_arr
+                bw = gray_arr < thresh_scaled
+            else:
+                gray = pil_img.convert('L')
+                bw_img = gray.point(lambda p: 255 if p < thresh else 0)
+                bw = np.array(bw_img) > 0
+            
+            # Find bounding box of non-white pixels
+            rows = np.any(bw, axis=1)
+            cols = np.any(bw, axis=0)
+            if not np.any(rows) or not np.any(cols):
                 return pil_img  # Could not detect film region
-
-            left, top, right, bottom = bbox
+            
+            rmin, rmax = np.where(rows)[0][[0, -1]]
+            cmin, cmax = np.where(cols)[0][[0, -1]]
+            
             pad = 2  # small padding
-            left = max(0, left - pad)
-            top = max(0, top - pad)
-            right = min(pil_img.width, right + pad)
-            bottom = min(pil_img.height, bottom + pad)
-
+            left = max(0, cmin - pad)
+            top = max(0, rmin - pad)
+            right = min(pil_img.width, cmax + pad + 1)
+            bottom = min(pil_img.height, rmax + pad + 1)
+            
+            self.last_crop_bbox = (left, top, right, bottom)
             return pil_img.crop((left, top, right, bottom))
         except Exception as e:
             print(f"Crop error: {e}")

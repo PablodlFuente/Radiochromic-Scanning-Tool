@@ -53,6 +53,9 @@ class ImageProcessor:
         self.binning = 1  # Default binning is 1x1 (no binning)
         self.binned_image_file = None
         
+        # Image bit depth (detected on load)
+        self.image_bit_depth = 8  # 8 or 16
+        
         # Measurement settings
         self.measurement_shape = "circular"
         self.measurement_size = 20
@@ -72,6 +75,7 @@ class ImageProcessor:
         
         # Calibration data
         self.calibration = None
+        self.calibration_bit_depth = 8  # Default, updated when loading calibration params
         
         # Processing flags
         self.processing_lock = threading.Lock()
@@ -404,6 +408,14 @@ class ImageProcessor:
             # Remove white background if option is enabled
             if self.config.get("remove_background", False):
                 image = self.detect_useful_area(image)
+            
+            # Detect and store image bit depth
+            if image.dtype == np.uint16:
+                self.image_bit_depth = 16
+                logger.info(f"Detected 16-bit image")
+            else:
+                self.image_bit_depth = 8
+                logger.info(f"Detected 8-bit image")
             
             # Store images - ensure we're preserving the original data type
             self.original_image = image
@@ -800,7 +812,7 @@ class ImageProcessor:
     
         return mean_out, std_out
     
-    def get_auto_measure():
+    def get_auto_measure(self):
         """Get the auto measure setting."""
         return self.auto_measure
 
@@ -1376,8 +1388,8 @@ class ImageProcessor:
                             sample_y = y_coords
                             sample_rel = rel_coords
                     
-                        # Collect raw data for histogram
-                        masked_data = np.zeros((len(sample_x), self.current_image.shape[2]), dtype=np.uint8)
+                        # Collect raw data for histogram (preserve original dtype for 16-bit support)
+                        masked_data = np.zeros((len(sample_x), self.current_image.shape[2]), dtype=self.current_image.dtype)
                         for c in range(self.current_image.shape[2]):
                             masked_data[:, c] = np.array([self.current_image[x, y, c] for x, y in zip(sample_y, sample_x)])
                     
@@ -1415,8 +1427,8 @@ class ImageProcessor:
                             sample_y = y_coords
                             sample_rel = rel_coords
                     
-                        # Collect raw data for histogram
-                        masked_data = np.zeros(len(sample_x), dtype=np.uint8)
+                        # Collect raw data for histogram (preserve original dtype for 16-bit support)
+                        masked_data = np.zeros(len(sample_x), dtype=self.current_image.dtype)
                         for i, (x, y) in enumerate(zip(sample_x, sample_y)):
                             masked_data[i] = self.current_image[y, x] # Note: Grayscale indexing was [y,x], seems correct as per typical image coord. conventions if x=col, y=row
                     
@@ -1698,6 +1710,7 @@ class ImageProcessor:
         # ------------------------------------------------------------------
         params: dict[str, tuple[float, float, float]] = {}
         param_sigmas: dict[str, tuple[float, float, float]] = {}
+        calibration_bit_depth_from_file = None
         try:
             with open(csv_path, newline="", encoding="utf-8") as f:
                 reader = csv.DictReader(f)
@@ -1713,6 +1726,15 @@ class ImageProcessor:
                         continue
                     params[ch] = (a, b, c)
 
+                    # Read calibration bit depth if present
+                    if calibration_bit_depth_from_file is None:
+                        bit_depth_str = row.get("bit_depth")
+                        if bit_depth_str:
+                            try:
+                                calibration_bit_depth_from_file = int(bit_depth_str)
+                            except ValueError:
+                                pass
+
                     # Optional std_err columns – tolerate multiple naming conventions
                     try:
                         sa = float(row.get("sigma_a") or row.get("sa") or row.get("σa") or 0.0)
@@ -1721,6 +1743,15 @@ class ImageProcessor:
                     except ValueError:
                         sa = sb = sc = 0.0
                     param_sigmas[ch] = (sa, sb, sc)
+            
+            # Update calibration bit depth
+            if calibration_bit_depth_from_file:
+                self.calibration_bit_depth = calibration_bit_depth_from_file
+                logger.info(f"Calibration bit depth from file: {self.calibration_bit_depth}-bit")
+            else:
+                self.calibration_bit_depth = 8  # Legacy calibration
+                logger.info("No bit_depth in calibration file, assuming 8-bit")
+                
         except Exception as exc:
             logger.error("Failed to read calibration parameters: %s", exc, exc_info=True)
             return False
@@ -1813,6 +1844,111 @@ class ImageProcessor:
             return False
 
 
+    
+    def get_image_bit_depth(self):
+        """Return the bit depth of the current image (8 or 16)."""
+        return self.image_bit_depth
+    
+    def get_calibration_bit_depth(self):
+        """Return the bit depth expected by the calibration curve.
+        
+        This is read from the fit_parameters.csv file. If not found,
+        defaults to 8-bit for backwards compatibility with older calibrations.
+        
+        Always reads from file to get the most up-to-date value,
+        since the user may have created a new calibration during the session.
+        """
+        # Always reload from file to ensure we have the current calibration
+        self._load_calibration_bit_depth()
+        return self.calibration_bit_depth if self.calibration_bit_depth else 8
+    
+    def _load_calibration_bit_depth(self):
+        """Load calibration bit depth from fit_parameters.csv."""
+        csv_path = self._find_fit_parameters_file()
+        if csv_path is None:
+            self.calibration_bit_depth = 8
+            return
+        
+        try:
+            import csv
+            with open(csv_path, newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    bit_depth = row.get("bit_depth")
+                    if bit_depth:
+                        self.calibration_bit_depth = int(bit_depth)
+                        logger.info(f"Loaded calibration bit depth: {self.calibration_bit_depth}-bit")
+                        return
+            # If bit_depth column not found, assume old calibration (8-bit)
+            self.calibration_bit_depth = 8
+            logger.info("No bit_depth in calibration file, assuming 8-bit (legacy calibration)")
+        except Exception as e:
+            logger.warning(f"Could not read calibration bit depth: {e}")
+            self.calibration_bit_depth = 8
+    
+    def rescale_to_8bit(self):
+        """Rescale a 16-bit image to 8-bit by dividing by 256.
+        
+        This converts the full 16-bit range (0-65535) to 8-bit (0-255),
+        which is required for calibration curves that expect 8-bit values.
+        
+        Returns:
+            bool: True if rescaling was successful, False otherwise.
+        """
+        if self.current_image is None:
+            logger.warning("rescale_to_8bit called with no image loaded")
+            return False
+        
+        if self.image_bit_depth != 16:
+            logger.info("Image is already 8-bit, no rescaling needed")
+            return True
+        
+        try:
+            # Convert 16-bit to 8-bit by dividing by 256
+            self.original_image = (self.original_image / 256).astype(np.uint8)
+            self.current_image = (self.current_image / 256).astype(np.uint8)
+            self.image_bit_depth = 8
+            
+            # Recompute integral images with new values
+            self._compute_integral_images()
+            
+            logger.info("Image rescaled from 16-bit to 8-bit successfully")
+            return True
+        except Exception as e:
+            logger.error(f"Error rescaling image to 8-bit: {e}", exc_info=True)
+            return False
+    
+    def rescale_to_16bit(self):
+        """Rescale an 8-bit image to 16-bit by multiplying by 256.
+        
+        This converts the 8-bit range (0-255) to 16-bit (0-65535),
+        which is required for calibration curves that expect 16-bit values.
+        
+        Returns:
+            bool: True if rescaling was successful, False otherwise.
+        """
+        if self.current_image is None:
+            logger.warning("rescale_to_16bit called with no image loaded")
+            return False
+        
+        if self.image_bit_depth != 8:
+            logger.info("Image is already 16-bit, no rescaling needed")
+            return True
+        
+        try:
+            # Convert 8-bit to 16-bit by multiplying by 256
+            self.original_image = (self.original_image.astype(np.uint16) * 256)
+            self.current_image = (self.current_image.astype(np.uint16) * 256)
+            self.image_bit_depth = 16
+            
+            # Recompute integral images with new values
+            self._compute_integral_images()
+            
+            logger.info("Image rescaled from 8-bit to 16-bit successfully")
+            return True
+        except Exception as e:
+            logger.error(f"Error rescaling image to 16-bit: {e}", exc_info=True)
+            return False
     
     def update_settings(self, config):
         """Update settings from config."""

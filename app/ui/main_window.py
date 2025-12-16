@@ -870,6 +870,42 @@ class MainWindow:
         # If the checkbox is now ON, apply calibration
         if self.calibration_var.get():
             if self.image_processor.has_calibration():
+                # Check bit depth compatibility
+                image_bits = self.image_processor.get_image_bit_depth()
+                calibration_bits = self.image_processor.get_calibration_bit_depth()
+                
+                if image_bits != calibration_bits:
+                    # Bit depth mismatch - need to rescale
+                    response = messagebox.askyesno(
+                        "Bit Depth Mismatch",
+                        f"The current image is {image_bits}-bit, but the calibration curve "
+                        f"was created with {calibration_bits}-bit values.\n\n"
+                        f"To apply the calibration, the image must be rescaled to {calibration_bits}-bit.\n\n"
+                        f"Do you want to rescale the image to {calibration_bits}-bit and proceed?",
+                        icon='warning'
+                    )
+                    
+                    if not response:
+                        # User cancelled
+                        self.calibration_var.set(False)
+                        self.update_status("Calibration cancelled - bit depth mismatch")
+                        return
+                    
+                    # Rescale the image to match calibration bit depth
+                    if calibration_bits == 8:
+                        success_rescale = self.image_processor.rescale_to_8bit()
+                    else:  # calibration_bits == 16
+                        success_rescale = self.image_processor.rescale_to_16bit()
+                    
+                    if not success_rescale:
+                        messagebox.showerror("Error", f"Failed to rescale image to {calibration_bits}-bit.")
+                        self.calibration_var.set(False)
+                        return
+                    
+                    # Refresh display after rescaling
+                    self.image_panel.display_image(is_adjustment=True)
+                    self.update_status(f"Image rescaled to {calibration_bits}-bit")
+                
                 success = self.image_processor.apply_calibration()
                 if success:
                     self.image_panel.display_image(is_adjustment=True)

@@ -780,6 +780,10 @@ class MeasurementPanel:
             self.viz_canvas.draw()
             return
         
+        # Determine the max value based on image bit depth
+        bit_depth = self.image_processor.get_image_bit_depth()
+        max_pixel_value = 65535 if bit_depth == 16 else 255
+        
         # Check if we have RGB or grayscale data
         if len(raw_data.shape) > 1 and raw_data.shape[1] == 3:
             if self.image_processor.calibration_applied:
@@ -810,10 +814,10 @@ class MeasurementPanel:
                 labels = ['Red', 'Green', 'Blue']
                 for i in range(3):
                     # Use bins=50 for a good balance between detail and performance
-                    ax.hist(raw_data[:, i], bins=50, alpha=0.5, color=colors[i], label=labels[i], range=(0, 255))
+                    ax.hist(raw_data[:, i], bins=50, alpha=0.5, color=colors[i], label=labels[i], range=(0, max_pixel_value))
                 ax.set_title('RGB Histogram')
                 ax.legend(loc='upper right')
-                ax.set_xlim(0, 255)
+                ax.set_xlim(0, max_pixel_value)
                 ax.set_xlabel('Pixel Value')
                 ax.set_ylabel('Frequency')
         else:
@@ -837,10 +841,10 @@ class MeasurementPanel:
                 ax.set_xlim(data_min, data_max)
                 ax.set_xlabel('Dose')
             else:
-                # Standard 8-bit grayscale data (raw_data should be uint8)
-                ax.hist(raw_data[~np.isnan(raw_data)], bins=50, color='gray', range=(0, 255))
+                # Standard grayscale data - use appropriate range for bit depth
+                ax.hist(raw_data[~np.isnan(raw_data)], bins=50, color='gray', range=(0, max_pixel_value))
                 ax.set_title('Grayscale Histogram')
-                ax.set_xlim(0, 255)
+                ax.set_xlim(0, max_pixel_value)
                 ax.set_xlabel('Pixel Value')
 
             ax.set_ylabel('Frequency')

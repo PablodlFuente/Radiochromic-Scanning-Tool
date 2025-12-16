@@ -5,7 +5,7 @@
         "C:/Users/pablo/Downloads/scans_070525 1/scans_070525/RC15_16.tiff"
     ],
     "auto_measure": false,
-    "colormap": "turbo",
+    "colormap": "hot",
     "use_gpu": false,
     "gpu_force_enabled": false,
     "use_multithreading": true,
@@ -15,5 +15,5 @@
     "log_level": "WARNING",
     "detailed_logging": false,
     "uncertainty_estimation_method": "dersimonian_laird",
-    "calibration_folder": "GM_2025_11_CMAM"
+    "calibration_folder": "default"
 }
