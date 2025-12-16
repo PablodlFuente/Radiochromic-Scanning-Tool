@@ -87,7 +87,31 @@ def process(image: np.ndarray):
     if not has_films and not has_circles:
         return image
     
-    # Create output image (convert to color if needed)
+    # Determine color scale factor based on image's actual value range
+    # This handles any bit depth (8, 10, 12, 14, 16, etc.) by using the actual max value
+    if np.issubdtype(image.dtype, np.floating):
+        # Float images: assume 0-1 range, scale colors to match
+        color_scale = 1.0 / 255.0
+    elif np.issubdtype(image.dtype, np.integer):
+        # For integer images, use the actual maximum value in the image
+        # or the theoretical max for the dtype if image is mostly dark
+        actual_max = np.max(image)
+        dtype_info = np.iinfo(image.dtype)
+        theoretical_max = dtype_info.max
+        
+        # Use theoretical max if actual max is reasonably close to it (>10%)
+        # This avoids issues with mostly dark images
+        if actual_max > theoretical_max * 0.1:
+            max_val = theoretical_max
+        else:
+            max_val = max(actual_max, 255)  # At least 255 for visibility
+        
+        # Scale from 8-bit (0-255) to actual range
+        color_scale = max_val / 255.0
+    else:
+        color_scale = 1  # Unknown dtype, use standard 8-bit colors
+    
+    # Create output image (convert to color if needed, preserving dtype)
     if len(image.shape) == 2 or image.shape[2] == 1:
         out = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
     else:
@@ -102,34 +126,65 @@ def process(image: np.ndarray):
     
     sx, sy = w / orig_w, h / orig_h
     
+    # Define scaled colors based on image bit depth
+    def scale_color(bgr):
+        """Scale BGR color tuple for the image's actual value range."""
+        # Ensure colors fit within the image's dtype range
+        if np.issubdtype(out.dtype, np.floating):
+            return tuple(c * color_scale for c in bgr)
+        else:
+            dtype_max = np.iinfo(out.dtype).max
+            return tuple(min(int(c * color_scale), dtype_max) for c in bgr)
+    
+    green = scale_color((0, 255, 0))
+    orange = scale_color((0, 165, 255))
+    blue_orange = scale_color((255, 165, 0))  # Blue-ish for global CTR
+    yellow = scale_color((0, 255, 255))
+    
     # Draw films (green rectangles)
     for (x, y, w_rect, h_rect) in _OVERLAY.get("films", []):
         cv2.rectangle(out, 
                       (int(x * sx), int(y * sy)),
                       (int((x + w_rect) * sx), int((y + h_rect) * sy)),
-                      (0, 255, 0), 2)
+                      green, 2)
     
-    # Draw circles (green) or CTR circles (orange dashed)
+    # Draw circles (green) or CTR circles (orange dashed) or Global CTR (blue dashed)
     # Pre-compute CTR circle coordinates for efficient lookup
     ctr_coords = set()
+    global_ctr_coords = None
+    
     if "ctr_map" in _OVERLAY and "item_to_shape" in _OVERLAY:
         for ctr_item_id in _OVERLAY["ctr_map"].values():
             if ctr_item_id in _OVERLAY["item_to_shape"]:
-                shape_type, coords = _OVERLAY["item_to_shape"][ctr_item_id]
-                if shape_type == "circle":
-                    ctr_coords.add(coords)
+                shape_info = _OVERLAY["item_to_shape"][ctr_item_id]
+                if shape_info[0] == "circle":
+                    ctr_coords.add(tuple(shape_info[1:]))
+    
+    # Check for global CTR
+    if "global_ctr" in _OVERLAY and _OVERLAY["global_ctr"]:
+        global_ctr_item_id = _OVERLAY["global_ctr"].get("item_id")
+        if global_ctr_item_id and global_ctr_item_id in _OVERLAY.get("item_to_shape", {}):
+            shape_info = _OVERLAY["item_to_shape"][global_ctr_item_id]
+            if shape_info[0] == "circle":
+                global_ctr_coords = tuple(shape_info[1:])
     
     for (cx, cy, r) in _OVERLAY.get("circles", []):
-        # Check if this circle is marked as CTR
-        is_ctr = (cx, cy, r) in ctr_coords
+        circle_tuple = (cx, cy, r)
         
-        if is_ctr:
-            # Draw dashed circle (orange)
-            _draw_dashed_circle(out, (int(cx * sx), int(cy * sy)), int(r * sx), (0, 165, 255), 2)
+        # Check if this is the Global CTR (highest priority)
+        if global_ctr_coords and circle_tuple == global_ctr_coords:
+            # Draw dashed circle (blue-ish) for Global CTR
+            _draw_dashed_circle(out, (int(cx * sx), int(cy * sy)), int(r * sx), blue_orange, 3)
+            # Add "GLOBAL CTR" text
+            cv2.putText(out, "GLOBAL", (int(cx * sx) - 30, int(cy * sy) - int(r * sx) - 5),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, blue_orange, 2)
+        elif circle_tuple in ctr_coords:
+            # Draw dashed circle (orange) for per-film CTR
+            _draw_dashed_circle(out, (int(cx * sx), int(cy * sy)), int(r * sx), orange, 2)
         else:
             # Draw normal circle (green)
             cv2.circle(out, (int(cx * sx), int(cy * sy)), int(r * sx), 
-                      (0, 255, 0), 2, lineType=cv2.LINE_AA)
+                      green, 2, lineType=cv2.LINE_AA)
     
     # Draw highlighted shape on top (yellow)
     hl = _OVERLAY.get("highlight")
@@ -140,10 +195,10 @@ def process(image: np.ndarray):
             cv2.rectangle(out, 
                           (int(x * sx), int(y * sy)),
                           (int((x + w_rect) * sx), int((y + h_rect) * sy)),
-                          (0, 255, 255), 3)
+                          yellow, 3)
         elif stype == "circle":
             cx, cy, r = coords
-            cv2.circle(out, (int(cx * sx), int(cy * sy)), int(r * sx), (0, 255, 255), 3)
+            cv2.circle(out, (int(cx * sx), int(cy * sy)), int(r * sx), yellow, 3)
     return out
 
 

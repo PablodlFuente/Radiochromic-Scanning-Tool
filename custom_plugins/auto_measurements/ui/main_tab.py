@@ -129,6 +129,10 @@ class AutoMeasurementsTab(ttk.Frame):
         # Store original values for unit conversion
         self.original_values = {}  # key: item_id, value: dict of numeric values
         
+        # Global CTR: a single CTR circle that applies to ALL RCs
+        # When set, individual CTR selection per RC is disabled
+        self.global_ctr = None  # {"item_id": str, "film_name": str, "circle_data": dict}
+        
         # Sorting and naming mode
         self.name_sort_mode = "coords"  # 'coords' or 'name'
         
@@ -329,23 +333,147 @@ class AutoMeasurementsTab(ttk.Frame):
         ttk.Button(btn_frame, text="Clear", command=self._clear_all).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Add RC", command=self._add_manual_film).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Add Circle", command=self._add_manual_circle).pack(side=tk.LEFT)
+        
+        # Circle diameter spinbox (inline, replaces popup window)
+        # Uses DoubleVar to support both px (integer) and mm (decimal) values
+        # Note: internally we use radius in px, but UI shows diameter for user convenience
+        self.circle_diameter_var = tk.DoubleVar(value=200)  # Default diameter = 200px (radius 100)
+        self.circle_diameter_spinbox = ttk.Spinbox(
+            btn_frame, from_=10, to=1000, increment=1, textvariable=self.circle_diameter_var, 
+            width=6, command=self._update_circle_diameter_label
+        )
+        self.circle_diameter_spinbox.pack(side=tk.LEFT, padx=(2, 0))
+        self.circle_diameter_label = ttk.Label(btn_frame, text="px", width=3)
+        self.circle_diameter_label.pack(side=tk.LEFT)
+        
+        # Trace to update label when value changes (typing or arrow buttons)
+        self.circle_diameter_var.trace_add("write", self._update_circle_diameter_label)
+        
         ttk.Button(btn_frame, text="Export CSV", command=self.export_csv).pack(side=tk.LEFT, padx=5)
 
         # CTR control frame
         ctr_frame = ttk.Frame(self.frame)
         ctr_frame.pack(fill=tk.X, padx=10, pady=5)
-        ttk.Button(ctr_frame, text="Toggle CTR", command=self._toggle_ctr_manual).pack(side=tk.LEFT)
+        ttk.Button(ctr_frame, text="Set CTR", command=self._toggle_ctr_manual).pack(side=tk.LEFT)
+        ttk.Button(ctr_frame, text="Set Global CTR", command=self._set_global_ctr).pack(side=tk.LEFT, padx=(5, 0))
+        ttk.Button(ctr_frame, text="Clear Global CTR", command=self._clear_global_ctr).pack(side=tk.LEFT, padx=(5, 0))
         
         # Add CTR subtraction checkbox
         self.subtract_ctr_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(ctr_frame, text="Subtract CTR Background", variable=self.subtract_ctr_var,
                         command=self._update_ctr_subtraction).pack(side=tk.LEFT, padx=(10, 0))
+        
+        # Global CTR info label (shown when a global CTR circle exists)
+        self.global_ctr_label = ttk.Label(ctr_frame, text="", foreground="blue", font=("Arial", 9, "italic"))
+        self.global_ctr_label.pack(side=tk.LEFT, padx=(10, 0))
 
         # TreeView setup
         self._setup_treeview()
         
         # Detection parameter panels
         self._setup_detection_params()
+
+    def _update_circle_diameter_label(self, *args):
+        """Update the circle diameter label to show units (mm or px).
+        
+        Also updates the draw preview dynamically if in circle draw mode.
+        """
+        if self.use_metadata_var.get() and hasattr(self, 'stored_resolution') and self.stored_resolution:
+            self.circle_diameter_label.config(text="mm")
+        else:
+            self.circle_diameter_label.config(text="px")
+        
+        # Update draw preview dynamically if we're in circle draw mode
+        if self.draw_mode == "circle":
+            self._update_draw_dims_from_spinbox()
+    
+    def _update_diameter_from_metadata(self):
+        """Update diameter spinbox value when metadata resolution changes.
+        
+        When Use Metadata is enabled: convert current px value to mm
+        When Use Metadata is disabled: convert current mm value back to px
+        """
+        if not hasattr(self, 'circle_diameter_var'):
+            return
+        
+        current_value = self.circle_diameter_var.get()
+        
+        if self.use_metadata_var.get() and hasattr(self, 'stored_resolution') and self.stored_resolution:
+            # Switching TO mm mode
+            # Store the current px value
+            if not hasattr(self, '_diameter_px_value'):
+                self._diameter_px_value = current_value
+            
+            # Convert px to mm: mm = px * 25.4 / dpi
+            diameter_mm = current_value * 25.4 / self.stored_resolution
+            # Update spinbox to show mm value (use float-friendly format)
+            self.circle_diameter_var.set(round(diameter_mm, 2))
+            
+            # Update spinbox range for mm values (0.1 to 100 mm typically)
+            self.circle_diameter_spinbox.config(from_=0.1, to=100, increment=0.1)
+        else:
+            # Switching TO px mode
+            if hasattr(self, '_diameter_px_value') and self._diameter_px_value:
+                # Restore the original px value
+                self.circle_diameter_var.set(self._diameter_px_value)
+            elif hasattr(self, 'stored_resolution') and self.stored_resolution:
+                # Convert current mm value back to px
+                diameter_px = int(current_value * self.stored_resolution / 25.4)
+                diameter_px = max(10, min(1000, diameter_px))
+                self.circle_diameter_var.set(diameter_px)
+            
+            # Reset spinbox range for px values
+            self.circle_diameter_spinbox.config(from_=10, to=1000, increment=1)
+            
+            # Clear stored px value
+            if hasattr(self, '_diameter_px_value'):
+                delattr(self, '_diameter_px_value')
+        
+        # Update label
+        self._update_circle_diameter_label()
+
+    def _update_draw_dims_from_spinbox(self):
+        """Update draw_dims from the current spinbox value and refresh preview.
+        
+        Called when spinbox value changes while in circle draw mode.
+        """
+        if self.draw_mode != "circle":
+            return
+        
+        try:
+            diameter_value = self.circle_diameter_var.get()
+        except (tk.TclError, ValueError):
+            return  # Invalid value, skip update
+        
+        # If using metadata, spinbox value is in mm - convert to px
+        if self.use_metadata_var.get() and hasattr(self, 'stored_resolution') and self.stored_resolution:
+            # Convert mm to px: px = mm * dpi / 25.4
+            diameter_px = diameter_value * self.stored_resolution / 25.4
+        else:
+            # Value is already in px
+            diameter_px = diameter_value
+        
+        # Convert diameter to radius (integer pixels)
+        radius = max(1, int(diameter_px) // 2)
+        
+        # Update draw_dims
+        self.draw_dims = radius
+        
+        # Refresh the preview if we have a cursor position
+        if self._last_cursor is not None and self._canvas is not None:
+            try:
+                # Delete old preview and redraw
+                self._canvas.delete(self.preview_tag)
+                zoom = self.image_processor.zoom or 1.0
+                x = self._canvas.canvasx(self._last_cursor[0])
+                y = self._canvas.canvasy(self._last_cursor[1])
+                dr = radius * zoom
+                self._canvas.create_oval(
+                    x - dr, y - dr, x + dr, y + dr,
+                    outline="yellow", dash=(4, 2), tags=self.preview_tag,
+                )
+            except Exception:
+                pass  # Canvas might not be ready
 
     def _setup_treeview(self):
         """Setup the TreeView widget."""
@@ -396,8 +524,9 @@ class AutoMeasurementsTab(ttk.Frame):
             self.current_file_label
         )
         
-        # Configure CTR style
+        # Configure CTR styles
         self.tree.tag_configure("ctr", background="#FFE4B5", foreground="#8B4513", font=("TkDefaultFont", 9, "underline"))
+        self.tree.tag_configure("global_ctr", background="#87CEEB", foreground="#00008B", font=("TkDefaultFont", 9, "bold underline"))
         
         # Bind events
         self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
@@ -1021,25 +1150,145 @@ class AutoMeasurementsTab(ttk.Frame):
         """Toggle CTR status for selected circle manually."""
         sel = self.tree.selection()
         if not sel:
-            messagebox.showinfo("CTR", "Selecciona un círculo para marcar/desmarcar como CTR.")
+            messagebox.showinfo("CTR", "Select a circle to mark/unmark as CTR.")
             return
         
         item_id = sel[0]
         shape_info = _get_parent_module()._OVERLAY.get("item_to_shape", {}).get(item_id)
         if not shape_info or shape_info[0] != "circle":
-            messagebox.showinfo("CTR", "Solo se pueden marcar círculos como CTR.")
+            messagebox.showinfo("CTR", "Only circles can be marked as CTR.")
             return
         
         film_id = self.tree.parent(item_id)
         if not film_id:
-            messagebox.showwarning("CTR", "No se puede determinar la radiocrómica del círculo.")
+            messagebox.showwarning("CTR", "Cannot determine the radiochromic film for this circle.")
             return
         
         film_name = self.tree.item(film_id, "text")
         self._toggle_ctr_for_item(item_id, film_name)
 
+    def _set_global_ctr(self):
+        """Set selected circle as Global CTR that applies to all films."""
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showinfo("Global CTR", "Select a circle to set as Global CTR.")
+            return
+        
+        item_id = sel[0]
+        shape_info = _get_parent_module()._OVERLAY.get("item_to_shape", {}).get(item_id)
+        if not shape_info or shape_info[0] != "circle":
+            messagebox.showinfo("Global CTR", "Only circles can be used as Global CTR.")
+            return
+        
+        # Get circle data from TreeView values
+        tree_values = self.tree.item(item_id, "values")
+        if not tree_values or len(tree_values) < 4:
+            messagebox.showwarning("Global CTR", "The selected circle has no measurement data.")
+            return
+        
+        # Parse values from TreeView: (dose, sigma, avg, avg_unc, ci95)
+        try:
+            avg_value = float(tree_values[2]) if tree_values[2] else 0.0
+        except (ValueError, IndexError):
+            avg_value = 0.0
+        
+        # Build circle_data from TreeView values
+        circle_data = {
+            "dose": tree_values[0] if len(tree_values) > 0 else "",
+            "std": tree_values[1] if len(tree_values) > 1 else "",
+            "avg_numeric": avg_value,
+            "avg_original": avg_value,  # Store original for restoration
+            "avg_unc": tree_values[3] if len(tree_values) > 3 else "",
+        }
+        
+        # Get parent film name (if any)
+        film_id = self.tree.parent(item_id)
+        film_name = self.tree.item(film_id, "text") if film_id else "No film"
+        
+        # Store global CTR info
+        self.global_ctr = {
+            "item_id": item_id,
+            "film_name": film_name,
+            "circle_data": circle_data.copy(),
+            "shape_info": shape_info
+        }
+        
+        # Update _OVERLAY for visual rendering
+        _get_parent_module()._OVERLAY["global_ctr"] = self.global_ctr
+        
+        # Get circle name for display
+        circle_name = self.tree.item(item_id, "text")
+        
+        # Update label to show current global CTR
+        self.global_ctr_label.config(text=f"Global CTR: {circle_name} ({film_name})")
+        
+        # Clear per-film CTR: remove visual markers from all previous CTR circles
+        for old_film_name, old_ctr_id in list(self.ctr_manager.ctr_map.items()):
+            if self.tree.exists(old_ctr_id):
+                # Remove "(CTR)" from text
+                old_text = self.tree.item(old_ctr_id, "text")
+                if "(CTR)" in old_text:
+                    self.tree.item(old_ctr_id, text=old_text.replace(" (CTR)", ""))
+                # Remove ctr tag
+                self.tree.item(old_ctr_id, tags=())
+        
+        # Clear per-film CTR map when global CTR is set
+        self.ctr_manager.ctr_map.clear()
+        _get_parent_module()._OVERLAY["ctr_map"] = {}
+        
+        # Update tree tag for visual feedback on the global CTR circle
+        # Also update the text to show it's the global CTR
+        current_text = self.tree.item(item_id, "text")
+        if "(GLOBAL CTR)" not in current_text and "(CTR)" not in current_text:
+            self.tree.item(item_id, text=f"{current_text} (GLOBAL CTR)")
+        elif "(CTR)" in current_text:
+            self.tree.item(item_id, text=current_text.replace("(CTR)", "(GLOBAL CTR)"))
+        self.tree.item(item_id, tags=("global_ctr",))
+        
+        # Re-apply CTR subtraction with global CTR
+        self._update_ctr_subtraction()
+        self.main_window.update_image()
+
+    def _clear_global_ctr(self):
+        """Clear the Global CTR setting."""
+        if not self.global_ctr:
+            messagebox.showinfo("Global CTR", "No Global CTR is currently set.")
+            return
+        
+        old_item_id = self.global_ctr.get("item_id")
+        
+        # Clear global CTR
+        self.global_ctr = None
+        
+        # Clear from _OVERLAY
+        if "global_ctr" in _get_parent_module()._OVERLAY:
+            _get_parent_module()._OVERLAY["global_ctr"] = None
+        
+        # Update label
+        self.global_ctr_label.config(text="")
+        
+        # Remove visual tag and text marker from old global CTR if it still exists
+        try:
+            if old_item_id and self.tree.exists(old_item_id):
+                # Remove "(GLOBAL CTR)" from text
+                old_text = self.tree.item(old_item_id, "text")
+                if "(GLOBAL CTR)" in old_text:
+                    self.tree.item(old_item_id, text=old_text.replace(" (GLOBAL CTR)", ""))
+                # Remove tag
+                self.tree.item(old_item_id, tags=())
+        except:
+            pass
+        
+        # Restore original measurements
+        self._restore_original_measurements()
+        self.main_window.update_image()
+
     def _toggle_ctr_for_item(self, item_id: str, film_name: str):
         """Toggle CTR status (delegates to CTR manager)."""
+        # If global CTR is active, warn user
+        if self.global_ctr:
+            messagebox.showinfo("CTR", "A Global CTR is active. Clear it first to use individual CTRs.")
+            return
         # Using _get_parent_module()._OVERLAY (package-level global)
         self.ctr_manager.toggle_ctr_for_item(item_id, film_name, _get_parent_module()._OVERLAY, self._update_ctr_subtraction)
         self.main_window.update_image()
@@ -1052,14 +1301,97 @@ class AutoMeasurementsTab(ttk.Frame):
         """Apply or remove CTR subtraction based on checkbox state and CTR availability."""
         # CRITICAL: If no CTR is selected, ALWAYS restore original values
         # regardless of checkbox state. Checkbox only applies when CTR exists.
-        has_ctr = len(self.ctr_manager.ctr_map) > 0
+        has_per_film_ctr = len(self.ctr_manager.ctr_map) > 0
+        has_global_ctr = self.global_ctr is not None
+        has_any_ctr = has_per_film_ctr or has_global_ctr
         
-        if not has_ctr or not self.subtract_ctr_var.get():
+        if not has_any_ctr or not self.subtract_ctr_var.get():
             # Restore original if: 1) No CTR selected, OR 2) Checkbox unchecked
             self.ctr_manager.restore_original_measurements(self.results)
+        elif has_global_ctr:
+            # Apply Global CTR to all circles
+            self._apply_global_ctr_subtraction()
         else:
-            # Apply CTR only if: 1) CTR selected, AND 2) Checkbox checked
+            # Apply per-film CTR only if: 1) CTR selected, AND 2) Checkbox checked
             self.ctr_manager.apply_ctr_subtraction(self.results)
+
+    def _apply_global_ctr_subtraction(self):
+        """Apply Global CTR subtraction to ALL circles across ALL films with proper uncertainty propagation."""
+        from math import sqrt
+        
+        if not self.global_ctr:
+            return
+        
+        global_ctr_data = self.global_ctr.get("circle_data", {})
+        global_ctr_item_id = self.global_ctr.get("item_id")
+        
+        # Get CTR average value and uncertainty
+        ctr_avg = float(global_ctr_data.get("avg_original", global_ctr_data.get("avg_numeric", 0)))
+        # Parse uncertainty from string if needed
+        ctr_unc_str = global_ctr_data.get("avg_unc", "0")
+        try:
+            ctr_unc = float(str(ctr_unc_str).replace("±", "").strip())
+        except (ValueError, TypeError):
+            ctr_unc = 0.0
+        
+        if ctr_avg <= 0:
+            return
+        
+        # Iterate over ALL films in the TreeView
+        for film_id in self.tree.get_children():
+            # Iterate over all circles in this film
+            for circle_id in self.tree.get_children(film_id):
+                if circle_id == global_ctr_item_id:
+                    # Global CTR circle: set avg to 0 but keep uncertainty
+                    orig_data = self.ctr_manager.original_measurements.get(circle_id)
+                    if orig_data:
+                        ci95_str = f"±{ctr_unc * 1.96:.4f}" if ctr_unc > 0 else ""
+                        self.tree.item(circle_id, values=(
+                            orig_data["dose"],
+                            orig_data["std"],
+                            "0.00",
+                            f"±{ctr_unc:.4f}" if ctr_unc > 0 else orig_data["avg_unc"],
+                            ci95_str
+                        ))
+                    continue
+                
+                # Get original measurement data
+                orig_data = self.ctr_manager.original_measurements.get(circle_id)
+                if not orig_data:
+                    continue
+                
+                # Get original values with full precision
+                try:
+                    orig_avg = float(str(orig_data["avg"]).replace("±", "").strip())
+                    orig_unc_str = str(orig_data["avg_unc"]).replace("±", "").strip()
+                    orig_unc = float(orig_unc_str) if orig_unc_str else 0.0
+                except (ValueError, TypeError):
+                    continue
+                
+                # Subtract CTR with proper error propagation: σ_corrected = √(σ_orig² + σ_ctr²)
+                corrected_avg = max(0.0, orig_avg - ctr_avg)
+                corrected_unc = sqrt(orig_unc**2 + ctr_unc**2)
+                ci95_value = corrected_unc * 1.96
+                
+                # Update TreeView with corrected values
+                self.tree.item(circle_id, values=(
+                    orig_data["dose"],
+                    orig_data["std"],
+                    f"{corrected_avg:.2f}",
+                    f"±{corrected_unc:.4f}",
+                    f"±{ci95_value:.4f}"
+                ))
+                
+                # Also update results list for CSV export
+                film_name = self.tree.item(film_id, "text")
+                circle_name = self.tree.item(circle_id, "text").replace(" (CTR)", "").replace(" (GLOBAL CTR)", "")
+                for result in self.results:
+                    if result.get("film") == film_name and result.get("circle") == circle_name:
+                        if "avg_original" not in result:
+                            result["avg_original"] = result.get("avg_numeric", orig_avg)
+                        result["avg_numeric"] = corrected_avg
+                        result["avg_unc_numeric"] = corrected_unc
+                        break
 
     def _restore_original_measurements(self):
         """Restore original measurements (delegates to CTR manager)."""
@@ -1879,7 +2211,10 @@ class AutoMeasurementsTab(ttk.Frame):
             self.conversion_label.config(text="")
 
         self.updating_parameters_programmatically = False  # Reset flag to False
-        logging.info("Unit Conversion Update complete.\n")
+        
+        # Update circle diameter spinbox value and label
+        self._update_diameter_from_metadata()
+        
         logging.info("Unit Conversion Update complete.\n")
 
     def _apply_conversion(self, factor):
@@ -2462,8 +2797,21 @@ class AutoMeasurementsTab(ttk.Frame):
         self._start_draw_mode("film", (300, 200))
 
     def _add_manual_circle(self):
-        """Start manual circle addition mode."""
-        self._start_draw_mode("circle", 100)
+        """Start manual circle addition mode using the inline diameter spinbox."""
+        # Get diameter from the inline spinbox
+        diameter_value = self.circle_diameter_var.get()
+        
+        # If using metadata, spinbox value is in mm - convert to px
+        if self.use_metadata_var.get() and hasattr(self, 'stored_resolution') and self.stored_resolution:
+            # Convert mm to px: px = mm * dpi / 25.4
+            diameter_px = diameter_value * self.stored_resolution / 25.4
+        else:
+            # Value is already in px
+            diameter_px = diameter_value
+        
+        # Convert diameter to radius (integer pixels)
+        radius = int(diameter_px) // 2
+        self._start_draw_mode("circle", radius)
 
     def _start_draw_mode(self, shape_type: str, dims):
         """Start interactive drawing mode."""
@@ -2474,7 +2822,10 @@ class AutoMeasurementsTab(ttk.Frame):
         self._cancel_draw()
         self.draw_mode = shape_type
         self.draw_dims = dims
-        self._open_dims_window()
+        
+        # Only open dimension window for films, circles use inline spinbox
+        if shape_type == "film":
+            self._open_dims_window()
         
         # Save references to ImagePanel's original methods before overriding
         if hasattr(self.main_window, 'image_panel'):

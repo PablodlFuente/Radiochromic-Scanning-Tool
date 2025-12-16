@@ -15,5 +15,5 @@
     "log_level": "WARNING",
     "detailed_logging": false,
     "uncertainty_estimation_method": "dersimonian_laird",
-    "calibration_folder": "default"
+    "calibration_folder": "CUN_2025_02_17"
 }
