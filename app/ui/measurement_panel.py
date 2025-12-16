@@ -743,6 +743,9 @@ class MeasurementPanel:
             
         else:
             # No calibration - show RGB channels separately
+            # Get max pixel value for Y-axis limit
+            max_pixel_value = self.image_processor.get_max_pixel_value()
+            
             if len(raw_data.shape) > 1 and raw_data.shape[1] == 3:
                 # RGB data - plot 3 series
                 colors = ['r', 'g', 'b']
@@ -752,7 +755,7 @@ class MeasurementPanel:
                 ax.set_ylabel('Pixel Value')
                 title = f'RGB Profile - {orientation.capitalize()} Line'
                 ax.set_title(title)
-                ax.set_ylim(0, 255)
+                ax.set_ylim(0, max_pixel_value)
                 ax.legend()
             else:
                 # Grayscale data
@@ -760,7 +763,7 @@ class MeasurementPanel:
                 ax.set_ylabel('Pixel Value')
                 title = f'Intensity Profile - {orientation.capitalize()} Line'
                 ax.set_title(title)
-                ax.set_ylim(0, 255)
+                ax.set_ylim(0, max_pixel_value)
                 ax.legend()
         
         ax.set_xlabel(axis_label)
@@ -780,9 +783,8 @@ class MeasurementPanel:
             self.viz_canvas.draw()
             return
         
-        # Determine the max value based on image bit depth
-        bit_depth = self.image_processor.get_image_bit_depth()
-        max_pixel_value = 65535 if bit_depth == 16 else 255
+        # Get the max value based on actual image bit depth (supports any bit depth)
+        max_pixel_value = self.image_processor.get_max_pixel_value()
         
         # Check if we have RGB or grayscale data
         if len(raw_data.shape) > 1 and raw_data.shape[1] == 3:

@@ -359,6 +359,61 @@ class CalibrationApp:
             import traceback
             traceback.print_exc()
 
+    def _detect_bit_depth(self, image):
+        """Detect the actual bit depth of an image.
+        
+        Determines bit depth based on dtype and actual maximum value.
+        Supports 8, 10, 12, 14, 16, 24, and 32-bit images.
+        
+        Args:
+            image: numpy array of the image
+            
+        Returns:
+            tuple: (bit_depth, max_possible_value)
+        """
+        dtype = image.dtype
+        actual_max = np.max(image)
+        
+        # For float images
+        if np.issubdtype(dtype, np.floating):
+            if actual_max <= 1.0:
+                return 8, 1.0  # Normalized float
+            elif actual_max <= 255:
+                return 8, 255
+            elif actual_max <= 4095:
+                return 12, 4095
+            elif actual_max <= 16383:
+                return 14, 16383
+            elif actual_max <= 65535:
+                return 16, 65535
+            else:
+                return 32, actual_max
+        
+        # For 16-bit integer types, detect actual bit depth from values
+        if dtype == np.uint16:
+            if actual_max <= 1023:
+                return 10, 1023
+            elif actual_max <= 4095:
+                return 12, 4095
+            elif actual_max <= 16383:
+                return 14, 16383
+            else:
+                return 16, 65535
+        
+        # For 32-bit integer types
+        if dtype == np.uint32:
+            if actual_max <= 255:
+                return 8, 255
+            elif actual_max <= 65535:
+                return 16, 65535
+            elif actual_max <= 16777215:
+                return 24, 16777215
+            else:
+                return 32, 4294967295
+        
+        # Default: 8-bit
+        return 8, 255
+
     def _highlight_selected_item(self):
         """Updates the visual highlight of the selected item in the list."""
         for i, item_frame in enumerate(self.list_item_widgets):
@@ -399,19 +454,19 @@ class CalibrationApp:
             if len(cv_img.shape) == 3:
                 cv_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
             
-            # Store the original numpy array for measurements (preserves 16-bit)
+            # Store the original numpy array for measurements (preserves original bit depth)
             self.original_image_array = cv_img.copy()
             
-            # Detect bit depth from numpy dtype
-            if cv_img.dtype == np.uint16:
-                self.calibration_bit_depth = 16
-                print(f"Detected 16-bit image (dtype={cv_img.dtype}): {image_path}")
-                print(f"  Value range: min={cv_img.min()}, max={cv_img.max()}")
-                # Convert to 8-bit for PIL display only
-                display_img = (cv_img / 256).astype(np.uint8)
+            # Detect bit depth from numpy dtype and actual values
+            self.calibration_bit_depth, self.calibration_max_value = self._detect_bit_depth(cv_img)
+            print(f"Detected {self.calibration_bit_depth}-bit image (dtype={cv_img.dtype}): {image_path}")
+            print(f"  Value range: min={cv_img.min()}, max={cv_img.max()}, max_possible={self.calibration_max_value}")
+            
+            # Convert to 8-bit for PIL display only
+            if cv_img.dtype != np.uint8:
+                scale_factor = 255.0 / self.calibration_max_value
+                display_img = (cv_img * scale_factor).astype(np.uint8)
             else:
-                self.calibration_bit_depth = 8
-                print(f"Detected 8-bit image (dtype={cv_img.dtype}): {image_path}")
                 display_img = cv_img
             
             # Create PIL image for display

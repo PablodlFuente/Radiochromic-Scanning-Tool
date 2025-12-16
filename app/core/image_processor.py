@@ -54,7 +54,8 @@ class ImageProcessor:
         self.binned_image_file = None
         
         # Image bit depth (detected on load)
-        self.image_bit_depth = 8  # 8 or 16
+        self.image_bit_depth = 8  # Actual bit depth (8, 12, 14, 16, etc.)
+        self.image_max_value = 255  # Maximum possible value for current bit depth
         
         # Measurement settings
         self.measurement_shape = "circular"
@@ -409,13 +410,9 @@ class ImageProcessor:
             if self.config.get("remove_background", False):
                 image = self.detect_useful_area(image)
             
-            # Detect and store image bit depth
-            if image.dtype == np.uint16:
-                self.image_bit_depth = 16
-                logger.info(f"Detected 16-bit image")
-            else:
-                self.image_bit_depth = 8
-                logger.info(f"Detected 8-bit image")
+            # Detect and store image bit depth based on dtype and actual values
+            self.image_bit_depth, self.image_max_value = self._detect_bit_depth(image)
+            logger.info(f"Detected {self.image_bit_depth}-bit image (max value: {self.image_max_value})")
             
             # Store images - ensure we're preserving the original data type
             self.original_image = image
@@ -1886,69 +1883,141 @@ class ImageProcessor:
             logger.warning(f"Could not read calibration bit depth: {e}")
             self.calibration_bit_depth = 8
     
-    def rescale_to_8bit(self):
-        """Rescale a 16-bit image to 8-bit by dividing by 256.
+    def _detect_bit_depth(self, image):
+        """Detect the actual bit depth of an image.
         
-        This converts the full 16-bit range (0-65535) to 8-bit (0-255),
-        which is required for calibration curves that expect 8-bit values.
+        Determines bit depth based on dtype and actual maximum value.
+        Supports 8, 10, 12, 14, 16, 24, and 32-bit images.
         
+        Args:
+            image: numpy array of the image
+            
+        Returns:
+            tuple: (bit_depth, max_possible_value)
+        """
+        dtype = image.dtype
+        actual_max = np.max(image)
+        
+        # Map dtypes to their theoretical bit depths
+        dtype_bits = {
+            np.uint8: 8,
+            np.uint16: 16,
+            np.uint32: 32,
+            np.int8: 8,
+            np.int16: 16,
+            np.int32: 32,
+            np.float32: 32,
+            np.float64: 64,
+        }
+        
+        # Get theoretical max for dtype
+        theoretical_bits = dtype_bits.get(dtype.type, 8)
+        
+        if dtype in [np.float32, np.float64]:
+            # For float images, assume normalized [0, 1] or actual range
+            if actual_max <= 1.0:
+                return 8, 1.0  # Normalized float
+            else:
+                # Determine based on actual max value
+                if actual_max <= 255:
+                    return 8, 255
+                elif actual_max <= 4095:
+                    return 12, 4095
+                elif actual_max <= 16383:
+                    return 14, 16383
+                elif actual_max <= 65535:
+                    return 16, 65535
+                else:
+                    return 32, actual_max
+        
+        # For integer types, try to detect actual bit depth from values
+        if theoretical_bits == 16:
+            # Could be 10, 12, 14, or 16-bit stored in uint16
+            if actual_max <= 1023:
+                return 10, 1023
+            elif actual_max <= 4095:
+                return 12, 4095
+            elif actual_max <= 16383:
+                return 14, 16383
+            else:
+                return 16, 65535
+        elif theoretical_bits == 32:
+            # Could be various depths stored in uint32
+            if actual_max <= 255:
+                return 8, 255
+            elif actual_max <= 65535:
+                return 16, 65535
+            elif actual_max <= 16777215:
+                return 24, 16777215
+            else:
+                return 32, 4294967295
+        else:
+            # 8-bit
+            return 8, 255
+    
+    def get_max_pixel_value(self):
+        """Return the maximum possible pixel value for the current image bit depth."""
+        return self.image_max_value
+    
+    def rescale_to_bit_depth(self, target_bit_depth):
+        """Rescale the image to a target bit depth.
+        
+        This performs linear scaling from the current bit depth range to
+        the target bit depth range.
+        
+        Args:
+            target_bit_depth: Target bit depth (8, 10, 12, 14, 16, etc.)
+            
         Returns:
             bool: True if rescaling was successful, False otherwise.
         """
         if self.current_image is None:
-            logger.warning("rescale_to_8bit called with no image loaded")
+            logger.warning("rescale_to_bit_depth called with no image loaded")
             return False
         
-        if self.image_bit_depth != 16:
-            logger.info("Image is already 8-bit, no rescaling needed")
+        if self.image_bit_depth == target_bit_depth:
+            logger.info(f"Image is already {target_bit_depth}-bit, no rescaling needed")
             return True
         
+        # Calculate max values for source and target
+        source_max = self.image_max_value
+        target_max = (2 ** target_bit_depth) - 1
+        
+        # Determine target dtype
+        if target_bit_depth <= 8:
+            target_dtype = np.uint8
+        elif target_bit_depth <= 16:
+            target_dtype = np.uint16
+        else:
+            target_dtype = np.uint32
+        
         try:
-            # Convert 16-bit to 8-bit by dividing by 256
-            self.original_image = (self.original_image / 256).astype(np.uint8)
-            self.current_image = (self.current_image / 256).astype(np.uint8)
-            self.image_bit_depth = 8
+            # Linear rescaling: new_value = old_value * (target_max / source_max)
+            scale_factor = target_max / source_max
+            
+            self.original_image = (self.original_image.astype(np.float64) * scale_factor).astype(target_dtype)
+            self.current_image = (self.current_image.astype(np.float64) * scale_factor).astype(target_dtype)
+            
+            old_bit_depth = self.image_bit_depth
+            self.image_bit_depth = target_bit_depth
+            self.image_max_value = target_max
             
             # Recompute integral images with new values
             self._compute_integral_images()
             
-            logger.info("Image rescaled from 16-bit to 8-bit successfully")
+            logger.info(f"Image rescaled from {old_bit_depth}-bit to {target_bit_depth}-bit successfully")
             return True
         except Exception as e:
-            logger.error(f"Error rescaling image to 8-bit: {e}", exc_info=True)
+            logger.error(f"Error rescaling image to {target_bit_depth}-bit: {e}", exc_info=True)
             return False
     
+    def rescale_to_8bit(self):
+        """Rescale image to 8-bit. Convenience wrapper for rescale_to_bit_depth."""
+        return self.rescale_to_bit_depth(8)
+    
     def rescale_to_16bit(self):
-        """Rescale an 8-bit image to 16-bit by multiplying by 256.
-        
-        This converts the 8-bit range (0-255) to 16-bit (0-65535),
-        which is required for calibration curves that expect 16-bit values.
-        
-        Returns:
-            bool: True if rescaling was successful, False otherwise.
-        """
-        if self.current_image is None:
-            logger.warning("rescale_to_16bit called with no image loaded")
-            return False
-        
-        if self.image_bit_depth != 8:
-            logger.info("Image is already 16-bit, no rescaling needed")
-            return True
-        
-        try:
-            # Convert 8-bit to 16-bit by multiplying by 256
-            self.original_image = (self.original_image.astype(np.uint16) * 256)
-            self.current_image = (self.current_image.astype(np.uint16) * 256)
-            self.image_bit_depth = 16
-            
-            # Recompute integral images with new values
-            self._compute_integral_images()
-            
-            logger.info("Image rescaled from 8-bit to 16-bit successfully")
-            return True
-        except Exception as e:
-            logger.error(f"Error rescaling image to 16-bit: {e}", exc_info=True)
-            return False
+        """Rescale image to 16-bit. Convenience wrapper for rescale_to_bit_depth."""
+        return self.rescale_to_bit_depth(16)
     
     def update_settings(self, config):
         """Update settings from config."""
@@ -2009,7 +2078,7 @@ class ImageProcessor:
         
             # Apply negative mode
             if self.negative_mode:
-                image = 255 - image
+                image = self.image_max_value - image
         
             # Apply contrast, brightness, and saturation
             if self.contrast != 1.0 or self.brightness != 1.0 or self.saturation != 1.0:
@@ -2115,7 +2184,11 @@ class ImageProcessor:
     # ------------------------------------------------------------------
 
     def _prepare_image_for_display(self, image):
-        """Convert numpy arrays to uint8 for safe Pillow/Tk display."""
+        """Convert numpy arrays to uint8 for safe Pillow/Tk display.
+        
+        Handles any bit depth by scaling to 8-bit range using the actual
+        maximum value of the image for proper display.
+        """
         if image is None:
             return None
 
@@ -2129,14 +2202,27 @@ class ImageProcessor:
         if np.issubdtype(np_image.dtype, np.bool_):
             return np_image.astype(np.uint8) * 255
 
-        # 16-bit images: scale from full 16-bit range (0-65535) to 8-bit (0-255)
-        if np_image.dtype == np.uint16:
-            return (np_image / 256).astype(np.uint8)
-
-        # Signed 16-bit: shift to unsigned range first
-        if np_image.dtype == np.int16:
-            shifted = np_image.astype(np.int32) + 32768
-            return (shifted / 256).astype(np.uint8)
+        # For integer images (16-bit, 32-bit, etc.), scale using the known max value
+        if np.issubdtype(np_image.dtype, np.integer):
+            # Use the image_max_value if available, otherwise calculate from dtype
+            if hasattr(self, 'image_max_value') and self.image_max_value > 0:
+                max_val = self.image_max_value
+            else:
+                # Fallback: use theoretical max for dtype
+                if np_image.dtype == np.uint16:
+                    max_val = 65535
+                elif np_image.dtype == np.int16:
+                    # Shift signed to unsigned range
+                    np_image = np_image.astype(np.int32) + 32768
+                    max_val = 65535
+                elif np_image.dtype == np.uint32:
+                    max_val = np.max(np_image) if np.max(np_image) > 0 else 1
+                else:
+                    max_val = np.max(np_image) if np.max(np_image) > 0 else 255
+            
+            # Scale to 8-bit
+            scale_factor = 255.0 / max_val
+            return (np_image * scale_factor).astype(np.uint8)
 
         # Float images: assume 0-1 range or normalize if outside
         if np.issubdtype(np_image.dtype, np.floating):
@@ -2152,7 +2238,7 @@ class ImageProcessor:
             scaled = (float_image - min_val) / (max_val - min_val)
             return (scaled * 255.0).astype(np.uint8)
 
-        # Other integer types: clip to 0-255
+        # Other types: clip to 0-255
         return np.clip(np_image, 0, 255).astype(np.uint8)
 
     def _find_fit_parameters_file(self):
