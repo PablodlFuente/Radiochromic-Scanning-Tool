@@ -147,34 +147,39 @@ class CTRManager:
         
         Args:
             results_list: List of result dictionaries to update with CTR-corrected values
+        
+        IMPORTANT: Always use ORIGINAL values from self.original_measurements or 
+        result['avg_original'] to avoid cumulative error when toggling CTR on/off.
         """
         # Create lookup dictionary for O(1) access instead of O(n) searches
         # Key: (film_name, circle_name) -> result dict
         results_lookup = {}
         if results_list:
             for result in results_list:
-                key = (result['film'], result['circle'].replace(" (CTR)", ""))
+                key = (result['film'], result['circle'].replace(" (CTR)", "").replace(" (GLOBAL CTR)", ""))
                 results_lookup[key] = result
         
         for film_name, ctr_id in self.ctr_map.items():
             if not self.tree.exists(ctr_id):
                 continue
             
-            # Get CTR measurement data
+            # Get CTR measurement data FROM ORIGINAL STORAGE (not potentially modified results)
             ctr_orig_data = self.original_measurements.get(ctr_id)
             if not ctr_orig_data:
                 continue
             
             # Get CTR circle name for matching in results
-            ctr_circle_name = self.tree.item(ctr_id, 'text').replace(" (CTR)", "")
+            ctr_circle_name = self.tree.item(ctr_id, 'text').replace(" (CTR)", "").replace(" (GLOBAL CTR)", "")
             
-            # Get CTR values from results_list (full precision) instead of TreeView formatted values
+            # CRITICAL: Get CTR values from ORIGINAL data, not from potentially modified results
+            # Use avg_original if it exists (means CTR was applied before), else use avg_numeric
             ctr_result = results_lookup.get((film_name, ctr_circle_name))
             if ctr_result:
-                ctr_avg = ctr_result.get('avg_numeric', ctr_result.get('avg'))
-                ctr_unc = ctr_result.get('avg_unc_numeric', ctr_result.get('avg_unc'))
+                # Prefer original values to avoid cumulative error
+                ctr_avg = ctr_result.get('avg_original', ctr_result.get('avg_numeric', ctr_result.get('avg')))
+                ctr_unc = ctr_result.get('avg_unc_original', ctr_result.get('avg_unc_numeric', ctr_result.get('avg_unc')))
             else:
-                # Fall back to TreeView formatted values
+                # Fall back to stored original_measurements (always clean)
                 ctr_avg = self.formatter.clean_numeric_string(ctr_orig_data["avg"])
                 ctr_unc = self.formatter.clean_numeric_string(ctr_orig_data["avg_unc"])
             
@@ -196,15 +201,17 @@ class CTRManager:
                     continue
                 
                 # Get circle name for matching with results_list
-                circle_name = self.tree.item(circle_id, 'text').replace(" (CTR)", "")
+                circle_name = self.tree.item(circle_id, 'text').replace(" (CTR)", "").replace(" (GLOBAL CTR)", "")
                 
-                # Get original values from results_list (full precision)
+                # CRITICAL: Get ORIGINAL values, not potentially modified ones
+                # This prevents cumulative error when toggling CTR on/off multiple times
                 result = results_lookup.get((film_name, circle_name))
                 if result:
-                    orig_avg = result.get('avg_numeric', result.get('avg'))
-                    orig_unc = result.get('avg_unc_numeric', result.get('avg_unc'))
+                    # Prefer avg_original (stored before any CTR modification)
+                    orig_avg = result.get('avg_original', result.get('avg_numeric', result.get('avg')))
+                    orig_unc = result.get('avg_unc_original', result.get('avg_unc_numeric', result.get('avg_unc')))
                 else:
-                    # Fall back to TreeView formatted values
+                    # Fall back to stored original_measurements (always clean)
                     orig_avg = self.formatter.clean_numeric_string(orig_data["avg"])
                     orig_unc = self.formatter.clean_numeric_string(orig_data["avg_unc"])
                 
@@ -299,15 +306,16 @@ class CTRManager:
                 
                 # Update results list with original numeric values (for CSV export)
                 if results_list is not None:
-                    # Get film and circle names
-                    circle_name = self.tree.item(item_id, 'text').replace(" (CTR)", "")
+                    # Get film and circle names (strip any CTR markers)
+                    circle_name = self.tree.item(item_id, 'text').replace(" (CTR)", "").replace(" (GLOBAL CTR)", "")
                     film_id = self.tree.parent(item_id)
                     if film_id:
                         film_name = self.tree.item(film_id, 'text')
                         
                         # Find and update the result
                         for result in results_list:
-                            if result['film'] == film_name and result['circle'].replace(" (CTR)", "") == circle_name:
+                            result_circle = result['circle'].replace(" (CTR)", "").replace(" (GLOBAL CTR)", "")
+                            if result['film'] == film_name and result_circle == circle_name:
                                 # CRITICAL: Only restore if CTR was actually applied (avg_original exists)
                                 # If avg_original doesn't exist, avg_numeric already has correct full-precision value
                                 if 'avg_original' in result:

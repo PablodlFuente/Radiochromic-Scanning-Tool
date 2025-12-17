@@ -1305,14 +1305,18 @@ class AutoMeasurementsTab(ttk.Frame):
         has_global_ctr = self.global_ctr is not None
         has_any_ctr = has_per_film_ctr or has_global_ctr
         
+        # ALWAYS restore original values first to prevent cumulative errors
+        # This ensures we always start from clean original data before applying any correction
+        self.ctr_manager.restore_original_measurements(self.results)
+        
         if not has_any_ctr or not self.subtract_ctr_var.get():
-            # Restore original if: 1) No CTR selected, OR 2) Checkbox unchecked
-            self.ctr_manager.restore_original_measurements(self.results)
+            # Already restored above, nothing more to do
+            pass
         elif has_global_ctr:
-            # Apply Global CTR to all circles
+            # Apply Global CTR to all circles (starting from clean originals)
             self._apply_global_ctr_subtraction()
         else:
-            # Apply per-film CTR only if: 1) CTR selected, AND 2) Checkbox checked
+            # Apply per-film CTR (starting from clean originals)
             self.ctr_manager.apply_ctr_subtraction(self.results)
 
     def _apply_global_ctr_subtraction(self):
