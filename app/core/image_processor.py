@@ -39,10 +39,13 @@ class ImageProcessor:
         # Image data
         self.current_image = None
         self.original_image = None
+        self.flattened_image = None  # Store image with flat applied (for display when calibration active)
         self.current_file = None
         self.binned_image = None  # Store the binned image
         # Track whether dose calibration is currently applied
         self.calibration_applied = False
+        # Track whether field flattening is currently applied
+        self.flat_applied = False
         
         # Display settings
         self.zoom = 1.0
@@ -77,6 +80,10 @@ class ImageProcessor:
         # Calibration data
         self.calibration = None
         self.calibration_bit_depth = 8  # Default, updated when loading calibration params
+        
+        # Field flattening data (loaded from calibration_data/field_flattening.npz)
+        self.flat_field = None  # Normalized flat field array (H, W, 3)
+        self.flat_field_info = None  # Metadata about the flat field
         
         # Processing flags
         self.processing_lock = threading.Lock()
@@ -320,6 +327,76 @@ class ImageProcessor:
         
         return True
 
+    def _sanitize_filename(self, file_path: str) -> tuple[str, bool]:
+        """Check if filename has problematic Unicode characters and rename if needed.
+        
+        OpenCV's imread cannot handle certain Unicode characters in file paths.
+        This method detects such characters and renames the file.
+        
+        Returns:
+            tuple: (new_file_path, was_renamed)
+        """
+        import unicodedata
+        
+        directory = os.path.dirname(file_path)
+        filename = os.path.basename(file_path)
+        
+        # Map of accented characters to their base form
+        accent_map = {
+            'á': 'a', 'à': 'a', 'ä': 'a', 'â': 'a', 'ã': 'a',
+            'é': 'e', 'è': 'e', 'ë': 'e', 'ê': 'e',
+            'í': 'i', 'ì': 'i', 'ï': 'i', 'î': 'i',
+            'ó': 'o', 'ò': 'o', 'ö': 'o', 'ô': 'o', 'õ': 'o',
+            'ú': 'u', 'ù': 'u', 'ü': 'u', 'û': 'u',
+            'ñ': 'n', 'ç': 'c',
+            'Á': 'A', 'À': 'A', 'Ä': 'A', 'Â': 'A', 'Ã': 'A',
+            'É': 'E', 'È': 'E', 'Ë': 'E', 'Ê': 'E',
+            'Í': 'I', 'Ì': 'I', 'Ï': 'I', 'Î': 'I',
+            'Ó': 'O', 'Ò': 'O', 'Ö': 'O', 'Ô': 'O', 'Õ': 'O',
+            'Ú': 'U', 'Ù': 'U', 'Ü': 'U', 'Û': 'U',
+            'Ñ': 'N', 'Ç': 'C',
+        }
+        
+        new_filename = []
+        has_problematic_chars = False
+        
+        for char in filename:
+            if char in accent_map:
+                new_filename.append(accent_map[char])
+                has_problematic_chars = True
+            elif ord(char) > 127:
+                # Other non-ASCII characters -> underscore
+                new_filename.append('_')
+                has_problematic_chars = True
+            else:
+                new_filename.append(char)
+        
+        if not has_problematic_chars:
+            return file_path, False
+        
+        new_filename = ''.join(new_filename)
+        new_path = os.path.join(directory, new_filename)
+        
+        # Check for collision: if new_path already exists and is different from original
+        if os.path.exists(new_path) and os.path.normpath(new_path) != os.path.normpath(file_path):
+            # Add a unique suffix to avoid overwriting
+            base, ext = os.path.splitext(new_filename)
+            counter = 1
+            while os.path.exists(new_path):
+                new_filename = f"{base}_{counter}{ext}"
+                new_path = os.path.join(directory, new_filename)
+                counter += 1
+            logger.info(f"Collision detected, using unique filename: {new_filename}")
+        
+        # Rename the file
+        try:
+            os.rename(file_path, new_path)
+            logger.info(f"Renamed file with Unicode characters: '{filename}' -> '{new_filename}'")
+            return new_path, True
+        except Exception as e:
+            logger.error(f"Could not rename file: {e}")
+            return file_path, False
+
     def load_image(self, file_path):
         """Load an image from the specified path."""
         try:
@@ -328,6 +405,15 @@ class ImageProcessor:
             
             # Calibration state resets when loading a new image
             self.calibration_applied = False
+            
+            # Check for problematic Unicode characters in filename
+            original_path = file_path
+            file_path, was_renamed = self._sanitize_filename(file_path)
+            if was_renamed:
+                # Store info for UI notification
+                self._renamed_file_info = (os.path.basename(original_path), os.path.basename(file_path))
+            else:
+                self._renamed_file_info = None
             
             # Report progress
             self._report_progress("loading", 0, "Starting image load")
@@ -347,6 +433,12 @@ class ImageProcessor:
             
             # Load image with OpenCV for better performance
             image = cv2.imread(file_path, cv2.IMREAD_UNCHANGED)
+            
+            # Explicit check: cv2.imread returns None if it cannot read the file
+            if image is None:
+                logger.error(f"cv2.imread failed to read file: {file_path}")
+                logger.error("Possible causes: file path contains special characters, file is corrupted, or unsupported format")
+                raise IOError(f"Could not read image file. The file may be corrupted, in an unsupported format, or the path contains special characters that weren't properly sanitized.")
             
             # Check if operation was cancelled
             if self.cancel_operation:
@@ -1684,11 +1776,17 @@ class ImageProcessor:
         array containing the dose for each pixel (NaN where the inversion is
         undefined).  Integral images are recomputed to keep measurement logic
         working.
+        
+        NOTE: Field flattening is now applied independently via apply_flat().
+        Call apply_flat() before apply_calibration() if both are desired.
         """
         # Require an image to work on.
         if self.current_image is None:
             logger.warning("apply_calibration called with no image loaded")
             return False
+
+        # Work on current_image (may already have flat applied)
+        image_to_calibrate = self.current_image.copy()
 
         # ------------------------------------------------------------------
         # Locate *fit_parameters.csv* written by the calibration wizard
@@ -1775,16 +1873,29 @@ class ImageProcessor:
                 sa, sb, sc = param_sigmas.get("G", (0.0, 0.0, 0.0))
                 denom = img_uint - a
                 dose = np.full_like(img_uint, np.nan, dtype=np.float32)
+                
+                # Valid domain: denom != 0 AND resulting dose must be physically meaningful
+                # For inverse model dose = c + b/denom, we need denom to have same sign as b
+                # to get positive contribution, and final dose should be >= 0
                 valid = denom != 0
                 dose[valid] = c + b / denom[valid]
+                
+                # Mark negative doses as invalid (physically impossible)
+                invalid_dose = dose < 0
+                if np.any(invalid_dose):
+                    n_invalid = np.sum(invalid_dose)
+                    logger.warning(f"G channel: {n_invalid} pixels ({100*n_invalid/dose.size:.2f}%) have negative dose, marking as NaN")
+                    dose[invalid_dose] = np.nan
 
                 # std_err per-pixel
                 var = np.full_like(img_uint, np.nan, dtype=np.float32)
-                if np.any(valid):
-                    term_a = (-b / (denom[valid] ** 2)) ** 2 * sa ** 2
-                    term_b = (1.0 / denom[valid]) ** 2 * sb ** 2
+                valid_final = ~np.isnan(dose)
+                if np.any(valid_final):
+                    denom_valid = denom[valid_final]
+                    term_a = (-b / (denom_valid ** 2)) ** 2 * sa ** 2
+                    term_b = (1.0 / denom_valid) ** 2 * sb ** 2
                     term_c = sc ** 2
-                    var[valid] = term_a + term_b + term_c
+                    var[valid_final] = term_a + term_b + term_c
                 sigma = np.sqrt(var)
 
                 # Store helper arrays
@@ -1801,17 +1912,29 @@ class ImageProcessor:
                     sa, sb, sc = param_sigmas.get(ch, (0.0, 0.0, 0.0))
                     pix = img_uint[:, :, idx]
                     denom = pix - a
-                    valid = denom != 0
-
+                    
                     dose_ch = np.full((h, w), np.nan, dtype=np.float32)
                     var_ch = np.full((h, w), np.nan, dtype=np.float32)
-                    # Dose
+                    
+                    # Valid domain check
+                    valid = denom != 0
                     dose_ch[valid] = c + b / denom[valid]
-                    # Variance via error propagation
-                    term_a = (-b / (denom[valid] ** 2)) ** 2 * sa ** 2
-                    term_b = (1.0 / denom[valid]) ** 2 * sb ** 2
-                    term_c = sc ** 2
-                    var_ch[valid] = term_a + term_b + term_c
+                    
+                    # Mark negative doses as invalid (physically impossible)
+                    invalid_dose = dose_ch < 0
+                    if np.any(invalid_dose):
+                        n_invalid = np.sum(invalid_dose)
+                        logger.warning(f"{ch} channel: {n_invalid} pixels ({100*n_invalid/dose_ch.size:.2f}%) have negative dose, marking as NaN")
+                        dose_ch[invalid_dose] = np.nan
+                    
+                    # Variance via error propagation (only for valid pixels)
+                    valid_final = ~np.isnan(dose_ch)
+                    if np.any(valid_final):
+                        denom_valid = denom[valid_final]
+                        term_a = (-b / (denom_valid ** 2)) ** 2 * sa ** 2
+                        term_b = (1.0 / denom_valid) ** 2 * sb ** 2
+                        term_c = sc ** 2
+                        var_ch[valid_final] = term_a + term_b + term_c
 
                     doses.append(dose_ch)
                     vars_.append(var_ch)
@@ -2021,6 +2144,11 @@ class ImageProcessor:
     
     def update_settings(self, config):
         """Update settings from config."""
+        # Check if calibration folder changed
+        old_cal_folder = self.config.get("calibration_folder", "") if self.config else ""
+        new_cal_folder = config.get("calibration_folder", "")
+        cal_folder_changed = old_cal_folder != new_cal_folder
+        
         self.config = config
     
         # Update settings
@@ -2039,11 +2167,30 @@ class ImageProcessor:
         self.use_multithreading = config.get("use_multithreading", True)
         self.num_threads = config.get("num_threads", os.cpu_count() or 4)
     
+        # If calibration folder changed, reload calibration data
+        if cal_folder_changed:
+            logger.info(f"Calibration folder changed from '{old_cal_folder}' to '{new_cal_folder}', reloading data")
+            # Reset flat field and calibration state
+            self.flat_field = None
+            self.flat_field_info = None
+            self.calibration = None
+            self.calibration_applied = False
+            self.flat_applied = False
+            self.flattened_image = None
+            # Try to load new flat field (calibration is loaded on demand)
+            self.load_field_flattening()
+    
         logger.info("Settings updated")
         return True
     
-    def reprocess_current_image(self):
-        """Reprocess the current image with updated settings."""
+    def reprocess_current_image(self, skip_integral_compute: bool = False):
+        """Reprocess the current image with updated settings.
+        
+        Args:
+            skip_integral_compute: If True, skip computing integral images.
+                Use this when calling multiple processing steps in sequence
+                and computing integrals only at the end for better performance.
+        """
         if self.original_image is None:
             return False
     
@@ -2051,11 +2198,13 @@ class ImageProcessor:
         self.current_image = self.original_image.copy()
         # Calibration no longer applied
         self.calibration_applied = False
+        self.flat_applied = False
+        self.flattened_image = None
     
         # Apply binning if needed
         if self.binning > 1:
             self.apply_binning()
-        else:
+        elif not skip_integral_compute:
             # Recompute integral images
             self._compute_integral_images()
     
@@ -2068,11 +2217,15 @@ class ImageProcessor:
     
         try:
             # Apply display settings
-            # When dose calibration is active we still want to show the *original* (pre-calibration)
-            # image to the user so that the visual appearance remains unchanged while all
-            # internal calculations work on the calibrated single-channel dose image.
+            # When dose calibration is active we still want to show an RGB
+            # image to the user so that the visual appearance remains unchanged
+            # while all internal calculations work on the calibrated dose image.
+            # If flat was also applied, show the flattened RGB; otherwise show original.
             if self.calibration_applied and self.original_image is not None:
-                image = self.original_image.copy()
+                if self.flat_applied and self.flattened_image is not None:
+                    image = self.flattened_image.copy()
+                else:
+                    image = self.original_image.copy()
             else:
                 image = self.current_image.copy()
         
@@ -2242,22 +2395,25 @@ class ImageProcessor:
         return np.clip(np_image, 0, 255).astype(np.uint8)
 
     def _find_fit_parameters_file(self):
-        """Return absolute path to *fit_parameters.csv* if it exists, else None."""
-        # Get calibration folder from config
+        """Return absolute path to *fit_parameters.csv* if it exists, else None.
+        
+        When a specific calibration folder is selected (not 'default'),
+        search ONLY in that folder - no fallback to root calibration_data.
+        """
         calibration_folder = self.config.get("calibration_folder", "default")
         
-        candidate_dirs = [
-            os.path.join(os.getcwd(), "calibration_data"),
-            os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "calibration_data"),
-        ]
-        
-        # If a specific calibration folder is selected, check subdirectory first
         if calibration_folder != "default":
-            priority_dirs = [
+            # Strict search: only in the selected subfolder
+            candidate_dirs = [
                 os.path.join(os.getcwd(), "calibration_data", calibration_folder),
                 os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "calibration_data", calibration_folder),
             ]
-            candidate_dirs = priority_dirs + candidate_dirs
+        else:
+            # Default: search in root calibration_data folder
+            candidate_dirs = [
+                os.path.join(os.getcwd(), "calibration_data"),
+                os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "calibration_data"),
+            ]
 
         for d in candidate_dirs:
             path = os.path.join(d, "fit_parameters.csv")
@@ -2266,3 +2422,223 @@ class ImageProcessor:
                 return path
 
         return None
+
+    # =========================================================================
+    # Field Flattening Methods
+    # =========================================================================
+
+    def _find_field_flattening_file(self):
+        """Return absolute path to *field_flattening.npz* if it exists, else None.
+        
+        When a specific calibration folder is selected (not 'default'),
+        search ONLY in that folder - no fallback to root calibration_data.
+        """
+        calibration_folder = self.config.get("calibration_folder", "default")
+        
+        if calibration_folder != "default":
+            # Strict search: only in the selected subfolder
+            candidate_dirs = [
+                os.path.join(os.getcwd(), "calibration_data", calibration_folder),
+                os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "calibration_data", calibration_folder),
+            ]
+        else:
+            # Default: search in root calibration_data folder
+            candidate_dirs = [
+                os.path.join(os.getcwd(), "calibration_data"),
+                os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "calibration_data"),
+            ]
+
+        for d in candidate_dirs:
+            path = os.path.join(d, "field_flattening.npz")
+            if os.path.isfile(path):
+                logger.info(f"Found field flattening file: {path}")
+                return path
+
+        return None
+
+    def load_field_flattening(self):
+        """Load field flattening data from disk if available.
+        
+        Returns:
+            bool: True if field flattening was loaded successfully, False otherwise.
+        """
+        ff_path = self._find_field_flattening_file()
+        if ff_path is None:
+            logger.debug("No field flattening file found")
+            self.flat_field = None
+            self.flat_field_info = None
+            return False
+
+        try:
+            data = np.load(ff_path, allow_pickle=True)
+            self.flat_field = data['flat_field']
+            self.flat_field_info = {
+                'mean_per_channel': data['mean_per_channel'].tolist() if 'mean_per_channel' in data else None,
+                'std_per_channel': data['std_per_channel'].tolist() if 'std_per_channel' in data else None,
+                'date_created': str(data['date_created']) if 'date_created' in data else None,
+                'num_images_averaged': int(data['num_images_averaged']) if 'num_images_averaged' in data else None,
+                'image_shape': tuple(data['image_shape']) if 'image_shape' in data else None,
+            }
+            logger.info(f"Loaded field flattening data: shape={self.flat_field.shape}, "
+                       f"images_averaged={self.flat_field_info.get('num_images_averaged')}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to load field flattening data: {e}")
+            self.flat_field = None
+            self.flat_field_info = None
+            return False
+
+    def has_field_flattening(self) -> bool:
+        """Check if field flattening data is available."""
+        if self.flat_field is not None:
+            return True
+        # Try to load if not already loaded
+        return self.load_field_flattening()
+
+    def apply_field_flattening(self, image: np.ndarray) -> np.ndarray:
+        """Apply field flattening correction to an image.
+        
+        The correction formula is:
+            corrected = image * mean(flat_field) / flat_field
+        
+        This normalizes the scanner response so that a uniform input
+        produces a uniform output.
+        
+        Args:
+            image: Input image array (H, W, 3) or (H, W)
+            
+        Returns:
+            Corrected image array with same dtype as input.
+        """
+        if self.flat_field is None:
+            logger.warning("apply_field_flattening called but no flat field loaded")
+            return image
+
+        # Handle grayscale images
+        if len(image.shape) == 2:
+            # Convert to 3-channel for processing
+            image_3ch = np.stack([image] * 3, axis=-1)
+            result = self._apply_flattening_3ch(image_3ch)
+            # Return first channel
+            return result[:, :, 0]
+        
+        return self._apply_flattening_3ch(image)
+
+    def _apply_flattening_3ch(self, image: np.ndarray) -> np.ndarray:
+        """Apply field flattening to a 3-channel image.
+        
+        For maximum scientific fidelity:
+        - Warns if resize is needed (reduces correction accuracy)
+        - Preserves full dynamic range
+        - Handles both integer and float images correctly
+        """
+        flat = self.flat_field
+        
+        # Check if flat field needs to be resized to match image
+        if flat.shape[:2] != image.shape[:2]:
+            logger.warning(
+                f"FIDELITY WARNING: Flat field shape {flat.shape[:2]} differs from image {image.shape[:2]}. "
+                f"Resizing flat field will reduce correction accuracy. "
+                f"For maximum fidelity, use images at the same resolution as the flat field calibration."
+            )
+            # Use bilinear interpolation to resize flat field
+            flat = cv2.resize(flat, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_LINEAR)
+            
+            # When resizing, we should also recalculate mean from resized flat
+            # to maintain mathematical consistency (image * mean / flat = mean when image == flat)
+            mean_per_channel = np.mean(flat, axis=(0, 1), keepdims=True)
+            logger.info(f"Recalculated mean from resized flat field: {mean_per_channel.flatten()}")
+        else:
+            # Use the mean from when the flat field was created (stored in npz)
+            # This ensures that applying flat to the same image gives a perfectly uniform result
+            if self.flat_field_info and self.flat_field_info.get('mean_per_channel'):
+                mean_per_channel = np.array(self.flat_field_info['mean_per_channel']).reshape(1, 1, 3)
+            else:
+                # Fallback: compute mean from flat field
+                mean_per_channel = np.mean(flat, axis=(0, 1), keepdims=True)
+
+        # Store original dtype and determine value range
+        orig_dtype = image.dtype
+        
+        # Determine the actual max value for clipping based on dtype AND image content
+        if np.issubdtype(orig_dtype, np.integer):
+            max_val = np.iinfo(orig_dtype).max
+        else:
+            # For float images, determine if normalized (0-1) or not
+            actual_max = np.max(image)
+            if actual_max <= 1.0:
+                max_val = 1.0
+            elif actual_max <= 255:
+                max_val = 255.0
+            elif actual_max <= 65535:
+                max_val = 65535.0
+            else:
+                max_val = actual_max * 1.1  # Allow some headroom
+            logger.debug(f"Float image detected, using max_val={max_val} for clipping")
+        
+        # Prevent division by zero with epsilon relative to data range
+        epsilon = max_val * 1e-9 if max_val > 0 else 1e-9
+        flat_safe = np.maximum(flat.astype(np.float64), epsilon)
+        
+        # Apply correction: corrected = image * mean / flat
+        corrected = image.astype(np.float64) * mean_per_channel / flat_safe
+        
+        # Clip to valid range
+        corrected = np.clip(corrected, 0, max_val)
+        
+        return corrected.astype(orig_dtype)
+
+    def apply_flat(self, skip_integral_compute: bool = False) -> bool:
+        """Apply field flattening correction (independent of dose conversion).
+        
+        This applies the scanner uniformity correction to the current image.
+        Can be combined with dose conversion, but MUST be applied BEFORE dose
+        conversion for physically meaningful results (flat corrects scanner
+        response in signal space, not dose space).
+        
+        Args:
+            skip_integral_compute: If True, skip computing integral images.
+                Use this when chaining with other operations that will compute
+                integrals at the end.
+        
+        Returns:
+            bool: True if successful, False otherwise.
+        """
+        if self.current_image is None:
+            logger.warning("apply_flat called with no image loaded")
+            return False
+        
+        # Safety check: flat should not be applied after calibration (dose space)
+        if self.calibration_applied:
+            logger.error(
+                "apply_flat called when calibration is already applied. "
+                "Field flattening corrects scanner response in signal space, not dose space. "
+                "Please reprocess the image and apply flat BEFORE dose calibration."
+            )
+            return False
+        
+        if not self.has_field_flattening():
+            logger.error("apply_flat called but no field flattening data available")
+            return False
+        
+        try:
+            # Apply field flattening to current image
+            self.current_image = self.apply_field_flattening(self.current_image)
+            
+            # Store flattened image for display when calibration is also active
+            self.flattened_image = self.current_image.copy()
+            
+            # Recompute integral images for measurement (unless skipped for pipeline optimization)
+            if not skip_integral_compute:
+                self._compute_integral_images()
+            
+            # Mark as flat applied
+            self.flat_applied = True
+            
+            logger.info("Applied field flattening")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to apply flat: {e}", exc_info=True)
+            return False
+

@@ -43,6 +43,9 @@ class MainWindow:
         self._create_menu()
         self._create_main_layout()
         
+        # Initialize calibration menu states (disable if no data available)
+        self._update_calibration_menu_states()
+        
         logger.info("Main window initialized")
     
     def _create_menu(self):
@@ -81,16 +84,34 @@ class MainWindow:
         self.calibration_menu.add_command(label="Choose Calibration...", 
                                          command=self.open_settings)
         self.calibration_menu.add_separator()
-        self.calibration_menu.add_command(label="Start Calibration Wizard", 
+        self.calibration_menu.add_command(label="Calibrate Scanner", 
                                          command=self.start_calibration_wizard)
+        self.calibration_menu.add_separator()
         
-        # Toggle for dose calibration (like Negative mode)
+        # Toggle for field flattening (independent)
+        # Store the menu index for enabling/disabling later
+        self.flat_var = tk.BooleanVar(value=False)
+        self.calibration_menu.add_checkbutton(
+            label="Apply Flat",
+            variable=self.flat_var,
+            command=self.apply_flat
+        )
+        self._flat_menu_index = self.calibration_menu.index(tk.END)
+        
+        # Toggle for dose conversion (independent, can combine with flat)
         self.calibration_var = tk.BooleanVar(value=False)
         self.calibration_menu.add_checkbutton(
-            label="Apply Calibration",
+            label="Apply Dose Conversion",
             variable=self.calibration_var,
             command=self.apply_calibration
         )
+        self._cal_menu_index = self.calibration_menu.index(tk.END)
+        
+        # Utilities menu
+        self.utilities_menu = tk.Menu(self.menu_bar, tearoff=0)
+        self.menu_bar.add_cascade(label="Utilities", menu=self.utilities_menu)
+        self.utilities_menu.add_command(label="Measure Flatness of Image...", 
+                                        command=self.measure_image_flatness)
         
         # Plugins menu
         from app.plugins.plugin_manager import plugin_manager
@@ -166,6 +187,73 @@ class MainWindow:
         self.zoom_label = ttk.Label(self.status_bar, text="Zoom: 100%")
         self.zoom_label.pack(side=tk.RIGHT, padx=5)
     
+    def _update_calibration_menu_states(self):
+        """Update the enabled/disabled state of calibration menu items based on data availability."""
+        # Force a fresh check/load of field flattening to avoid stale state/race conditions
+        try:
+            has_flat = self.image_processor.load_field_flattening()
+        except Exception:
+            logger.exception("Error while loading field flattening during menu state update")
+            has_flat = False
+
+        # Calibration parameters may be loaded on demand - check availability
+        try:
+            has_cal = self.image_processor.has_calibration()
+        except Exception:
+            logger.exception("Error while checking calibration availability during menu state update")
+            has_cal = False
+        
+        # Track if we need to refresh the display
+        needs_refresh = False
+        
+        # Update Apply Flat menu item
+        if has_flat:
+            self.calibration_menu.entryconfigure(self._flat_menu_index, state=tk.NORMAL)
+            # If the checkbox is checked but the processor hasn't applied the flat,
+            # ensure the correction is actually applied so the UI and internal state
+            # remain in sync. This handles cases where the checkbox was programmatically
+            # set (e.g. on load) but the flattening wasn't yet executed.
+            if self.flat_var.get():
+                try:
+                    if self.image_processor.has_image():
+                        # Reapply corrections to ensure flat is applied immediately
+                        self._reapply_corrections()
+                    else:
+                        # No image yet; make sure flat data is loaded for future operations
+                        self.image_processor.load_field_flattening()
+                except Exception:
+                    # Don't let menu state update fail due to processor errors
+                    logger.exception("Error while attempting to apply flat during menu state update")
+        else:
+            self.calibration_menu.entryconfigure(self._flat_menu_index, state=tk.DISABLED)
+            # If flat was enabled but is no longer available, clean up
+            if self.flat_var.get():
+                self.flat_var.set(False)
+                # Clear flattened image state
+                self.image_processor.flat_applied = False
+                self.image_processor.flattened_image = None
+                needs_refresh = True
+        
+        # Update Apply Dose Conversion menu item
+        if has_cal:
+            self.calibration_menu.entryconfigure(self._cal_menu_index, state=tk.NORMAL)
+        else:
+            self.calibration_menu.entryconfigure(self._cal_menu_index, state=tk.DISABLED)
+            # If calibration was enabled but is no longer available, clean up
+            if self.calibration_var.get():
+                self.calibration_var.set(False)
+                self.image_processor.calibration_applied = False
+                needs_refresh = True
+        
+        # Refresh display if corrections were removed
+        if needs_refresh and self.image_processor.has_image():
+            # Reprocess image without the unavailable corrections
+            self.image_processor.reprocess_current_image()
+            self.image_panel.display_image()
+            self.update_status("Calibration data no longer available - corrections removed")
+        
+        logger.debug(f"Calibration menu states updated: flat={has_flat}, cal={has_cal}")
+    
     def open_image(self):
         """Open an image file."""
         file_path = filedialog.askopenfilename(
@@ -234,6 +322,20 @@ class MainWindow:
     def _finish_loading_image(self, file_path):
         """Finish loading image on the main thread."""
         try:
+            # Check if file was renamed due to Unicode characters
+            if hasattr(self.image_processor, '_renamed_file_info') and self.image_processor._renamed_file_info:
+                old_name, new_name = self.image_processor._renamed_file_info
+                messagebox.showinfo(
+                    "File Renamed",
+                    f"The filename contained special characters that OpenCV cannot read.\n\n"
+                    f"Original: {old_name}\n"
+                    f"Renamed to: {new_name}\n\n"
+                    f"The file has been renamed automatically."
+                )
+                # Update file_path to the new name
+                file_path = os.path.join(os.path.dirname(file_path), new_name)
+                self.image_processor._renamed_file_info = None
+            
             # Fit image to screen by default
             self.image_panel.fit_to_screen()
             
@@ -259,13 +361,33 @@ class MainWindow:
             self.file_manager.add_recent_file(file_path)
             self._update_recent_menu()
             
-            # If calibration parameters exist, pre-enable the toggle so user sees dose
-            if self.image_processor.has_calibration():
-                self.calibration_var.set(True)
-                self.apply_calibration()
+            # Auto-enable flat and calibration if data is available
+            has_flat = self.image_processor.has_field_flattening()
+            has_cal = self.image_processor.has_calibration()
+            
+            if has_flat or has_cal:
+                # Set checkboxes
+                if has_flat:
+                    self.flat_var.set(True)
+                if has_cal:
+                    self.calibration_var.set(True)
+                
+                # Apply corrections (flat first, then dose conversion)
+                self._reapply_corrections()
+                
+                # Update status
+                if has_flat and has_cal:
+                    self.update_status(f"Loaded: {os.path.basename(file_path)} (Flat + Dose applied)")
+                elif has_flat:
+                    self.update_status(f"Loaded: {os.path.basename(file_path)} (Flat applied)")
+                elif has_cal:
+                    self.update_status(f"Loaded: {os.path.basename(file_path)} (Dose applied)")
             
             # Update window title
             self.parent.title(f"Radiochromic Film Analyzer - {os.path.basename(file_path)}")
+            
+            # Update calibration menu states (enable/disable based on data availability)
+            self._update_calibration_menu_states()
             
             logger.info(f"Loaded image: {file_path}")
         except Exception as e:
@@ -722,6 +844,9 @@ class MainWindow:
             # Apply settings
             self.apply_settings()
             
+            # Update calibration menu states (flat/dose availability may have changed)
+            self._update_calibration_menu_states()
+            
             # Clean up events and close window
             cleanup_events()
             settings_window.destroy()
@@ -806,15 +931,12 @@ class MainWindow:
     def _apply_settings_thread(self):
         """Apply settings in a background thread."""
         try:
-            # Store calibration state before reprocessing
-            was_calibrated = getattr(self.image_processor, 'calibration_applied', False)
-            
+            # Reprocess image in background thread
             self.image_processor.reprocess_current_image()
-            
-            # Restore calibration if it was applied before
-            if was_calibrated and self.image_processor.has_calibration():
-                self.image_processor.apply_calibration()
-            
+
+            # After reprocessing, ensure corrections (flat/cal) are applied
+            # on the main thread so UI updates and messageboxes are safe.
+            self.parent.after(0, lambda: self._reapply_corrections())
             self.parent.after(0, lambda: self._finish_applying_settings())
         except Exception as e:
             logger.error(f"Error applying settings: {str(e)}", exc_info=True)
@@ -825,6 +947,11 @@ class MainWindow:
         """Finish applying settings on the main thread."""
         self.image_panel.fit_to_screen()
         self.update_status("Applied settings to current image")
+        # Ensure menu states reflect newly loaded calibration/flat data
+        try:
+            self._update_calibration_menu_states()
+        except Exception:
+            logger.exception("Failed to update calibration menu states after applying settings")
     
     def update_image_settings(self):
         """Update image settings (contrast, brightness, negative mode)."""
@@ -850,88 +977,377 @@ class MainWindow:
             self.image_panel.display_image(is_adjustment=True)
     
     def start_calibration_wizard(self):
-        """Start the calibration wizard."""
+        """Start the scanner calibration wizard."""
         # Defer heavy imports so startup is not affected
         try:
-            from app.ui.calibration_wizard import CalibrationWizardWindow
+            from app.ui.calibration_wizard import ScannerCalibrationWizard
         except Exception as exc:
-            messagebox.showerror("Calibration Wizard", f"No se pudo abrir el asistente de calibración:\n{exc}")
-            logger.error("Failed to launch calibration wizard", exc_info=True)
+            messagebox.showerror("Calibrate Scanner", f"Could not open the calibration wizard:\n{exc}")
+            logger.error("Failed to launch scanner calibration wizard", exc_info=True)
             return
 
-        # Create the wizard window (modal)
-        CalibrationWizardWindow(self.parent)
+        # Create the wizard window (modal), passing the current config for consistency
+        ScannerCalibrationWizard(self.parent, app_config=self.app_config)
         # No further action for now – the wizard handles its own lifecycle
     
+    def _reapply_corrections(self):
+        """Reapply flat and/or dose corrections based on current checkbox states.
+        
+        Optimized to compute integral images only once at the end of the pipeline,
+        rather than after each individual operation.
+        """
+        has_flat = self.flat_var.get() and self.image_processor.has_field_flattening()
+        has_cal = self.calibration_var.get() and self.image_processor.has_calibration()
+        
+        # Start from original image
+        # Skip integral compute if we have more operations to apply
+        self.image_processor.reprocess_current_image(skip_integral_compute=(has_flat or has_cal))
+        
+        # Apply flat if enabled (skip integral compute if calibration follows)
+        if has_flat:
+            self.image_processor.apply_flat(skip_integral_compute=has_cal)
+        
+        # Apply dose conversion if enabled (this always computes integrals at the end)
+        if has_cal:
+            self.image_processor.apply_calibration()
+        elif not has_flat:
+            # Neither flat nor cal applied, but we skipped integral compute above
+            # Need to compute now (actually we didn't skip in this case, so this is safe)
+            pass
+        
+        # Update display
+        self.image_panel.display_image(is_adjustment=True)
+        
+        # Notify plugins
+        from app.plugins.plugin_manager import plugin_manager
+        plugin_manager.notify_config_change(self.app_config)
+    
     def apply_calibration(self):
-        """Toggle calibration on/off depending on menu state."""
+        """Toggle dose conversion on/off (independent of flat)."""
         if not self.image_processor.has_image():
             self.calibration_var.set(False)
             return
 
-        # If the checkbox is now ON, apply calibration
         if self.calibration_var.get():
-            if self.image_processor.has_calibration():
-                # Check bit depth compatibility
-                image_bits = self.image_processor.get_image_bit_depth()
-                calibration_bits = self.image_processor.get_calibration_bit_depth()
-                
-                if image_bits != calibration_bits:
-                    # Bit depth mismatch - need to rescale
-                    response = messagebox.askyesno(
-                        "Bit Depth Mismatch",
-                        f"The current image is {image_bits}-bit, but the calibration curve "
-                        f"was created with {calibration_bits}-bit values.\n\n"
-                        f"To apply the calibration, the image must be rescaled to {calibration_bits}-bit.\n\n"
-                        f"Do you want to rescale the image to {calibration_bits}-bit and proceed?",
-                        icon='warning'
-                    )
-                    
-                    if not response:
-                        # User cancelled
-                        self.calibration_var.set(False)
-                        self.update_status("Calibration cancelled - bit depth mismatch")
-                        return
-                    
-                    # Rescale the image to match calibration bit depth
-                    if calibration_bits == 8:
-                        success_rescale = self.image_processor.rescale_to_8bit()
-                    else:  # calibration_bits == 16
-                        success_rescale = self.image_processor.rescale_to_16bit()
-                    
-                    if not success_rescale:
-                        messagebox.showerror("Error", f"Failed to rescale image to {calibration_bits}-bit.")
-                        self.calibration_var.set(False)
-                        return
-                    
-                    # Refresh display after rescaling
-                    self.image_panel.display_image(is_adjustment=True)
-                    self.update_status(f"Image rescaled to {calibration_bits}-bit")
-                
-                success = self.image_processor.apply_calibration()
-                if success:
-                    self.image_panel.display_image(is_adjustment=True)
-                    self.update_status("Applied calibration to current image")
-                    
-                    # Notify plugins about calibration change
-                    from app.plugins.plugin_manager import plugin_manager
-                    plugin_manager.notify_config_change(self.app_config)
-                else:
-                    # Revert checkbox on failure
-                    self.calibration_var.set(False)
-            else:
+            # Turning ON dose conversion
+            if not self.image_processor.has_calibration():
                 messagebox.showwarning("Calibration", "No calibration parameters available.")
                 self.calibration_var.set(False)
-        else:
-            # Checkbox turned OFF – revert to original RGB
-            if self.image_processor.calibration_applied:
-                self.image_processor.reprocess_current_image()
-                self.image_panel.display_image(is_adjustment=True)
-                self.update_status("Calibration disabled (RGB view)")
+                return
+            
+            # Check bit depth compatibility
+            image_bits = self.image_processor.get_image_bit_depth()
+            calibration_bits = self.image_processor.get_calibration_bit_depth()
+            
+            if image_bits != calibration_bits:
+                response = messagebox.askyesno(
+                    "Bit Depth Mismatch",
+                    f"The current image is {image_bits}-bit, but the calibration curve "
+                    f"was created with {calibration_bits}-bit values.\n\n"
+                    f"To apply the calibration, the image must be rescaled to {calibration_bits}-bit.\n\n"
+                    f"Do you want to rescale the image to {calibration_bits}-bit and proceed?",
+                    icon='warning'
+                )
                 
-                # Notify plugins about calibration change
-                from app.plugins.plugin_manager import plugin_manager
-                plugin_manager.notify_config_change(self.app_config)
+                if not response:
+                    self.calibration_var.set(False)
+                    self.update_status("Calibration cancelled - bit depth mismatch")
+                    return
+                
+                # Rescale the image to match calibration bit depth
+                if calibration_bits == 8:
+                    success_rescale = self.image_processor.rescale_to_8bit()
+                else:
+                    success_rescale = self.image_processor.rescale_to_16bit()
+                
+                if not success_rescale:
+                    messagebox.showerror("Error", f"Failed to rescale image to {calibration_bits}-bit.")
+                    self.calibration_var.set(False)
+                    return
+        
+        # Reapply all corrections based on current states
+        self._reapply_corrections()
+        
+        # Update status
+        flat_on = self.flat_var.get()
+        cal_on = self.calibration_var.get()
+        if cal_on and flat_on:
+            self.update_status("Applied: Flat + Dose Conversion")
+        elif cal_on:
+            self.update_status("Applied: Dose Conversion")
+        elif flat_on:
+            self.update_status("Applied: Flat")
+        else:
+            self.update_status("Original RGB view")
+    
+    def apply_flat(self):
+        """Toggle field flattening on/off (independent of dose conversion)."""
+        if not self.image_processor.has_image():
+            self.flat_var.set(False)
+            return
+
+        if self.flat_var.get():
+            # Turning ON flat
+            if not self.image_processor.has_field_flattening():
+                messagebox.showwarning("Field Flattening", 
+                    "No field flattening data available.\n\n"
+                    "Use 'Calibrate Scanner' to create field flattening data first.")
+                self.flat_var.set(False)
+                return
+        
+        # Reapply all corrections based on current states
+        self._reapply_corrections()
+        
+        # Update status
+        flat_on = self.flat_var.get()
+        cal_on = self.calibration_var.get()
+        if cal_on and flat_on:
+            self.update_status("Applied: Flat + Dose Conversion")
+        elif cal_on:
+            self.update_status("Applied: Dose Conversion")
+        elif flat_on:
+            self.update_status("Applied: Flat")
+        else:
+            self.update_status("Original RGB view")
+    
+    def measure_image_flatness(self):
+        """Analyze and display flatness/uniformity statistics of the current image."""
+        if not self.image_processor.has_image():
+            messagebox.showwarning("Measure Flatness", "No image loaded.\n\nPlease load an image first.")
+            return
+        
+        # Determine which image to analyze based on flat_var state
+        if self.flat_var.get() and self.image_processor.flattened_image is not None:
+            # Use the flattened image (flat correction applied)
+            image = self.image_processor.flattened_image
+            image_source = "Flattened Image (Apply Flat ON)"
+        else:
+            # Use original image (no flat correction)
+            image = self.image_processor.original_image
+            image_source = "Original Image (Apply Flat OFF)"
+        
+        if image is None:
+            messagebox.showerror("Error", "Could not access image data.")
+            return
+        
+        # Create analysis window
+        flatness_window = tk.Toplevel(self.parent)
+        flatness_window.title("Image Flatness Analysis")
+        flatness_window.geometry("1200x750")
+        flatness_window.transient(self.parent)
+        
+        # Main frame with scrollbar
+        canvas_outer = tk.Canvas(flatness_window)
+        scrollbar = ttk.Scrollbar(flatness_window, orient="vertical", command=canvas_outer.yview)
+        scrollable_frame = ttk.Frame(canvas_outer)
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas_outer.configure(scrollregion=canvas_outer.bbox("all"))
+        )
+        
+        canvas_outer.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas_outer.configure(yscrollcommand=scrollbar.set)
+        
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas_outer.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # Mouse wheel scrolling
+        def _on_mousewheel(event):
+            canvas_outer.yview_scroll(int(-1*(event.delta/120)), "units")
+        canvas_outer.bind_all("<MouseWheel>", _on_mousewheel)
+        flatness_window.protocol("WM_DELETE_WINDOW", lambda: (canvas_outer.unbind_all("<MouseWheel>"), flatness_window.destroy()))
+        
+        main_frame = scrollable_frame
+        
+        # Header frame with title and info button
+        header_frame = ttk.Frame(main_frame)
+        header_frame.pack(fill=tk.X, padx=10, pady=(10, 5))
+        
+        ttk.Label(header_frame, text="Image Flatness / Uniformity Analysis", 
+                  font=("Arial", 14, "bold")).pack(side=tk.LEFT)
+        
+        # CV Info button
+        def show_cv_info():
+            cv_explanation = (
+                "What is CV (Coefficient of Variation)?\n\n"
+                "The Coefficient of Variation (CV) is a standardized measure of dispersion:\n\n"
+                "    CV (%) = (Standard Deviation / Mean) × 100\n\n"
+                "Interpretation:\n"
+                "• CV < 1%: Excellent uniformity - scanner is very well calibrated\n"
+                "• CV 1-2%: Good uniformity - acceptable for most applications\n"
+                "• CV 2-5%: Acceptable - may need recalibration for high-precision work\n"
+                "• CV > 5%: Poor uniformity - scanner calibration recommended\n\n"
+                "Lower CV values indicate better spatial uniformity across the scanned image.\n"
+                "For radiochromic film dosimetry, CV < 2% is typically desired."
+            )
+            messagebox.showinfo("CV Information", cv_explanation)
+        
+        info_btn = ttk.Button(header_frame, text="ℹ CV Info", command=show_cv_info, width=10)
+        info_btn.pack(side=tk.RIGHT, padx=10)
+        
+        # Source indication
+        ttk.Label(main_frame, text=f"Analyzing: {image_source}", 
+                  font=("Arial", 10, "italic")).pack(pady=(0, 10))
+        
+        # Calculate statistics per channel
+        import numpy as np
+        
+        if len(image.shape) == 3:
+            channels = ['Red', 'Green', 'Blue']
+            channel_colors = ['#FF4444', '#44AA44', '#4444FF']
+            channel_data = [image[:, :, i] for i in range(3)]
+        else:
+            channels = ['Grayscale']
+            channel_colors = ['#888888']
+            channel_data = [image]
+        
+        # Statistics frame
+        stats_frame = ttk.LabelFrame(main_frame, text="Channel Statistics")
+        stats_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        # Headers
+        headers = ["Channel", "Mean", "Std Dev", "CV (%)", "Min", "Max", "Range", "Assessment"]
+        for col, header in enumerate(headers):
+            ttk.Label(stats_frame, text=header, font=("Arial", 10, "bold")).grid(
+                row=0, column=col, padx=8, pady=5, sticky="w")
+        
+        stats_data = []
+        for i, (ch_name, ch_data, ch_color) in enumerate(zip(channels, channel_data, channel_colors)):
+            # Convert to float for accurate statistics
+            ch_float = ch_data.astype(np.float64)
+            mean_val = np.mean(ch_float)
+            std_val = np.std(ch_float)
+            cv = (std_val / mean_val * 100) if mean_val > 0 else 0
+            min_val = np.min(ch_float)
+            max_val = np.max(ch_float)
+            range_val = max_val - min_val
+            
+            # Individual channel assessment
+            if cv < 1.0:
+                ch_assessment = "Excellent"
+            elif cv < 2.0:
+                ch_assessment = "Good"
+            elif cv < 5.0:
+                ch_assessment = "Acceptable"
+            else:
+                ch_assessment = "Poor"
+            
+            stats_data.append({
+                'channel': ch_name,
+                'mean': mean_val,
+                'std': std_val,
+                'cv': cv,
+                'min': min_val,
+                'max': max_val,
+                'range': range_val,
+                'data': ch_float,
+                'color': ch_color,
+                'assessment': ch_assessment
+            })
+            
+            row_data = [ch_name, f"{mean_val:.2f}", f"{std_val:.2f}", f"{cv:.2f}%",
+                       f"{min_val:.0f}", f"{max_val:.0f}", f"{range_val:.0f}", ch_assessment]
+            for col, val in enumerate(row_data):
+                lbl = ttk.Label(stats_frame, text=val)
+                lbl.grid(row=i+1, column=col, padx=8, pady=2, sticky="w")
+        
+        # Overall Uniformity assessment
+        assessment_frame = ttk.LabelFrame(main_frame, text="Overall Uniformity Assessment")
+        assessment_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        # Calculate overall uniformity score (lower CV = better uniformity)
+        avg_cv = np.mean([s['cv'] for s in stats_data])
+        max_cv = np.max([s['cv'] for s in stats_data])
+        worst_channel = [s['channel'] for s in stats_data if s['cv'] == max_cv][0]
+        
+        if avg_cv < 1.0:
+            uniformity_grade = "Excellent"
+        elif avg_cv < 2.0:
+            uniformity_grade = "Good"
+        elif avg_cv < 5.0:
+            uniformity_grade = "Acceptable"
+        else:
+            uniformity_grade = "Poor - Consider recalibrating scanner"
+        
+        summary_text = (
+            f"Average CV across all channels: {avg_cv:.2f}%  |  "
+            f"Worst channel: {worst_channel} (CV = {max_cv:.2f}%)  |  "
+            f"Overall Grade: {uniformity_grade}"
+        )
+        ttk.Label(assessment_frame, text=summary_text, font=("Arial", 10)).pack(anchor="w", padx=10, pady=8)
+        
+        # Matplotlib plots - 3 columns layout
+        try:
+            import matplotlib
+            matplotlib.use('TkAgg')
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+            from matplotlib.figure import Figure
+            
+            n_channels = len(stats_data)
+            
+            # Create figure: 2 rows x 3 columns (or fewer for grayscale)
+            # Row 1: Deviation maps, Row 2: Histograms
+            fig = Figure(figsize=(12, 7), dpi=100)
+            
+            for idx, s in enumerate(stats_data):
+                ch_data = s['data']
+                
+                # Downsample for display if image is large
+                h, w = ch_data.shape
+                step = max(1, max(h, w) // 400)
+                display_downsampled = ch_data[::step, ::step]
+                
+                # Calculate normalized deviation from mean for uniformity visualization
+                mean_val = s['mean']
+                deviation_percent = ((display_downsampled - mean_val) / mean_val) * 100
+                
+                # Row 1: Deviation maps (3 columns)
+                ax1 = fig.add_subplot(2, n_channels, idx + 1)
+                
+                # Use symmetric color scale centered on 0
+                vmax = max(abs(deviation_percent.min()), abs(deviation_percent.max()))
+                vmax = min(vmax, 10)  # Cap at ±10% for better visualization
+                
+                im = ax1.imshow(deviation_percent, cmap='RdYlGn_r', aspect='auto',
+                               vmin=-vmax, vmax=vmax)
+                ax1.set_title(f"{s['channel']} - Deviation from Mean\nCV = {s['cv']:.2f}%", 
+                             fontsize=10, fontweight='bold')
+                ax1.set_xlabel("X (pixels)", fontsize=8)
+                ax1.set_ylabel("Y (pixels)", fontsize=8)
+                ax1.tick_params(labelsize=7)
+                fig.colorbar(im, ax=ax1, label="Deviation (%)", shrink=0.8)
+                
+                # Row 2: Histograms (3 columns)
+                ax2 = fig.add_subplot(2, n_channels, n_channels + idx + 1)
+                flat_data = ch_data.flatten()
+                if len(flat_data) > 100000:
+                    flat_data = np.random.choice(flat_data, 100000, replace=False)
+                
+                ax2.hist(flat_data, bins=100, alpha=0.7, color=s['color'], edgecolor='black', linewidth=0.3)
+                ax2.axvline(s['mean'], color='black', linestyle='--', linewidth=1.5, label=f"Mean: {s['mean']:.0f}")
+                ax2.axvline(s['mean'] - s['std'], color='gray', linestyle=':', linewidth=1.2)
+                ax2.axvline(s['mean'] + s['std'], color='gray', linestyle=':', linewidth=1.2, label=f"±1σ: {s['std']:.1f}")
+                ax2.set_title(f"{s['channel']} - Pixel Distribution", fontsize=10, fontweight='bold')
+                ax2.set_xlabel("Pixel Value", fontsize=8)
+                ax2.set_ylabel("Frequency", fontsize=8)
+                ax2.tick_params(labelsize=7)
+                ax2.legend(fontsize=7, loc='upper right')
+            
+            fig.tight_layout(pad=1.5)
+            
+            # Embed in tkinter
+            canvas = FigureCanvasTkAgg(fig, master=main_frame)
+            canvas.draw()
+            canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+            
+        except ImportError as e:
+            ttk.Label(main_frame, text=f"Matplotlib not available for plots: {e}").pack(pady=10)
+        
+        # Close button
+        ttk.Button(main_frame, text="Close", command=lambda: (canvas_outer.unbind_all("<MouseWheel>"), flatness_window.destroy())).pack(pady=10)
+        
+        logger.info(f"Flatness analysis ({image_source}): avg CV={avg_cv:.2f}%, grade={uniformity_grade}")
     
     def show_about(self):
         """Show the about dialog."""

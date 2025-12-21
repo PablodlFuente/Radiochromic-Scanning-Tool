@@ -16,7 +16,7 @@ from scipy.interpolate import CubicSpline
 class CalibrationApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Radiomic Film Calibration")
+        self.root.title("Radiochromic Film Calibration")
         self.root.geometry("1200x800")
         
         # Create main frames
@@ -150,6 +150,62 @@ class CalibrationApp:
         self.list_item_widgets = []
         self.selected_idx = -1  # Track currently selected index
         self.dose_entries = []
+        
+        # Field flattening data
+        self.flat_field = None
+        self._load_field_flattening()
+    
+    def _load_field_flattening(self):
+        """Load field flattening data if available."""
+        # Look for field_flattening.npz in the current directory (calibration_data)
+        ff_paths = [
+            os.path.join(os.getcwd(), "field_flattening.npz"),
+            os.path.join(os.path.dirname(os.getcwd()), "field_flattening.npz"),
+        ]
+        
+        for ff_path in ff_paths:
+            if os.path.isfile(ff_path):
+                try:
+                    data = np.load(ff_path, allow_pickle=True)
+                    self.flat_field = data['flat_field']
+                    print(f"Loaded field flattening from: {ff_path}")
+                    print(f"  Flat field shape: {self.flat_field.shape}")
+                    return
+                except Exception as e:
+                    print(f"Failed to load field flattening: {e}")
+        
+        print("No field flattening data found - images will not be corrected")
+    
+    def _apply_field_flattening(self, image: np.ndarray) -> np.ndarray:
+        """Apply field flattening correction to an image.
+        
+        Args:
+            image: Input image (H, W, 3) RGB
+            
+        Returns:
+            Corrected image with same dtype
+        """
+        if self.flat_field is None:
+            return image
+        
+        flat = self.flat_field
+        
+        # Resize flat field if needed
+        if flat.shape[:2] != image.shape[:2]:
+            print(f"Resizing flat field from {flat.shape[:2]} to {image.shape[:2]}")
+            flat = cv2.resize(flat, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_LINEAR)
+        
+        orig_dtype = image.dtype
+        mean_per_channel = np.mean(flat, axis=(0, 1), keepdims=True)
+        flat_safe = np.maximum(flat, 1e-6)
+        
+        corrected = image.astype(np.float64) * mean_per_channel / flat_safe
+        
+        if np.issubdtype(orig_dtype, np.integer):
+            max_val = np.iinfo(orig_dtype).max
+            corrected = np.clip(corrected, 0, max_val)
+        
+        return corrected.astype(orig_dtype)
         
     def load_images(self):
         files = filedialog.askopenfilenames(
@@ -454,7 +510,13 @@ class CalibrationApp:
             if len(cv_img.shape) == 3:
                 cv_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
             
+            # Apply field flattening correction if available
+            if self.flat_field is not None:
+                cv_img = self._apply_field_flattening(cv_img)
+                print(f"  Applied field flattening correction")
+            
             # Store the original numpy array for measurements (preserves original bit depth)
+            self.original_image_array = cv_img.copy()
             self.original_image_array = cv_img.copy()
             
             # Detect bit depth from numpy dtype and actual values
