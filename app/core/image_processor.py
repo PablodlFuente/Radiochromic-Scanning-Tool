@@ -1860,19 +1860,35 @@ class ImageProcessor:
         # Apply inverse calibration and compute std_err propagation
         # ------------------------------------------------------------------
         try:
-            # Work on ORIGINAL pixel values (uint8) for derivative computation
-            if self.original_image is None:
-                orig_img = self.current_image.copy()
+            # Use the appropriate image: flattened if flat was applied, otherwise original
+            # This ensures the calibration is applied to the correct pixel values
+            if self.flat_applied and self.flattened_image is not None:
+                source_img = self.flattened_image.copy()
+                logger.debug("Using flattened image for calibration")
+            elif self.original_image is not None:
+                source_img = self.original_image.copy()
+                logger.debug("Using original image for calibration")
             else:
-                orig_img = self.original_image
-            img_uint = orig_img.astype(np.float32)
+                source_img = self.current_image.copy()
+                logger.debug("Using current image for calibration")
+            
+            img_float = source_img.astype(np.float32)
+            
+            # Scale pixel values if image bit depth differs from calibration bit depth
+            calibration_max = (2 ** self.calibration_bit_depth) - 1  # e.g., 255 for 8-bit
+            image_max = self.image_max_value  # e.g., 65535 for 16-bit
+            
+            if image_max != calibration_max and image_max > 0:
+                scale_factor = calibration_max / image_max
+                img_float = img_float * scale_factor
+                logger.info(f"Scaled pixel values from {self.image_bit_depth}-bit to {self.calibration_bit_depth}-bit range for calibration (factor: {scale_factor:.6f})")
 
-            if img_uint.ndim == 2:
+            if img_float.ndim == 2:
                 # Single-channel image – treat as green channel
                 a, b, c = params["G"]
                 sa, sb, sc = param_sigmas.get("G", (0.0, 0.0, 0.0))
-                denom = img_uint - a
-                dose = np.full_like(img_uint, np.nan, dtype=np.float32)
+                denom = img_float - a
+                dose = np.full_like(img_float, np.nan, dtype=np.float32)
                 
                 # Valid domain: denom != 0 AND resulting dose must be physically meaningful
                 # For inverse model dose = c + b/denom, we need denom to have same sign as b
@@ -1880,15 +1896,11 @@ class ImageProcessor:
                 valid = denom != 0
                 dose[valid] = c + b / denom[valid]
                 
-                # Mark negative doses as invalid (physically impossible)
-                invalid_dose = dose < 0
-                if np.any(invalid_dose):
-                    n_invalid = np.sum(invalid_dose)
-                    logger.warning(f"G channel: {n_invalid} pixels ({100*n_invalid/dose.size:.2f}%) have negative dose, marking as NaN")
-                    dose[invalid_dose] = np.nan
+                # No filtering of negative values - keep all dose values as calculated
+                # Negative doses indicate pixels outside the calibration range (e.g., unirradiated film)
 
                 # std_err per-pixel
-                var = np.full_like(img_uint, np.nan, dtype=np.float32)
+                var = np.full_like(img_float, np.nan, dtype=np.float32)
                 valid_final = ~np.isnan(dose)
                 if np.any(valid_final):
                     denom_valid = denom[valid_final]
@@ -1904,14 +1916,32 @@ class ImageProcessor:
                 dose_for_integral = dose  # single-channel
             else:
                 # Colour image – compute dose and variance per channel
-                h, w, _ = img_uint.shape
+                h, w, _ = img_float.shape
                 doses = []
                 vars_ = []
+                
+                # DEBUG: Log calibration parameters and pixel value statistics
+                logger.info(f"=== CALIBRATION DEBUG ===")
+                logger.info(f"Image bit depth: {self.image_bit_depth}, max value: {self.image_max_value}")
+                logger.info(f"Calibration bit depth: {self.calibration_bit_depth}")
+                logger.info(f"Flat applied: {self.flat_applied}")
+                logger.info(f"img_float shape: {img_float.shape}, dtype: {img_float.dtype}")
+                logger.info(f"img_float min/max: {np.min(img_float):.2f} / {np.max(img_float):.2f}")
+                for ch_idx, ch_name in enumerate(("R", "G", "B")):
+                    ch_vals = img_float[:, :, ch_idx]
+                    logger.info(f"  {ch_name} channel: min={np.min(ch_vals):.2f}, max={np.max(ch_vals):.2f}, mean={np.mean(ch_vals):.2f}")
+                    a_param, b_param, c_param = params[ch_name]
+                    logger.info(f"  {ch_name} params: a={a_param:.4f}, b={b_param:.4f}, c={c_param:.4f}")
+                logger.info(f"=========================")
+                
                 for idx, ch in enumerate(("R", "G", "B")):
                     a, b, c = params[ch]
                     sa, sb, sc = param_sigmas.get(ch, (0.0, 0.0, 0.0))
-                    pix = img_uint[:, :, idx]
+                    pix = img_float[:, :, idx]
                     denom = pix - a
+                    
+                    # DEBUG: Log denominator statistics
+                    logger.debug(f"{ch}: denom min={np.min(denom):.2f}, max={np.max(denom):.2f}, zeros={np.sum(denom==0)}")
                     
                     dose_ch = np.full((h, w), np.nan, dtype=np.float32)
                     var_ch = np.full((h, w), np.nan, dtype=np.float32)
@@ -1920,12 +1950,15 @@ class ImageProcessor:
                     valid = denom != 0
                     dose_ch[valid] = c + b / denom[valid]
                     
-                    # Mark negative doses as invalid (physically impossible)
-                    invalid_dose = dose_ch < 0
-                    if np.any(invalid_dose):
-                        n_invalid = np.sum(invalid_dose)
-                        logger.warning(f"{ch} channel: {n_invalid} pixels ({100*n_invalid/dose_ch.size:.2f}%) have negative dose, marking as NaN")
-                        dose_ch[invalid_dose] = np.nan
+                    # DEBUG: Log dose statistics
+                    valid_doses = dose_ch[~np.isnan(dose_ch)]
+                    if len(valid_doses) > 0:
+                        logger.info(f"{ch}: dose stats: min={np.min(valid_doses):.4f}, max={np.max(valid_doses):.4f}, mean={np.mean(valid_doses):.4f}")
+                    else:
+                        logger.warning(f"{ch}: ALL doses are NaN after initial calculation!")
+                    
+                    # No filtering of negative values - keep all dose values as calculated
+                    # Negative doses indicate pixels outside the calibration range (e.g., unirradiated film)
                     
                     # Variance via error propagation (only for valid pixels)
                     valid_final = ~np.isnan(dose_ch)
@@ -2355,27 +2388,29 @@ class ImageProcessor:
         if np.issubdtype(np_image.dtype, np.bool_):
             return np_image.astype(np.uint8) * 255
 
-        # For integer images (16-bit, 32-bit, etc.), scale using the known max value
+        # For integer images (16-bit, 32-bit, etc.), scale using dtype's theoretical max
+        # This ensures consistent display regardless of image processing (e.g., flat field correction)
         if np.issubdtype(np_image.dtype, np.integer):
-            # Use the image_max_value if available, otherwise calculate from dtype
-            if hasattr(self, 'image_max_value') and self.image_max_value > 0:
-                max_val = self.image_max_value
+            # Use theoretical max for dtype (not detected max) to avoid display issues
+            # after processing steps like flat field correction that may change value range
+            if np_image.dtype == np.uint16:
+                max_val = 65535
+            elif np_image.dtype == np.int16:
+                # Shift signed to unsigned range
+                np_image = np_image.astype(np.int32) + 32768
+                max_val = 65535
+            elif np_image.dtype == np.uint32:
+                max_val = np.iinfo(np.uint32).max
+            elif np_image.dtype == np.uint8:
+                max_val = 255
             else:
-                # Fallback: use theoretical max for dtype
-                if np_image.dtype == np.uint16:
-                    max_val = 65535
-                elif np_image.dtype == np.int16:
-                    # Shift signed to unsigned range
-                    np_image = np_image.astype(np.int32) + 32768
-                    max_val = 65535
-                elif np_image.dtype == np.uint32:
-                    max_val = np.max(np_image) if np.max(np_image) > 0 else 1
-                else:
-                    max_val = np.max(np_image) if np.max(np_image) > 0 else 255
+                # For other integer types, use actual max with fallback
+                max_val = max(np.max(np_image), 1)
             
-            # Scale to 8-bit
+            # Scale to 8-bit with proper clipping to avoid overflow
             scale_factor = 255.0 / max_val
-            return (np_image * scale_factor).astype(np.uint8)
+            scaled = np_image.astype(np.float64) * scale_factor
+            return np.clip(scaled, 0, 255).astype(np.uint8)
 
         # Float images: assume 0-1 range or normalize if outside
         if np.issubdtype(np_image.dtype, np.floating):
@@ -2531,6 +2566,11 @@ class ImageProcessor:
         - Warns if resize is needed (reduces correction accuracy)
         - Preserves full dynamic range
         - Handles both integer and float images correctly
+        
+        The flat field is stored NORMALIZED (mean=1.0 per channel).
+        The original mean values are stored separately in flat_field_info.
+        Correction formula: corrected = image * original_mean / (normalized_flat * original_mean)
+                                       = image / normalized_flat
         """
         flat = self.flat_field
         
@@ -2543,19 +2583,10 @@ class ImageProcessor:
             )
             # Use bilinear interpolation to resize flat field
             flat = cv2.resize(flat, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_LINEAR)
-            
-            # When resizing, we should also recalculate mean from resized flat
-            # to maintain mathematical consistency (image * mean / flat = mean when image == flat)
-            mean_per_channel = np.mean(flat, axis=(0, 1), keepdims=True)
-            logger.info(f"Recalculated mean from resized flat field: {mean_per_channel.flatten()}")
-        else:
-            # Use the mean from when the flat field was created (stored in npz)
-            # This ensures that applying flat to the same image gives a perfectly uniform result
-            if self.flat_field_info and self.flat_field_info.get('mean_per_channel'):
-                mean_per_channel = np.array(self.flat_field_info['mean_per_channel']).reshape(1, 1, 3)
-            else:
-                # Fallback: compute mean from flat field
-                mean_per_channel = np.mean(flat, axis=(0, 1), keepdims=True)
+
+        # For normalized flat field (mean ~= 1.0), the correction is simply: image / flat
+        # This is because: corrected = image * original_mean / (flat * original_mean) = image / flat
+        # where flat = original_image / original_mean (normalized)
 
         # Store original dtype and determine value range
         orig_dtype = image.dtype
@@ -2576,12 +2607,12 @@ class ImageProcessor:
                 max_val = actual_max * 1.1  # Allow some headroom
             logger.debug(f"Float image detected, using max_val={max_val} for clipping")
         
-        # Prevent division by zero with epsilon relative to data range
-        epsilon = max_val * 1e-9 if max_val > 0 else 1e-9
+        # Prevent division by zero with epsilon (flat is normalized ~1.0, so use small epsilon)
+        epsilon = 1e-9
         flat_safe = np.maximum(flat.astype(np.float64), epsilon)
         
-        # Apply correction: corrected = image * mean / flat
-        corrected = image.astype(np.float64) * mean_per_channel / flat_safe
+        # Apply correction: corrected = image / flat (since flat is normalized with mean=1)
+        corrected = image.astype(np.float64) / flat_safe
         
         # Clip to valid range
         corrected = np.clip(corrected, 0, max_val)

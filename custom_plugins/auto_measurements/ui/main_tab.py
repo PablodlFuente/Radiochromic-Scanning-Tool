@@ -1223,14 +1223,21 @@ class AutoMeasurementsTab(ttk.Frame):
         self.global_ctr_label.config(text=f"Global CTR: {circle_name} ({film_name})")
         
         # Clear per-film CTR: remove visual markers from all previous CTR circles
-        for old_film_name, old_ctr_id in list(self.ctr_manager.ctr_map.items()):
-            if self.tree.exists(old_ctr_id):
-                # Remove "(CTR)" from text
-                old_text = self.tree.item(old_ctr_id, "text")
+        # ctr_map is now {film_name: [list of item_ids]}
+        for old_film_name, old_ctr_ids in list(self.ctr_manager.ctr_map.items()):
+            if isinstance(old_ctr_ids, list):
+                for old_ctr_id in old_ctr_ids:
+                    if self.tree.exists(old_ctr_id):
+                        old_text = self.tree.item(old_ctr_id, "text")
+                        if "(CTR)" in old_text:
+                            self.tree.item(old_ctr_id, text=old_text.replace(" (CTR)", ""))
+                        self.tree.item(old_ctr_id, tags=())
+            elif self.tree.exists(old_ctr_ids):
+                # Backward compatibility: single item_id
+                old_text = self.tree.item(old_ctr_ids, "text")
                 if "(CTR)" in old_text:
-                    self.tree.item(old_ctr_id, text=old_text.replace(" (CTR)", ""))
-                # Remove ctr tag
-                self.tree.item(old_ctr_id, tags=())
+                    self.tree.item(old_ctr_ids, text=old_text.replace(" (CTR)", ""))
+                self.tree.item(old_ctr_ids, tags=())
         
         # Clear per-film CTR map when global CTR is set
         self.ctr_manager.ctr_map.clear()
@@ -1338,27 +1345,15 @@ class AutoMeasurementsTab(ttk.Frame):
         except (ValueError, TypeError):
             ctr_unc = 0.0
         
-        if ctr_avg <= 0:
-            return
+        # Don't skip if ctr_avg is 0 - we still want to apply the subtraction
+        # (user may have a zero-dose control)
         
         # Iterate over ALL films in the TreeView
         for film_id in self.tree.get_children():
+            film_name = self.tree.item(film_id, "text")
+            
             # Iterate over all circles in this film
             for circle_id in self.tree.get_children(film_id):
-                if circle_id == global_ctr_item_id:
-                    # Global CTR circle: set avg to 0 but keep uncertainty
-                    orig_data = self.ctr_manager.original_measurements.get(circle_id)
-                    if orig_data:
-                        ci95_str = f"±{ctr_unc * 1.96:.4f}" if ctr_unc > 0 else ""
-                        self.tree.item(circle_id, values=(
-                            orig_data["dose"],
-                            orig_data["std"],
-                            "0.00",
-                            f"±{ctr_unc:.4f}" if ctr_unc > 0 else orig_data["avg_unc"],
-                            ci95_str
-                        ))
-                    continue
-                
                 # Get original measurement data
                 orig_data = self.ctr_manager.original_measurements.get(circle_id)
                 if not orig_data:
@@ -1373,7 +1368,8 @@ class AutoMeasurementsTab(ttk.Frame):
                     continue
                 
                 # Subtract CTR with proper error propagation: σ_corrected = √(σ_orig² + σ_ctr²)
-                corrected_avg = max(0.0, orig_avg - ctr_avg)
+                # All circles (including Global CTR itself) get the same treatment
+                corrected_avg = orig_avg - ctr_avg  # Can be negative
                 corrected_unc = sqrt(orig_unc**2 + ctr_unc**2)
                 ci95_value = corrected_unc * 1.96
                 
@@ -1387,7 +1383,6 @@ class AutoMeasurementsTab(ttk.Frame):
                 ))
                 
                 # Also update results list for CSV export
-                film_name = self.tree.item(film_id, "text")
                 circle_name = self.tree.item(circle_id, "text").replace(" (CTR)", "").replace(" (GLOBAL CTR)", "")
                 for result in self.results:
                     if result.get("film") == film_name and result.get("circle") == circle_name:
@@ -1729,24 +1724,32 @@ class AutoMeasurementsTab(ttk.Frame):
             _get_parent_module()._OVERLAY['circles'] = new_circles
         
         # Rebuild ctr_map using names from _ctr_map_by_name
+        # _ctr_map_by_name is {film_name: [list of circle_names]} or {film_name: circle_name} (old format)
         if hasattr(self, '_ctr_map_by_name') and self._ctr_map_by_name:
             new_ctr_map = {}
-            for film_name, circle_name_with_ctr in self._ctr_map_by_name.items():
-                # Find the film and circle IDs
+            for film_name, circle_names in self._ctr_map_by_name.items():
+                # Handle both old format (single name) and new format (list of names)
+                if not isinstance(circle_names, list):
+                    circle_names = [circle_names]
+                
                 if film_name in films:
                     film_id = films[film_name]
-                    for child_id in self.tree.get_children(film_id):
-                        child_name = self.tree.item(child_id, 'text')
-                        # Remove " (CTR)" suffix if present for comparison
-                        child_name_clean = child_name.replace(" (CTR)", "")
-                        if child_name_clean == circle_name_with_ctr:
-                            new_ctr_map[film_name] = child_id
-                            # Mark as CTR in TreeView
-                            if "(CTR)" not in child_name:
-                                self.tree.item(child_id, text=f"{child_name_clean} (CTR)")
-                            self.tree.item(child_id, tags=("ctr",))
-                            logging.debug(f"[_update_treeview] Marked {child_name_clean} as CTR from _ctr_map_by_name")
-                            break
+                    ctr_ids = []
+                    for circle_name_with_ctr in circle_names:
+                        for child_id in self.tree.get_children(film_id):
+                            child_name = self.tree.item(child_id, 'text')
+                            # Remove " (CTR)" suffix if present for comparison
+                            child_name_clean = child_name.replace(" (CTR)", "")
+                            if child_name_clean == circle_name_with_ctr:
+                                ctr_ids.append(child_id)
+                                # Mark as CTR in TreeView
+                                if "(CTR)" not in child_name:
+                                    self.tree.item(child_id, text=f"{child_name_clean} (CTR)")
+                                self.tree.item(child_id, tags=("ctr",))
+                                logging.debug(f"[_update_treeview] Marked {child_name_clean} as CTR from _ctr_map_by_name")
+                                break
+                    if ctr_ids:
+                        new_ctr_map[film_name] = ctr_ids
             self.ctr_map = new_ctr_map
             # Clear temporary storage
             del self._ctr_map_by_name
@@ -1758,21 +1761,32 @@ class AutoMeasurementsTab(ttk.Frame):
             logging.debug(f"[_update_treeview] Found CTR in _OVERLAY: {list(overlay_ctr.keys())}")
             
             # For each film that has CTR in overlay
-            for film_name in overlay_ctr.keys():
+            for film_name, overlay_ctr_ids in overlay_ctr.items():
                 if film_name in films and film_name not in self.ctr_map:
                     film_id = films[film_name]
                     # Get children circles
                     children = list(self.tree.get_children(film_id))
                     if children:
-                        # Mark first circle as CTR (simplest approach for manual case)
-                        # In practice, there should only be one circle per manually added film
-                        first_circle_id = children[0]
-                        circle_name = self.tree.item(first_circle_id, 'text').replace(" (CTR)", "")
-                        
-                        # Update ctr_map and TreeView
-                        self.ctr_map[film_name] = first_circle_id
-                        self.tree.item(first_circle_id, text=f"{circle_name} (CTR)")
-                        self.tree.item(first_circle_id, tags=("ctr",))
+                        # Handle both old format (single id) and new format (list of ids)
+                        if isinstance(overlay_ctr_ids, list):
+                            ctr_ids = []
+                            for ctr_id in overlay_ctr_ids:
+                                if ctr_id in children:
+                                    ctr_ids.append(ctr_id)
+                                    circle_name = self.tree.item(ctr_id, 'text').replace(" (CTR)", "")
+                                    self.tree.item(ctr_id, text=f"{circle_name} (CTR)")
+                                    self.tree.item(ctr_id, tags=("ctr",))
+                                    logging.info(f"[_update_treeview] Restored CTR marker for {circle_name} in {film_name} from _OVERLAY")
+                            if ctr_ids:
+                                self.ctr_map[film_name] = ctr_ids
+                        else:
+                            # Old format: single item ID
+                            first_circle_id = children[0]
+                            circle_name = self.tree.item(first_circle_id, 'text').replace(" (CTR)", "")
+                            self.ctr_map[film_name] = [first_circle_id]
+                            self.tree.item(first_circle_id, text=f"{circle_name} (CTR)")
+                            self.tree.item(first_circle_id, tags=("ctr",))
+                            logging.info(f"[_update_treeview] Restored CTR marker for {circle_name} in {film_name} from _OVERLAY")
                         logging.info(f"[_update_treeview] Restored CTR marker for {circle_name} in {film_name} from _OVERLAY")
             
         # Open all film nodes

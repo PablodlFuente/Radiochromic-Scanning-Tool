@@ -6,13 +6,16 @@ and connects the various components.
 """
 
 import tkinter as tk
+from tkinter import messagebox
 import logging
 import os
 import glob
 import tempfile
 import shutil
+import threading
 from app.ui.main_window import MainWindow
 from app.utils.config_manager import ConfigManager
+from app.utils.updater import UpdateChecker
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +50,33 @@ class RCAnalyzer(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         
         logger.info("RCAnalyzer initialization complete")
+        
+        # Check for updates on startup if enabled (after mainloop starts)
+        if self.app_config.get("check_updates_on_startup", True):
+            self.after(1500, self._check_updates_on_startup)
+    
+    def _check_updates_on_startup(self):
+        """Check for updates in background and notify user if available."""
+        def check_updates():
+            try:
+                checker = UpdateChecker()
+                result = checker.check_for_updates()
+                
+                if result.get('success') and result.get('has_updates'):
+                    commits_behind = result.get('commits_behind', 0)
+                    # Show notification on main thread
+                    self.after(0, lambda: self._show_update_notification(commits_behind))
+            except Exception as e:
+                logger.warning(f"Error checking for updates on startup: {e}")
+        
+        # Run in background thread to not block UI
+        thread = threading.Thread(target=check_updates, daemon=True)
+        thread.start()
+    
+    def _show_update_notification(self, commits_behind):
+        """Show update notification dialog."""
+        msg = f"A new version is available!\n\n{commits_behind} update(s) available.\n\nGo to Help → Check for Updates to update."
+        messagebox.showinfo("Update Available", msg, parent=self)
     
     def _cleanup_files(self):
         """Clean up log and temporary files."""

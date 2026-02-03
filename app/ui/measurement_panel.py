@@ -267,6 +267,15 @@ class MeasurementPanel:
         )
         self.view_2d_button.pack(side=tk.LEFT, padx=5)
         
+        # See in Calibration button - shows where current pixel value falls on calibration curve
+        self.see_calibration_button = ttk.Button(
+            self.viz_buttons_frame,
+            text="See in Calibration",
+            command=self._show_calibration_curve,
+            state=tk.DISABLED  # Initially disabled
+        )
+        self.see_calibration_button.pack(side=tk.LEFT, padx=5)
+        
         # Interactive Graph button (only for line measurements)
         self.interactive_graph_button = ttk.Button(
             self.viz_buttons_frame,
@@ -551,6 +560,7 @@ class MeasurementPanel:
             # Disable view buttons
             self.view_3d_button.config(state=tk.DISABLED)
             self.view_2d_button.config(state=tk.DISABLED)
+            self.see_calibration_button.config(state=tk.DISABLED)
             
             # Clear measurement data
             self.current_measurement_data = None
@@ -587,6 +597,7 @@ class MeasurementPanel:
             self.pixel_count_label.config(text="Pixels: --")
             self.view_3d_button.config(state=tk.DISABLED)
             self.view_2d_button.config(state=tk.DISABLED)
+            self.see_calibration_button.config(state=tk.DISABLED)
             self.interactive_graph_button.config(state=tk.DISABLED)
             self._clear_histogram()
             self.current_measurement_data = None
@@ -639,6 +650,12 @@ class MeasurementPanel:
             else:
                 self.view_3d_button.config(state=tk.NORMAL)
                 self.view_2d_button.config(state=tk.NORMAL)
+            
+            # Enable calibration button if calibration is available
+            if self.image_processor.has_calibration():
+                self.see_calibration_button.config(state=tk.NORMAL)
+            else:
+                self.see_calibration_button.config(state=tk.DISABLED)
         else:
             # Grayscale value
             self.average_label.config(text=f"Average: {average:.2f}")
@@ -860,6 +877,129 @@ class MeasurementPanel:
         self.viz_fig.clear()
         self.viz_canvas.draw()
     
+    def _show_calibration_curve(self):
+        """Show calibration curve with current measurement point highlighted."""
+        if not self.has_valid_measurement:
+            return
+        
+        # Get calibration parameters
+        import csv
+        import os
+        
+        csv_path = self.image_processor._find_fit_parameters_file()
+        if csv_path is None:
+            import tkinter.messagebox as messagebox
+            messagebox.showerror("Error", "No calibration file found (fit_parameters.csv)")
+            return
+        
+        # Parse calibration parameters
+        params = {}
+        try:
+            with open(csv_path, newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    ch = row.get("Channel", "").strip().upper()
+                    if ch in ("R", "G", "B"):
+                        a = float(row.get("a", "nan"))
+                        b = float(row.get("b", "nan"))
+                        c = float(row.get("c", "nan"))
+                        params[ch] = (a, b, c)
+        except Exception as e:
+            import tkinter.messagebox as messagebox
+            messagebox.showerror("Error", f"Failed to read calibration file: {e}")
+            return
+        
+        if not all(ch in params for ch in ("R", "G", "B")):
+            import tkinter.messagebox as messagebox
+            messagebox.showerror("Error", "Incomplete calibration parameters")
+            return
+        
+        # Get current pixel values from measurement
+        raw_data = self.image_processor.get_last_measurement_raw_data()
+        if raw_data is None or len(raw_data) == 0:
+            return
+        
+        # Calculate mean pixel values for each channel
+        if len(raw_data.shape) == 2 and raw_data.shape[1] == 3:
+            # Scale pixel values to calibration bit depth if needed
+            calibration_max = (2 ** self.image_processor.calibration_bit_depth) - 1
+            image_max = self.image_processor.image_max_value
+            scale = calibration_max / image_max if image_max > 0 and image_max != calibration_max else 1.0
+            
+            mean_pixels = np.mean(raw_data, axis=0) * scale
+        else:
+            return
+        
+        # Create window for calibration curves
+        view_window = tk.Toplevel(self.frame)
+        view_window.title("Calibration Curves - Current Measurement Position")
+        view_window.geometry("1200x500")
+        
+        fig = Figure(figsize=(12, 5), dpi=100)
+        
+        colors = {'R': 'red', 'G': 'green', 'B': 'blue'}
+        channel_names = {'R': 'Red', 'G': 'Green', 'B': 'Blue'}
+        
+        for idx, ch in enumerate(('R', 'G', 'B')):
+            ax = fig.add_subplot(1, 3, idx + 1)
+            
+            a, b, c = params[ch]
+            current_pixel = mean_pixels[idx]
+            
+            # Generate curve: pixel = a + b / (dose - c)
+            # So dose = c + b / (pixel - a)
+            # We plot pixel (y) vs dose (x)
+            
+            # Generate dose range
+            dose_range = np.linspace(0.01, 50, 500)
+            pixel_values = a + b / (dose_range - c)
+            
+            # Filter valid pixel range (0 to calibration max)
+            valid_mask = (pixel_values >= 0) & (pixel_values <= calibration_max)
+            dose_valid = dose_range[valid_mask]
+            pixel_valid = pixel_values[valid_mask]
+            
+            # Plot calibration curve
+            ax.plot(dose_valid, pixel_valid, color=colors[ch], linewidth=2, label='Calibration curve')
+            
+            # Calculate dose for current pixel
+            denom = current_pixel - a
+            if abs(denom) > 1e-6:
+                current_dose = c + b / denom
+            else:
+                current_dose = np.nan
+            
+            # Plot current measurement point
+            ax.scatter([current_dose], [current_pixel], color='black', s=100, zorder=5, 
+                       marker='o', edgecolors='white', linewidths=2,
+                       label=f'Current: {current_dose:.2f} Gy')
+            
+            # Add horizontal and vertical lines to show position
+            if not np.isnan(current_dose):
+                ax.axhline(y=current_pixel, color='gray', linestyle='--', alpha=0.5)
+                ax.axvline(x=current_dose, color='gray', linestyle='--', alpha=0.5)
+            
+            # Labels and formatting
+            ax.set_xlabel('Dose (Gy)')
+            ax.set_ylabel('Pixel Value')
+            ax.set_title(f'{channel_names[ch]} Channel\nPixel={current_pixel:.1f} → Dose={current_dose:.2f} Gy')
+            ax.legend(loc='upper right')
+            ax.grid(True, alpha=0.3)
+            
+            # Set axis limits
+            ax.set_xlim(-5, 30)
+            ax.set_ylim(0, calibration_max)
+        
+        fig.tight_layout()
+        
+        # Add canvas to window
+        canvas = FigureCanvasTkAgg(fig, master=view_window)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        
+        # Add close button
+        ttk.Button(view_window, text="Close", command=view_window.destroy).pack(pady=10)
+
     def _show_3d_view(self):
         """Show 3D view of RGB channels."""
         # Check if we have valid measurement data

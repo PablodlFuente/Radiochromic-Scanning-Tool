@@ -86,6 +86,8 @@ class MainWindow:
         self.calibration_menu.add_separator()
         self.calibration_menu.add_command(label="Calibrate Scanner", 
                                          command=self.start_calibration_wizard)
+        self.calibration_menu.add_command(label="Update Scanner Flatness", 
+                                         command=self.start_flatness_wizard)
         self.calibration_menu.add_separator()
         
         # Toggle for field flattening (independent)
@@ -812,6 +814,32 @@ class MainWindow:
             variable=detailed_logging_var
         ).pack(anchor=tk.W, padx=10, pady=5)
         
+        # Updates section
+        ttk.Label(
+            main_frame, 
+            text="Updates", 
+            font=("Arial", 11, "bold")
+        ).pack(anchor=tk.W, pady=(20, 5))
+        
+        # Check for updates on startup
+        check_updates_startup_var = tk.BooleanVar(
+            value=self.app_config.get("check_updates_on_startup", True)
+        )
+        
+        ttk.Checkbutton(
+            main_frame, 
+            text="Check for updates when application starts", 
+            variable=check_updates_startup_var
+        ).pack(anchor=tk.W, padx=10, pady=5)
+        
+        ttk.Label(
+            main_frame,
+            text="When enabled, the application will check GitHub for new versions on startup.",
+            foreground="gray",
+            justify=tk.LEFT,
+            font=("Arial", 9)
+        ).pack(anchor=tk.W, padx=10, pady=(0, 10))
+        
         # Buttons
         button_frame = ttk.Frame(main_frame)
         button_frame.pack(fill=tk.X, pady=20)
@@ -830,6 +858,7 @@ class MainWindow:
             self.app_config["detailed_logging"] = detailed_logging_var.get()
             self.app_config["uncertainty_estimation_method"] = uncertainty_method_var.get()
             self.app_config["calibration_folder"] = calibration_folder_var.get()
+            self.app_config["check_updates_on_startup"] = check_updates_startup_var.get()
             
             # Save configuration to file
             try:
@@ -989,6 +1018,18 @@ class MainWindow:
         # Create the wizard window (modal), passing the current config for consistency
         ScannerCalibrationWizard(self.parent, app_config=self.app_config)
         # No further action for now – the wizard handles its own lifecycle
+    
+    def start_flatness_wizard(self):
+        """Start the scanner flatness update wizard (field flattening only)."""
+        try:
+            from app.ui.calibration_wizard import ScannerCalibrationWizard
+        except Exception as exc:
+            messagebox.showerror("Update Scanner Flatness", f"Could not open the wizard:\n{exc}")
+            logger.error("Failed to launch flatness wizard", exc_info=True)
+            return
+
+        # Create the wizard in flatness_only mode
+        ScannerCalibrationWizard(self.parent, app_config=self.app_config, flatness_only=True)
     
     def _reapply_corrections(self):
         """Reapply flat and/or dose corrections based on current checkbox states.

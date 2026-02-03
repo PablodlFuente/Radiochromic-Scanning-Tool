@@ -154,11 +154,22 @@ def process(image: np.ndarray):
     global_ctr_coords = None
     
     if "ctr_map" in _OVERLAY and "item_to_shape" in _OVERLAY:
-        for ctr_item_id in _OVERLAY["ctr_map"].values():
-            if ctr_item_id in _OVERLAY["item_to_shape"]:
-                shape_info = _OVERLAY["item_to_shape"][ctr_item_id]
-                if shape_info[0] == "circle":
-                    ctr_coords.add(tuple(shape_info[1:]))
+        # ctr_map is now {film_name: [list of item_ids]}
+        for ctr_item_ids in _OVERLAY["ctr_map"].values():
+            # Handle both old format (single id) and new format (list of ids)
+            if isinstance(ctr_item_ids, list):
+                for ctr_item_id in ctr_item_ids:
+                    if ctr_item_id in _OVERLAY["item_to_shape"]:
+                        shape_info = _OVERLAY["item_to_shape"][ctr_item_id]
+                        if shape_info[0] == "circle":
+                            ctr_coords.add(tuple(shape_info[1:]))
+            else:
+                # Backward compatibility: single item_id
+                ctr_item_id = ctr_item_ids
+                if ctr_item_id in _OVERLAY["item_to_shape"]:
+                    shape_info = _OVERLAY["item_to_shape"][ctr_item_id]
+                    if shape_info[0] == "circle":
+                        ctr_coords.add(tuple(shape_info[1:]))
     
     # Check for global CTR
     if "global_ctr" in _OVERLAY and _OVERLAY["global_ctr"]:

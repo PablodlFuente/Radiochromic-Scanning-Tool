@@ -16,7 +16,11 @@ from .formatter import MeasurementFormatter
 
 
 class CTRManager:
-    """Manages CTR (Control) circle functionality for background subtraction."""
+    """Manages CTR (Control) circle functionality for background subtraction.
+    
+    Supports multiple CTR circles per film - when multiple are selected,
+    their values are averaged with proper uncertainty propagation.
+    """
     
     def __init__(self, tree_widget, formatter: MeasurementFormatter):
         """Initialize CTR manager.
@@ -27,7 +31,7 @@ class CTRManager:
         """
         self.tree = tree_widget
         self.formatter = formatter
-        self.ctr_map = {}  # {film_name: ctr_item_id}
+        self.ctr_map = {}  # {film_name: [list of ctr_item_ids]} - supports multiple CTRs per film
         self.original_measurements = {}  # {item_id: {dose, std, avg, avg_unc}}
     
     def store_original_measurement(self, item_id: str, dose_str: str, std_str: str, 
@@ -44,6 +48,9 @@ class CTRManager:
                            update_callback=None) -> bool:
         """Toggle CTR status for a specific item.
         
+        Supports multiple CTR circles per film. When multiple CTRs are selected,
+        their values will be averaged with proper uncertainty propagation.
+        
         Args:
             item_id: Tree item ID
             film_name: Name of the film containing the circle
@@ -53,10 +60,18 @@ class CTRManager:
         Returns:
             True if CTR was added, False if removed
         """
+        # Initialize list for this film if not exists
+        if film_name not in self.ctr_map:
+            self.ctr_map[film_name] = []
+        
         # Check if this circle is already CTR
-        if self.ctr_map.get(film_name) == item_id:
+        if item_id in self.ctr_map[film_name]:
             # Remove CTR status
-            self.ctr_map.pop(film_name, None)
+            self.ctr_map[film_name].remove(item_id)
+            # Clean up empty lists
+            if not self.ctr_map[film_name]:
+                del self.ctr_map[film_name]
+                
             current_text = self.tree.item(item_id, "text")
             if "(CTR)" in current_text:
                 new_text = current_text.replace(" (CTR)", "")
@@ -70,21 +85,8 @@ class CTRManager:
                 update_callback()
             return False
         else:
-            # Remove existing CTR if any
-            if film_name in self.ctr_map:
-                old_ctr_id = self.ctr_map[film_name]
-                if self.tree.exists(old_ctr_id):
-                    old_text = self.tree.item(old_ctr_id, "text")
-                    if "(CTR)" in old_text:
-                        self.tree.item(old_ctr_id, text=old_text.replace(" (CTR)", ""))
-                    self.tree.item(old_ctr_id, tags=())
-                    
-                    # Restore original values for the old CTR
-                    if old_ctr_id in self.original_measurements:
-                        self._restore_item_values(old_ctr_id)
-            
-            # Set new CTR
-            self.ctr_map[film_name] = item_id
+            # Add new CTR to the list (allows multiple CTRs per film)
+            self.ctr_map[film_name].append(item_id)
             current_text = self.tree.item(item_id, "text")
             if "(CTR)" not in current_text:
                 self.tree.item(item_id, text=f"{current_text} (CTR)")
@@ -135,15 +137,89 @@ class CTRManager:
         
         if ctr_candidate:
             circle_id = ctr_candidate["circle_id"]
-            self.ctr_map[film_name] = circle_id
+            # Initialize list if not exists
+            if film_name not in self.ctr_map:
+                self.ctr_map[film_name] = []
+            # Add to list (only if not already there)
+            if circle_id not in self.ctr_map[film_name]:
+                self.ctr_map[film_name].append(circle_id)
             current_text = self.tree.item(circle_id, "text")
             self.tree.item(circle_id, text=f"{current_text} (CTR)")
             self.tree.item(circle_id, tags=("ctr",))
             return True
         return False
     
+    def _compute_averaged_ctr(self, film_name: str, ctr_ids: list, results_lookup: dict) -> Tuple[float, float]:
+        """Compute averaged CTR value and uncertainty from multiple CTR circles.
+        
+        When multiple CTR circles are selected, computes:
+        - Average CTR value (mean of all CTR values)
+        - Combined uncertainty using error propagation (std dev of means + propagated uncertainties)
+        
+        Args:
+            film_name: Name of the film
+            ctr_ids: List of CTR item IDs
+            results_lookup: Dictionary for fast result lookup
+            
+        Returns:
+            Tuple of (averaged_ctr_value, combined_uncertainty)
+        """
+        ctr_values = []
+        ctr_uncertainties = []
+        
+        for ctr_id in ctr_ids:
+            if not self.tree.exists(ctr_id):
+                continue
+                
+            ctr_orig_data = self.original_measurements.get(ctr_id)
+            if not ctr_orig_data:
+                continue
+            
+            ctr_circle_name = self.tree.item(ctr_id, 'text').replace(" (CTR)", "").replace(" (GLOBAL CTR)", "")
+            ctr_result = results_lookup.get((film_name, ctr_circle_name))
+            
+            if ctr_result:
+                ctr_avg = ctr_result.get('avg_original', ctr_result.get('avg_numeric', ctr_result.get('avg', 0)))
+                ctr_unc = ctr_result.get('avg_unc_original', ctr_result.get('avg_unc_numeric', ctr_result.get('avg_unc', 0)))
+            else:
+                ctr_avg = self.formatter.clean_numeric_string(ctr_orig_data["avg"])
+                ctr_unc = self.formatter.clean_numeric_string(ctr_orig_data["avg_unc"])
+            
+            if ctr_avg is not None:
+                ctr_values.append(float(ctr_avg))
+                ctr_uncertainties.append(float(ctr_unc) if ctr_unc else 0.0)
+        
+        if not ctr_values:
+            return 0.0, 0.0
+        
+        if len(ctr_values) == 1:
+            return ctr_values[0], ctr_uncertainties[0]
+        
+        # Multiple CTRs: compute average and combined uncertainty
+        import numpy as np
+        ctr_mean = np.mean(ctr_values)
+        
+        # Combined uncertainty: sqrt(std_dev_of_means^2 + mean_of_individual_uncertainties^2)
+        # This accounts for both the spread between CTR circles AND their individual uncertainties
+        std_of_values = np.std(ctr_values, ddof=1) if len(ctr_values) > 1 else 0.0
+        mean_unc = np.mean(ctr_uncertainties)
+        
+        # Error propagation: combine uncertainty from averaging and individual measurement uncertainties
+        # SE of mean = std / sqrt(n) for the spread between CTR values
+        se_of_mean = std_of_values / sqrt(len(ctr_values))
+        # Propagated uncertainty from individual measurements
+        propagated_unc = sqrt(sum(u**2 for u in ctr_uncertainties)) / len(ctr_uncertainties)
+        
+        # Total uncertainty: quadrature sum
+        combined_unc = sqrt(se_of_mean**2 + propagated_unc**2)
+        
+        return float(ctr_mean), float(combined_unc)
+    
     def apply_ctr_subtraction(self, results_list: list) -> None:
         """Apply CTR subtraction to all circles in films with CTR.
+        
+        Supports multiple CTR circles per film - their values are averaged
+        with proper uncertainty propagation.
         
         Args:
             results_list: List of result dictionaries to update with CTR-corrected values
@@ -159,35 +235,24 @@ class CTRManager:
                 key = (result['film'], result['circle'].replace(" (CTR)", "").replace(" (GLOBAL CTR)", ""))
                 results_lookup[key] = result
         
-        for film_name, ctr_id in self.ctr_map.items():
-            if not self.tree.exists(ctr_id):
+        for film_name, ctr_ids in self.ctr_map.items():
+            # ctr_ids is now a list of CTR item IDs
+            if not ctr_ids:
                 continue
             
-            # Get CTR measurement data FROM ORIGINAL STORAGE (not potentially modified results)
-            ctr_orig_data = self.original_measurements.get(ctr_id)
-            if not ctr_orig_data:
-                continue
-            
-            # Get CTR circle name for matching in results
-            ctr_circle_name = self.tree.item(ctr_id, 'text').replace(" (CTR)", "").replace(" (GLOBAL CTR)", "")
-            
-            # CRITICAL: Get CTR values from ORIGINAL data, not from potentially modified results
-            # Use avg_original if it exists (means CTR was applied before), else use avg_numeric
-            ctr_result = results_lookup.get((film_name, ctr_circle_name))
-            if ctr_result:
-                # Prefer original values to avoid cumulative error
-                ctr_avg = ctr_result.get('avg_original', ctr_result.get('avg_numeric', ctr_result.get('avg')))
-                ctr_unc = ctr_result.get('avg_unc_original', ctr_result.get('avg_unc_numeric', ctr_result.get('avg_unc')))
-            else:
-                # Fall back to stored original_measurements (always clean)
-                ctr_avg = self.formatter.clean_numeric_string(ctr_orig_data["avg"])
-                ctr_unc = self.formatter.clean_numeric_string(ctr_orig_data["avg_unc"])
+            # Compute averaged CTR value from all CTR circles in this film
+            ctr_avg, ctr_unc = self._compute_averaged_ctr(film_name, ctr_ids, results_lookup)
             
             if ctr_avg == 0.0 and ctr_unc == 0.0:
                 continue
             
-            # Find parent film
-            film_id = self.tree.parent(ctr_id)
+            # Find parent film from first valid CTR
+            film_id = None
+            for ctr_id in ctr_ids:
+                if self.tree.exists(ctr_id):
+                    film_id = self.tree.parent(ctr_id)
+                    break
+            
             if not film_id:
                 continue
             
@@ -204,62 +269,48 @@ class CTRManager:
                 circle_name = self.tree.item(circle_id, 'text').replace(" (CTR)", "").replace(" (GLOBAL CTR)", "")
                 
                 # CRITICAL: Get ORIGINAL values, not potentially modified ones
-                # This prevents cumulative error when toggling CTR on/off multiple times
                 result = results_lookup.get((film_name, circle_name))
                 if result:
-                    # Prefer avg_original (stored before any CTR modification)
                     orig_avg = result.get('avg_original', result.get('avg_numeric', result.get('avg')))
                     orig_unc = result.get('avg_unc_original', result.get('avg_unc_numeric', result.get('avg_unc')))
                 else:
-                    # Fall back to stored original_measurements (always clean)
                     orig_avg = self.formatter.clean_numeric_string(orig_data["avg"])
                     orig_unc = self.formatter.clean_numeric_string(orig_data["avg_unc"])
                 
                 if orig_avg == 0.0 and orig_unc == 0.0:
                     continue
                 
-                if circle_id == ctr_id:
-                    # CTR circle: set to 0 ± uncertainty
-                    corrected_avg = 0.0
-                    corrected_unc = ctr_unc
-                else:
-                    # Other circles: subtract CTR with error propagation
-                    corrected_avg = max(0.0, orig_avg - ctr_avg)
-                    corrected_unc = sqrt(orig_unc**2 + ctr_unc**2)
+                # All circles (including CTRs) subtract the averaged CTR value
+                # CTR circles will show their deviation from the average CTR
+                corrected_avg = orig_avg - ctr_avg  # Can be negative for CTR below average
+                corrected_unc = sqrt(orig_unc**2 + ctr_unc**2)
                 
                 # Get current TreeView values to preserve dose and std columns
                 current_values = list(self.tree.item(circle_id, "values"))
                 
-                # Get dose and std values (already formatted strings)
                 dose_current = current_values[0] if len(current_values) > 0 else ""
                 std_current = current_values[1] if len(current_values) > 1 else ""
                 
-                # Format avg, SE, and 95%CI using formatter for consistency
-                # We only need avg_str, avg_unc_str, ci95_str from format_for_treeview
                 _, _, avg_str, avg_unc_str, ci95_str = self.formatter.format_for_treeview(
-                    dose_current,  # Pass through (not reformatted)
-                    std_current,   # Pass through (not reformatted)
+                    dose_current,
+                    std_current,
                     corrected_avg,
                     corrected_unc,
                     sig=2
                 )
                 
-                # Update TreeView with corrected values
                 if len(current_values) >= 5:
                     current_values[2] = avg_str
                     current_values[3] = avg_unc_str
                     current_values[4] = ci95_str
                     self.tree.item(circle_id, values=tuple(current_values))
                 
-                # Update results with full precision numeric values using lookup (O(1))
                 result = results_lookup.get((film_name, circle_name))
                 if result:
-                    # Save full-precision original values before applying CTR correction
                     if 'avg_original' not in result:
                         result['avg_original'] = result['avg_numeric']
                         result['avg_unc_original'] = result['avg_unc_numeric']
                     
-                    # Apply CTR correction with full precision
                     result['avg_numeric'] = corrected_avg
                     result['avg_unc_numeric'] = corrected_unc
     
@@ -330,23 +381,30 @@ class CTRManager:
                                 # If avg_original doesn't exist, do nothing - values are already correct
                                 break
     
-    def get_ctr_for_film(self, film_name: str) -> Optional[str]:
-        """Get the CTR item ID for a given film."""
+    def get_ctr_for_film(self, film_name: str) -> Optional[List[str]]:
+        """Get the CTR item IDs for a given film.
+        
+        Returns:
+            List of CTR item IDs, or None if no CTRs for this film
+        """
         return self.ctr_map.get(film_name)
     
     def is_ctr_circle(self, item_id: str) -> bool:
         """Check if an item is marked as CTR."""
-        return item_id in self.ctr_map.values()
+        for ctr_ids in self.ctr_map.values():
+            if item_id in ctr_ids:
+                return True
+        return False
     
     def clear_all_ctr(self):
         """Clear all CTR mappings."""
-        for film_name in list(self.ctr_map.keys()):
-            ctr_id = self.ctr_map[film_name]
-            if self.tree.exists(ctr_id):
-                text = self.tree.item(ctr_id, "text")
-                if "(CTR)" in text:
-                    self.tree.item(ctr_id, text=text.replace(" (CTR)", ""))
-                self.tree.item(ctr_id, tags=())
+        for film_name, ctr_ids in list(self.ctr_map.items()):
+            for ctr_id in ctr_ids:
+                if self.tree.exists(ctr_id):
+                    text = self.tree.item(ctr_id, "text")
+                    if "(CTR)" in text:
+                        self.tree.item(ctr_id, text=text.replace(" (CTR)", ""))
+                    self.tree.item(ctr_id, tags=())
         self.ctr_map.clear()
 
 

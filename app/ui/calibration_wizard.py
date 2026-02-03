@@ -44,7 +44,8 @@ def _load_external_calibration_module() -> ModuleType:
 class ScannerCalibrationWizard(tk.Toplevel):
     """Multi-step wizard for scanner calibration including field flattening."""
 
-    def __init__(self, parent: tk.Misc, app_config: Optional[dict] = None):
+    def __init__(self, parent: tk.Misc, app_config: Optional[dict] = None, 
+                 flatness_only: bool = False):
         """Initialize the scanner calibration wizard.
         
         Args:
@@ -52,9 +53,11 @@ class ScannerCalibrationWizard(tk.Toplevel):
             app_config: Optional application config dict. If provided, uses this
                 instead of reading from disk, ensuring consistency with the
                 current session settings.
+            flatness_only: If True, only show field flattening steps (skip dose calibration).
         """
         super().__init__(parent)
-        self.title("Calibrate Scanner")
+        self.flatness_only = flatness_only
+        self.title("Update Scanner Flatness" if flatness_only else "Calibrate Scanner")
         self.geometry("1000x700")
         self.minsize(800, 600)
         
@@ -81,6 +84,7 @@ class ScannerCalibrationWizard(tk.Toplevel):
         self.current_step = 0
         self.blank_images: List[np.ndarray] = []  # Loaded blank scans
         self.blank_filenames: List[str] = []  # Filenames for display
+        self.blank_source_dir: Optional[str] = None  # Directory where blank images were loaded from
         self.averaged_blank: Optional[np.ndarray] = None  # Averaged blank image
         self.flat_field_data: Optional[dict] = None  # Field flattening data
 
@@ -124,7 +128,10 @@ class ScannerCalibrationWizard(tk.Toplevel):
         self.step_indicator.pack(fill=tk.X, pady=(0, 10))
 
         self.step_labels = []
-        step_names = ["Introduction", "Load Blank Scans", "Uniformity Analysis", "Dose Calibration"]
+        if self.flatness_only:
+            step_names = ["Introduction", "Load Blank Scans", "Uniformity Analysis"]
+        else:
+            step_names = ["Introduction", "Load Blank Scans", "Uniformity Analysis", "Dose Calibration"]
         for i, name in enumerate(step_names):
             lbl = ttk.Label(self.step_indicator, text=f"{i+1}. {name}", font=("Arial", 9))
             lbl.pack(side=tk.LEFT, padx=10)
@@ -194,20 +201,63 @@ class ScannerCalibrationWizard(tk.Toplevel):
             # Introduction - no validation needed
             self._show_step(1)
         elif self.current_step == 1:
-            # Blank scan loader - need at least one image
-            if not self.blank_images:
-                messagebox.showwarning("Calibrate Scanner", 
-                    "Please load at least one blank scan image before proceeding.")
-                return
-            self._compute_averaged_blank()
-            self._show_step(2)
+            # Blank scan loader - need at least one image in flatness_only mode
+            if self.blank_images:
+                self._compute_averaged_blank()
+                self._show_step(2)
+            elif self.flatness_only:
+                # In flatness_only mode, blank scans are required
+                messagebox.showwarning(
+                    "Update Scanner Flatness",
+                    "Please load at least one blank scan image to update the field flattening.",
+                    parent=self
+                )
+            else:
+                # Skip directly to dose calibration (step 3)
+                self._skip_to_dose_calibration()
         elif self.current_step == 2:
-            # Uniformity analysis - save field flattening
-            self._save_field_flattening()
-            self._show_step(3)
+            # Uniformity analysis - save field flattening if we have data
+            if self.averaged_blank is not None:
+                self._save_field_flattening()
+                if self.flatness_only:
+                    # Flatness only mode - we're done
+                    messagebox.showinfo(
+                        "Update Scanner Flatness",
+                        "Field flattening data has been saved successfully.",
+                        parent=self
+                    )
+                    self._on_close()
+                else:
+                    self._show_step(3)
+            else:
+                # No blank data - just proceed to next step (or close in flatness_only mode)
+                if self.flatness_only:
+                    messagebox.showwarning(
+                        "Update Scanner Flatness",
+                        "No field flattening data to save.\n\n"
+                        "Please go back and load blank scans to update the field flattening.",
+                        parent=self
+                    )
+                else:
+                    self._show_step(3)
         elif self.current_step == 3:
             # Final step - close wizard
             self._on_close()
+    
+    def _skip_to_dose_calibration(self):
+        """Skip blank scan loading but show uniformity analysis for awareness."""
+        result = messagebox.askyesno(
+            "Skip Blank Scans",
+            "No blank scans loaded.\n\n"
+            "Do you want to proceed without blank scans?\n\n"
+            "Note: Without blank scans, scanner uniformity analysis will show the current "
+            "state (if any existing .npz file exists) but no new field flattening data will be saved.",
+            parent=self
+        )
+        if result:
+            self.averaged_blank = None
+            # Go to uniformity analysis step anyway so user can see the state
+            self._show_step(2)
 
     # =========================================================================
     # STEP 0: Introduction
@@ -221,11 +271,31 @@ class ScannerCalibrationWizard(tk.Toplevel):
         frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
 
         # Title
-        ttk.Label(frame, text="Scanner Calibration Wizard", 
+        title = "Update Scanner Flatness" if self.flatness_only else "Scanner Calibration Wizard"
+        ttk.Label(frame, text=title, 
                  font=("Arial", 16, "bold")).pack(pady=(0, 20))
 
-        # Explanation text
-        explanation = """The Scanner Calibration window allows you to study and correct 
+        # Explanation text - different for flatness_only mode
+        if self.flatness_only:
+            explanation = """This wizard allows you to update the field flattening data 
+for your scanner. This corrects optical anisotropies (non-uniformities) 
+across the scanner bed.
+
+This wizard will guide you through the following steps:
+
+1. Load Blank Scans
+   Upload one or more images of a blank scan (empty scanner bed).
+   If multiple images are provided, they will be stacked and averaged
+   to reduce noise.
+
+2. Uniformity Analysis
+   Analyze the scanner's uniformity across the imaging area.
+   View statistics and 2D uniformity maps for each color channel (R, G, B).
+   Save the updated field flattening data (.npz file).
+
+Click "Next" to begin."""
+        else:
+            explanation = """The Scanner Calibration window allows you to study and correct 
 optical anisotropies of your scanner, as well as obtain the 
 RGB-to-dose transformation required for dosimetry.
 
@@ -323,6 +393,10 @@ Click "Next" to begin the calibration process."""
         if not files:
             return
 
+        # Store source directory from first file
+        if files and not self.blank_source_dir:
+            self.blank_source_dir = os.path.dirname(files[0])
+
         for filepath in files:
             try:
                 # Load image
@@ -364,6 +438,7 @@ Click "Next" to begin the calibration process."""
         """Clear all loaded blank scans."""
         self.blank_images.clear()
         self.blank_filenames.clear()
+        self.blank_source_dir = None
         self.blank_listbox.delete(0, tk.END)
         self._update_blank_scan_ui()
 
@@ -388,8 +463,42 @@ Click "Next" to begin the calibration process."""
             # Stack and average
             stacked = np.stack(self.blank_images, axis=0).astype(np.float64)
             self.averaged_blank = np.mean(stacked, axis=0)
+            
+            # Save master_flat.tif to the source directory
+            self._save_master_flat()
 
         logger.info(f"Computed averaged blank from {len(self.blank_images)} images")
+    
+    def _save_master_flat(self):
+        """Save the averaged blank image as master_flat.tif in the source directory."""
+        if self.averaged_blank is None or self.blank_source_dir is None:
+            return
+        
+        if len(self.blank_images) < 2:
+            # Only save when averaging multiple images
+            return
+        
+        try:
+            # Determine the output path
+            output_path = os.path.join(self.blank_source_dir, "master_flat.tif")
+            
+            # Convert to appropriate dtype for saving
+            # Preserve the original bit depth from input images
+            if self.blank_images[0].dtype == np.uint16:
+                # 16-bit images
+                save_array = np.clip(self.averaged_blank, 0, 65535).astype(np.uint16)
+            else:
+                # 8-bit images
+                save_array = np.clip(self.averaged_blank, 0, 255).astype(np.uint8)
+            
+            # Save as TIFF
+            img = Image.fromarray(save_array)
+            img.save(output_path, format='TIFF')
+            
+            logger.info(f"Saved master_flat.tif to {output_path}")
+            
+        except Exception as e:
+            logger.warning(f"Failed to save master_flat.tif: {e}")
 
     # =========================================================================
     # STEP 2: Uniformity Analysis
@@ -397,11 +506,15 @@ Click "Next" to begin the calibration process."""
 
     def _show_uniformity_analysis(self):
         """Show the uniformity analysis screen."""
-        self.next_btn.configure(text="Apply Field Flattening →")
+        # Change button text based on whether we have data
+        if self.averaged_blank is not None:
+            self.next_btn.configure(text="Apply Field Flattening →")
+        else:
+            self.next_btn.configure(text="Continue to Dose Calibration →")
 
         if self.averaged_blank is None:
-            ttk.Label(self.content_frame, text="Error: No blank image available",
-                     foreground="red").pack(pady=20)
+            # No blank scans loaded - show informative message about current state
+            self._show_no_blank_analysis()
             return
 
         frame = ttk.Frame(self.content_frame)
@@ -490,6 +603,80 @@ Click "Next" to begin the calibration process."""
             text="Click 'Apply Field Flattening' to save this data and proceed to dose calibration.\n"
                  "The flattening correction will be applied to all images when 'Apply Calibration' is enabled.",
             font=("Arial", 9, "italic"), foreground="gray").pack(pady=10)
+
+    def _show_no_blank_analysis(self):
+        """Show informative screen when no blank scans were loaded."""
+        frame = ttk.Frame(self.content_frame)
+        frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+
+        # Title with warning icon
+        ttk.Label(frame, text="⚠️ Scanner Uniformity Analysis - No Blank Scans", 
+                 font=("Arial", 14, "bold")).pack(pady=(0, 20))
+
+        # Explanation
+        msg_frame = ttk.Frame(frame)
+        msg_frame.pack(fill=tk.X, pady=10)
+        
+        ttk.Label(msg_frame, 
+            text="No blank scans were loaded for this calibration session.",
+            font=("Arial", 11), foreground="orange").pack(anchor=tk.W)
+
+        # Check if existing .npz file exists
+        npz_file = os.path.join(self._data_dir, "field_flattening.npz")
+        if os.path.exists(npz_file):
+            # Load and display existing data info
+            try:
+                data = np.load(npz_file, allow_pickle=True)
+                created = data.get('created', 'Unknown')
+                num_images = data.get('num_images', '?')
+                
+                ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=15)
+                
+                existing_frame = ttk.LabelFrame(frame, text="Existing Field Flattening Data")
+                existing_frame.pack(fill=tk.X, pady=10, padx=5)
+                
+                info_text = f"""An existing field flattening file was found:
+
+    📁 File: {npz_file}
+    📅 Created: {created}
+    🖼️ Based on: {num_images} blank scan(s)
+
+This existing data will continue to be used for field flattening corrections.
+To update this data, go back and load new blank scans."""
+
+                ttk.Label(existing_frame, text=info_text, font=("Arial", 10), 
+                         justify=tk.LEFT).pack(padx=15, pady=15)
+                         
+            except Exception as e:
+                logger.warning(f"Could not read existing .npz file: {e}")
+                ttk.Label(frame, 
+                    text=f"\n⚠️ Existing file found but could not be read: {npz_file}",
+                    font=("Arial", 10), foreground="gray").pack(anchor=tk.W, pady=10)
+        else:
+            ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=15)
+            
+            ttk.Label(frame, 
+                text="❌ No existing field flattening data found.",
+                font=("Arial", 11), foreground="red").pack(anchor=tk.W)
+            
+            ttk.Label(frame, 
+                text=f"\nNo field_flattening.npz file exists in:\n{self._data_dir}\n\n"
+                     "Without field flattening, scanner uniformity corrections will NOT be applied.\n"
+                     "This may result in dose measurement errors, especially near the edges of the scan area.",
+                font=("Arial", 10), foreground="gray", justify=tk.LEFT).pack(anchor=tk.W, pady=10)
+
+        # Bottom info
+        ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=15)
+        
+        if self.flatness_only:
+            ttk.Label(frame, 
+                text="To update the field flattening data, click '← Back' and load blank scans.",
+                font=("Arial", 10, "italic"), foreground="gray").pack(pady=10)
+        else:
+            ttk.Label(frame, 
+                text="Click 'Continue to Dose Calibration' to proceed without updating field flattening,\n"
+                     "or click '← Back' to load blank scans.",
+                font=("Arial", 10, "italic"), foreground="gray").pack(pady=10)
 
     def _save_field_flattening(self):
         """Save the field flattening data to disk."""

@@ -161,6 +161,17 @@ The Radiochromic-Scanning-Tool is a specialized application designed for the ana
 4. Background dose will be subtracted from all other circles in the same film
 5. CTR circles shown with dashed outline in visualization
 
+**Multiple CTR Support**:
+- You can mark **multiple circles as CTR** within the same film (RC)
+- Multiple CTR values are **averaged** with proper uncertainty propagation
+- Combined uncertainty uses: `σ_combined = √(SE_of_mean² + propagated_individual_unc²)`
+- CTR circles display their deviation from the averaged CTR value
+
+**Global CTR**:
+- Use "Set Global CTR" button to define a single control circle that applies to **ALL films**
+- Global CTR subtraction is applied across all RCs, not just its parent film
+- Useful when one control circle represents background for the entire scanning session
+
 ### Calibration
 
 1. Click on "Tools" → "Calibration Wizard"
@@ -199,6 +210,24 @@ The Radiochromic-Scanning-Tool is a specialized application designed for the ana
 - Check this file for detailed error information if you encounter issues
 
 ## Recent Updates
+
+#### Multiple CTR and Global CTR Support (Feb 2025)
+- **Multiple CTR per Film**: Mark multiple circles as control (CTR) within a single radiochromic film
+- **Averaged CTR Values**: Multiple CTRs are properly averaged with full uncertainty propagation
+- **Global CTR**: New "Set Global CTR" button applies background subtraction across ALL films
+- **CTR Value Display**: CTR circles now show their deviation from the averaged CTR (not zero)
+
+#### Calibration Wizard Improvements (Feb 2025)
+- **Skip Blank Scans Option**: Skip blank acquisition step with confirmation dialog
+- **Uniformity Analysis Display**: Shows existing flatness data (.npz status) even when skipping blanks
+- **Master Flat Export**: Automatically saves `master_flat.tif` when averaging multiple blank scans
+- **Update Scanner Flatness**: New menu option (`Tools → Update Scanner Flatness`) for flatness-only calibration
+- **Flatness-Only Mode**: 3-step wizard flow dedicated to updating scanner flatness without full recalibration
+
+#### Automatic Update Check (Feb 2025)
+- **Startup Update Check**: Optional automatic check for updates on application start
+- **Configurable in Settings**: Enable/disable in `Settings → Updates → Check for updates on startup`
+- **Non-blocking**: Runs in background after 1.5s delay, doesn't slow down startup
 
 #### Matrix-Based Circle Naming System
 - **Spatial Organization**: Circles are automatically organized into a grid matrix based on their physical position

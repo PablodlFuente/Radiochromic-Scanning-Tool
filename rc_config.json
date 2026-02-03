@@ -15,5 +15,6 @@
     "log_level": "WARNING",
     "detailed_logging": false,
     "uncertainty_estimation_method": "dersimonian_laird",
-    "calibration_folder": "CUN_2025_02_17"
+    "calibration_folder": "GM_2025_CanonLide400",
+    "check_updates_on_startup": true
 }

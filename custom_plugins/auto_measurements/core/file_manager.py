@@ -211,14 +211,27 @@ class FileDataManager:
                             if item_id in original_radii:
                                 radii_by_name[(parent_name, item_name_clean)] = original_radii[item_id]
             
-            # Convert ctr_map from {film_name: circle_id} to {film_name: circle_name}
+            # Convert ctr_map from {film_name: [circle_ids]} to {film_name: [circle_names]}
+            # Supports multiple CTRs per film
             ctr_map = get_ctr_map_callback()
-            for film_name, circle_id in ctr_map.items():
-                if self.tree.exists(circle_id):
-                    circle_name = self.tree.item(circle_id, 'text')
-                    # Remove " (CTR)" suffix if present
-                    circle_name = circle_name.replace(" (CTR)", "")
-                    ctr_map_by_name[film_name] = circle_name
+            for film_name, circle_ids in ctr_map.items():
+                # Handle both old format (single id) and new format (list of ids)
+                if isinstance(circle_ids, list):
+                    circle_names = []
+                    for circle_id in circle_ids:
+                        if self.tree.exists(circle_id):
+                            circle_name = self.tree.item(circle_id, 'text')
+                            # Remove " (CTR)" suffix if present
+                            circle_name = circle_name.replace(" (CTR)", "")
+                            circle_names.append(circle_name)
+                    if circle_names:
+                        ctr_map_by_name[film_name] = circle_names
+                else:
+                    # Backward compatibility: single circle_id
+                    if self.tree.exists(circle_ids):
+                        circle_name = self.tree.item(circle_ids, 'text')
+                        circle_name = circle_name.replace(" (CTR)", "")
+                        ctr_map_by_name[film_name] = [circle_name]  # Store as list for consistency
             
             overlay_state = {
                 'films': parent_module._OVERLAY.get('films', []).copy(),
