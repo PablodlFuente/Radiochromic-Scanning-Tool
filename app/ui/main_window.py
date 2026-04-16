@@ -757,7 +757,7 @@ class MainWindow:
         uncertainty_combobox = ttk.Combobox(
             uncertainty_frame,
             textvariable=uncertainty_method_var,
-            values=["weighted_average", "birge_factor", "dersimonian_laird"],
+            values=["weighted_average", "birge_factor", "dersimonian_laird", "sensitivity_weighted"],
             state="readonly"
         )
         uncertainty_combobox.pack(fill=tk.X, pady=(0, 5))
@@ -767,7 +767,8 @@ class MainWindow:
             uncertainty_frame, 
             text="• Weighted Average: Standard weighted mean (fastest)\n"
                  "• Birge Factor: Inflates uncertainties when χ²ν > 1\n"
-                 "• DerSimonian-Laird: Random effects model with between-channel variance",
+                 "• DerSimonian-Laird: Random effects model with between-channel variance\n"
+                 "• Sensitivity Weighted: Physics-based weights from calibration curve (requires calibration)",
             foreground="gray",
             justify=tk.LEFT,
             font=("Arial", 9)

@@ -224,6 +224,10 @@ class MeasurementPanel:
         self.std_dev_label = ttk.Label(self.results_frame, text="Standard deviation: --")
         self.std_dev_label.pack(anchor=tk.W, pady=2)
         
+        # Channel weights label (visual bars for sensitivity weighting)
+        self.channel_weights_label = ttk.Label(self.results_frame, text="")
+        self.channel_weights_label.pack(anchor=tk.W, pady=0)
+        
         self.std_err_label = ttk.Label(self.results_frame, text="STD err: --")
         self.std_err_label.pack(anchor=tk.W, pady=2)
         
@@ -233,17 +237,28 @@ class MeasurementPanel:
         
         # Visualization section (Histogram or Line Profile)
         ttk.Separator(self.frame, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=10, pady=10)
-        self.viz_title_label = ttk.Label(self.frame, text="Histogram:")
-        self.viz_title_label.pack(anchor=tk.W, padx=10, pady=5)
         
-        # Create a frame for the visualization (histogram or line profile)
-        self.visualization_frame = ttk.Frame(self.frame)
-        self.visualization_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        # Notebook with two tabs: Histogram and Calibration Curve
+        self.viz_notebook = ttk.Notebook(self.frame)
+        self.viz_notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         
-        # Create matplotlib figure for visualization
+        # --- Histogram tab ---
+        self.histogram_tab = ttk.Frame(self.viz_notebook)
+        self.viz_notebook.add(self.histogram_tab, text="Histogram")
+        
+        # Create matplotlib figure for histogram
         self.viz_fig = Figure(figsize=(4, 2), dpi=100)
-        self.viz_canvas = FigureCanvasTkAgg(self.viz_fig, master=self.visualization_frame)
+        self.viz_canvas = FigureCanvasTkAgg(self.viz_fig, master=self.histogram_tab)
         self.viz_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        
+        # --- Calibration Curve tab ---
+        self.calibration_tab = ttk.Frame(self.viz_notebook)
+        self.viz_notebook.add(self.calibration_tab, text="Calibration Curve")
+        
+        # Create matplotlib figure for calibration curve
+        self.cal_fig = Figure(figsize=(4, 2), dpi=100)
+        self.cal_canvas = FigureCanvasTkAgg(self.cal_fig, master=self.calibration_tab)
+        self.cal_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
         
         # Visualization buttons frame
         self.viz_buttons_frame = ttk.Frame(self.frame)
@@ -266,15 +281,6 @@ class MeasurementPanel:
             state=tk.DISABLED  # Initially disabled
         )
         self.view_2d_button.pack(side=tk.LEFT, padx=5)
-        
-        # See in Calibration button - shows where current pixel value falls on calibration curve
-        self.see_calibration_button = ttk.Button(
-            self.viz_buttons_frame,
-            text="See in Calibration",
-            command=self._show_calibration_curve,
-            state=tk.DISABLED  # Initially disabled
-        )
-        self.see_calibration_button.pack(side=tk.LEFT, padx=5)
         
         # Interactive Graph button (only for line measurements)
         self.interactive_graph_button = ttk.Button(
@@ -370,8 +376,8 @@ class MeasurementPanel:
             # Show single size control
             self.single_size_frame.pack(fill=tk.X)
             self.size_label.config(text="Size (pixels):")
-            # Update visualization title
-            self.viz_title_label.config(text="Histogram:")
+            # Update tab title
+            self.viz_notebook.tab(0, text="Histogram")
             # Show 3D/2D buttons, hide Interactive Graph
             self.view_3d_button.pack(side=tk.LEFT, padx=5)
             self.view_2d_button.pack(side=tk.LEFT, padx=5)
@@ -385,8 +391,8 @@ class MeasurementPanel:
             # Show width and height controls
             self.rect_size_frame.pack(fill=tk.X)
             self.size_label.config(text="Size:")
-            # Update visualization title
-            self.viz_title_label.config(text="Histogram:")
+            # Update tab title
+            self.viz_notebook.tab(0, text="Histogram")
             # Show 3D/2D buttons, hide Interactive Graph
             self.view_3d_button.pack(side=tk.LEFT, padx=5)
             self.view_2d_button.pack(side=tk.LEFT, padx=5)
@@ -406,7 +412,7 @@ class MeasurementPanel:
                 axis_label = "Custom"
             else:
                 axis_label = "X" if orientation == "horizontal" else "Y"
-            self.viz_title_label.config(text=f"Line Profile (vs {axis_label}):")
+            self.viz_notebook.tab(0, text=f"Line Profile (vs {axis_label})")
             # Hide 3D/2D buttons, show Interactive Graph
             self.view_3d_button.pack_forget()
             self.view_2d_button.pack_forget()
@@ -467,7 +473,7 @@ class MeasurementPanel:
             axis_label = "Custom"
         else:
             axis_label = "X" if orientation == "horizontal" else "Y"
-        self.viz_title_label.config(text=f"Line Profile (vs {axis_label}):")
+        self.viz_notebook.tab(0, text=f"Line Profile (vs {axis_label})")
         
         # Redraw if measurement is visible (only for non-manual orientations)
         if orientation != "manual":
@@ -560,7 +566,6 @@ class MeasurementPanel:
             # Disable view buttons
             self.view_3d_button.config(state=tk.DISABLED)
             self.view_2d_button.config(state=tk.DISABLED)
-            self.see_calibration_button.config(state=tk.DISABLED)
             
             # Clear measurement data
             self.current_measurement_data = None
@@ -593,11 +598,11 @@ class MeasurementPanel:
         if not results:
             self.average_label.config(text="Average RGB: --")
             self.std_dev_label.config(text="Standard deviation: --")
+            self.channel_weights_label.config(text="")
             self.std_err_label.config(text="STD err: --")
             self.pixel_count_label.config(text="Pixels: --")
             self.view_3d_button.config(state=tk.DISABLED)
             self.view_2d_button.config(state=tk.DISABLED)
-            self.see_calibration_button.config(state=tk.DISABLED)
             self.interactive_graph_button.config(state=tk.DISABLED)
             self._clear_histogram()
             self.current_measurement_data = None
@@ -633,12 +638,31 @@ class MeasurementPanel:
             method_display = {
                 "weighted_average": "Weighted",
                 "birge_factor": "Birge", 
-                "dersimonian_laird": "D-L"
+                "dersimonian_laird": "D-L",
+                "sensitivity_weighted": "Sens-W"
             }.get(method, method)
             
-            self.std_dev_label.config(
-                text=f"Standard deviation: ({std_dev[0]:.2f}, {std_dev[1]:.2f}, {std_dev[2]:.2f}) | Combined ({method_display}): {rgb_mean_std:.4f}"
-            )
+            # Combined uncertainty text (without weights inline)
+            combined_text = f"Standard deviation: ({std_dev[0]:.2f}, {std_dev[1]:.2f}, {std_dev[2]:.2f}) | Combined ({method_display}): {rgb_mean_std:.4f}"
+            self.std_dev_label.config(text=combined_text)
+            
+            # Show channel weights as visual bars below std_dev
+            weights = getattr(self.image_processor, 'last_channel_weights', None)
+            if weights and method == "sensitivity_weighted":
+                wr = weights.get('R', 0) * 100
+                wg = weights.get('G', 0) * 100
+                wb = weights.get('B', 0) * 100
+                bar_len = 10  # max number of block chars
+                br = round(wr / 100 * bar_len)
+                bg = round(wg / 100 * bar_len)
+                bb = round(wb / 100 * bar_len)
+                bar_r = "\u2588" * br + "\u2500" * (bar_len - br)
+                bar_g = "\u2588" * bg + "\u2500" * (bar_len - bg)
+                bar_b = "\u2588" * bb + "\u2500" * (bar_len - bb)
+                weights_text = f"Channel weights:  R [{bar_r}] {wr:.0f}%   G [{bar_g}] {wg:.0f}%   B [{bar_b}] {wb:.0f}%"
+                self.channel_weights_label.config(text=weights_text)
+            else:
+                self.channel_weights_label.config(text="")
             self.std_err_label.config(
                 text=f"STD err: ({std_err[0]:.4f}, {std_err[1]:.4f}, {std_err[2]:.4f})"
             )
@@ -650,12 +674,6 @@ class MeasurementPanel:
             else:
                 self.view_3d_button.config(state=tk.NORMAL)
                 self.view_2d_button.config(state=tk.NORMAL)
-            
-            # Enable calibration button if calibration is available
-            if self.image_processor.has_calibration():
-                self.see_calibration_button.config(state=tk.NORMAL)
-            else:
-                self.see_calibration_button.config(state=tk.DISABLED)
         else:
             # Grayscale value
             self.average_label.config(text=f"Average: {average:.2f}")
@@ -704,6 +722,9 @@ class MeasurementPanel:
             self._update_line_profile()
         else:
             self._update_histogram_plot()
+        
+        # Always update the calibration curve tab
+        self._update_calibration_curve_tab()
     
     def _update_line_profile(self):
         """Update line profile plot for line measurements."""
@@ -872,10 +893,165 @@ class MeasurementPanel:
         self.viz_fig.tight_layout()
         self.viz_canvas.draw()
     
+    def _update_calibration_curve_tab(self):
+        """Update the calibration curve tab with current measurement points."""
+        self.cal_fig.clear()
+        
+        if not self.has_valid_measurement or not self.current_measurement_data:
+            self.cal_canvas.draw()
+            return
+        
+        # Need calibration params
+        import csv
+        import os
+        
+        csv_path = self.image_processor._find_fit_parameters_file()
+        if csv_path is None:
+            ax = self.cal_fig.add_subplot(111)
+            ax.text(0.5, 0.5, "No calibration file found", ha='center', va='center',
+                    transform=ax.transAxes, fontsize=10, color='gray')
+            ax.set_axis_off()
+            self.cal_canvas.draw()
+            return
+        
+        # Parse calibration parameters
+        params = {}
+        calibration_bit_depth = 16
+        try:
+            with open(csv_path, newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    ch = row.get("Channel", "").strip().upper()
+                    if ch in ("R", "G", "B"):
+                        a = float(row.get("a", "nan"))
+                        b = float(row.get("b", "nan"))
+                        c = float(row.get("c", "nan"))
+                        params[ch] = (a, b, c)
+                    bd = row.get("bit_depth")
+                    if bd:
+                        try:
+                            calibration_bit_depth = int(bd)
+                        except ValueError:
+                            pass
+        except Exception:
+            self.cal_canvas.draw()
+            return
+        
+        if not all(ch in params for ch in ("R", "G", "B")):
+            self.cal_canvas.draw()
+            return
+        
+        calibration_max = (2 ** calibration_bit_depth) - 1
+        
+        # Get current measurement values
+        average, std_dev, std_err, rgb_mean, rgb_mean_std, pixel_count = self.current_measurement_data
+        
+        if not isinstance(average, tuple) or len(average) != 3:
+            self.cal_canvas.draw()
+            return
+        
+        # Get raw pixel data to compute mean pixel values per channel
+        raw_data = self.image_processor.get_last_measurement_raw_data()
+        
+        # Determine if we're in dose space or pixel space
+        if self.image_processor.calibration_applied:
+            # average is already in dose (Gy)
+            dose_per_channel = list(average)
+        else:
+            # Convert pixel values to dose for each channel
+            dose_per_channel = []
+            for idx, ch in enumerate(("R", "G", "B")):
+                a, b, c = params[ch]
+                pix = average[idx]
+                # Scale pixel if needed
+                image_max = self.image_processor.image_max_value
+                if image_max > 0 and image_max != calibration_max:
+                    pix = pix * calibration_max / image_max
+                denom = pix - a
+                if abs(denom) > 1e-6:
+                    dose_per_channel.append(c + b / denom)
+                else:
+                    dose_per_channel.append(np.nan)
+        
+        # Average dose
+        valid_doses = [d for d in dose_per_channel if not np.isnan(d)]
+        avg_dose = rgb_mean if self.image_processor.calibration_applied else (np.mean(valid_doses) if valid_doses else np.nan)
+        
+        # Calculate pixel value for average dose (for plotting on curve)
+        # Use green channel curve as reference for average point
+        
+        # Plot: single axes with all 3 channel curves + 4 measurement points
+        ax = self.cal_fig.add_subplot(111)
+        
+        colors_ch = {'R': '#e74c3c', 'G': '#27ae60', 'B': '#2980b9'}
+        channel_labels = {'R': 'Red', 'G': 'Green', 'B': 'Blue'}
+        
+        # Determine dose range from data
+        all_doses = [d for d in dose_per_channel if not np.isnan(d)]
+        if not all_doses:
+            self.cal_canvas.draw()
+            return
+        
+        max_dose_data = max(all_doses)
+        dose_max_plot = max(max_dose_data * 1.5, 5.0)
+        dose_range = np.linspace(0.01, dose_max_plot, 500)
+        
+        # Plot calibration curves
+        for ch in ('R', 'G', 'B'):
+            a, b, c = params[ch]
+            pixel_values = a + b / (dose_range - c)
+            valid = (pixel_values >= 0) & (pixel_values <= calibration_max)
+            ax.plot(dose_range[valid], pixel_values[valid], color=colors_ch[ch],
+                    linewidth=1.5, alpha=0.7)
+        
+        # Plot measurement points with error bars
+        # For each channel: compute pixel value at measured dose
+        for idx, ch in enumerate(('R', 'G', 'B')):
+            a, b, c = params[ch]
+            dose_ch = dose_per_channel[idx]
+            if np.isnan(dose_ch):
+                continue
+            
+            # Pixel value at this dose
+            pix_ch = a + b / (dose_ch - c)
+            
+            # Dose uncertainty for error bar (use std_err from measurement)
+            dose_se = std_err[idx] if isinstance(std_err, tuple) else 0
+            
+            ax.errorbar(dose_ch, pix_ch, xerr=dose_se,
+                        fmt='o', color=colors_ch[ch], markersize=8, capsize=4,
+                        markeredgecolor='white', markeredgewidth=1.5, zorder=5)
+        
+        # Plot average dose point (black diamond)
+        if not np.isnan(avg_dose):
+            # Use green channel curve to place the average point vertically
+            a_g, b_g, c_g = params['G']
+            denom_avg = avg_dose - c_g
+            if abs(denom_avg) > 1e-6:
+                pix_avg = a_g + b_g / denom_avg
+            else:
+                pix_avg = calibration_max / 2
+            
+            ax.errorbar(avg_dose, pix_avg, xerr=rgb_mean_std,
+                        fmt='x', color='black', markersize=10, capsize=5,
+                        markeredgewidth=2.5, zorder=6)
+        
+        ax.set_xlabel('Dose (Gy)', fontsize=9)
+        ax.set_ylabel('Pixel Value', fontsize=9)
+        ax.set_title('Calibration Curves & Measurement', fontsize=10)
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim(0, dose_max_plot)
+        ax.set_ylim(0, calibration_max)
+        
+        self.cal_fig.tight_layout()
+        self.cal_canvas.draw()
+    
     def _clear_histogram(self):
-        """Clear the visualization (histogram or line profile)."""
+        """Clear the visualization (histogram or line profile) and calibration curve."""
         self.viz_fig.clear()
         self.viz_canvas.draw()
+        self.cal_fig.clear()
+        self.cal_canvas.draw()
     
     def _show_calibration_curve(self):
         """Show calibration curve with current measurement point highlighted."""

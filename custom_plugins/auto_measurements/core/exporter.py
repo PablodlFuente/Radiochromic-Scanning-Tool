@@ -226,7 +226,7 @@ class CSVExporter:
                     "Filename", "Date", "Film", "Circle", 
                     "doses_per_channel", "STD_doses_per_channel",
                     "average", "SE_average", "95%confident_interval(SE)",
-                    "pixel_count", "uncertaty_calculation_method"
+                    "pixel_count", "uncertaty_calculation_method", "channel_weights"
                 ]
                 
                 writer = csv.writer(csvfile)
@@ -286,11 +286,18 @@ class CSVExporter:
                         except (ValueError, TypeError):
                             pass
                         
+                        # Format channel weights
+                        weights = result.get('channel_weights')
+                        weights_str = ""
+                        if weights and isinstance(weights, dict):
+                            weights_str = f"R:{weights.get('R',0)*100:.0f}% G:{weights.get('G',0)*100:.0f}% B:{weights.get('B',0)*100:.0f}%"
+                        
                         # Create row
                         row_data = [
                             file_name, date_to_use, film_name, circle_name,
                             doses_formatted, std_formatted, avg_formatted, se_average_formatted,
-                            ci95_formatted, result.get('pixel_count', ''), uncertainty_method
+                            ci95_formatted, result.get('pixel_count', ''), uncertainty_method,
+                            weights_str
                         ]
                         
                         writer.writerow(row_data)
@@ -341,10 +348,17 @@ class CSVExporter:
                         except (ValueError, TypeError):
                             pass
                         
+                        # Format channel weights
+                        weights = result.get('channel_weights')
+                        weights_str = ""
+                        if weights and isinstance(weights, dict):
+                            weights_str = f"R:{weights.get('R',0)*100:.0f}% G:{weights.get('G',0)*100:.0f}% B:{weights.get('B',0)*100:.0f}%"
+                        
                         row_data = [
                             current_file_name, date_to_use, film_name, circle_name,
                             doses_formatted, std_formatted, avg_formatted, se_average_formatted,
-                            ci95_formatted, result.get('pixel_count', ''), uncertainty_method
+                            ci95_formatted, result.get('pixel_count', ''), uncertainty_method,
+                            weights_str
                         ]
                         
                         writer.writerow(row_data)

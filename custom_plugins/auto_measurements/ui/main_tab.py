@@ -2016,6 +2016,12 @@ class AutoMeasurementsTab(ttk.Frame):
                 if res is None:
                     continue
 
+                # Capture channel weights (set by sensitivity_weighted method during measure_area)
+                channel_weights = None
+                weights_attr = getattr(self.image_processor, 'last_channel_weights', None)
+                if weights_attr:
+                    channel_weights = dict(weights_attr)
+
                 # Extract measurement results (always 6-tuple format)
                 dose, std, unc, rgb_mean, rgb_mean_std, pixel_count = res
 
@@ -2098,6 +2104,7 @@ class AutoMeasurementsTab(ttk.Frame):
                     "avg_numeric": avg_val,              # Raw average value (float)
                     "std_avg_numeric": avg_std,          # Raw average std (float)
                     "avg_unc_numeric": avg_unc,          # Raw SE/uncertainty value (float)
+                    "channel_weights": channel_weights,  # Sensitivity weights {'R': w, 'G': w, 'B': w} or None
                 })
 
             # Automatically detect CTR circle
@@ -3073,6 +3080,12 @@ class AutoMeasurementsTab(ttk.Frame):
             # Extract measurement results (always 6-tuple format)
             dose, std, unc, rgb_mean, rgb_mean_std, pixel_count = res
 
+            # Capture channel weights (set by sensitivity_weighted method during measure_area)
+            channel_weights = None
+            weights_attr = getattr(self.image_processor, 'last_channel_weights', None)
+            if weights_attr:
+                channel_weights = dict(weights_attr)
+
             # Format measurements with full precision
             if isinstance(dose, tuple):
                 dose_parts = []
@@ -3108,6 +3121,7 @@ class AutoMeasurementsTab(ttk.Frame):
             dose_str = unc_str = avg_str = avg_unc_str = ci95_str = ""
             pixel_count = 0
             avg_val = avg_unc = 0.0
+            channel_weights = None
 
         circ_id = self.tree.insert(parent_id, "end", text=circ_name, 
                                  values=(dose_str, std_str, avg_str, avg_unc_str, ci95_str))
@@ -3162,6 +3176,7 @@ class AutoMeasurementsTab(ttk.Frame):
             "avg_numeric": avg_val,
             "std_avg_numeric": avg_std if res else 0.0,
             "avg_unc_numeric": avg_unc,                 # Raw SE/uncertainty value (float)
+            "channel_weights": channel_weights,          # Sensitivity weights {'R': w, 'G': w, 'B': w} or None
         })
 
         self.main_window.update_image()

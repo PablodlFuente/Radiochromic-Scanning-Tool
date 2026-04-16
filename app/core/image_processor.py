@@ -44,6 +44,8 @@ class ImageProcessor:
         self.binned_image = None  # Store the binned image
         # Track whether dose calibration is currently applied
         self.calibration_applied = False
+        self.calibration_fit_params = None  # dict {'R': (a,b,c), ...} stored on apply_calibration
+        self.last_channel_weights = None  # last sensitivity weights {'R': w, 'G': w, 'B': w}
         # Track whether field flattening is currently applied
         self.flat_applied = False
         
@@ -1289,7 +1291,9 @@ class ImageProcessor:
         """
         method = self.config.get("uncertainty_estimation_method", "weighted_average")
         
-        if method == "birge_factor":
+        if method == "sensitivity_weighted":
+            return self._sensitivity_weighted_method(means, std_errors)
+        elif method == "birge_factor":
             return self._birge_factor_method(means, std_errors)
         elif method == "dersimonian_laird":
             return self._dersimonian_laird_method(means, std_errors)
@@ -1318,6 +1322,104 @@ class ImageProcessor:
         weights = 1 / (valid_std_errors**2)
         combined_mean = np.average(valid_means, weights=weights)
         combined_uncertainty = 1 / np.sqrt(np.sum(weights))
+        
+        return combined_mean, combined_uncertainty
+    
+    def _sensitivity_weighted_method(self, means, std_errors):
+        """
+        Calculate combined dose using sensitivity-weighted channel averaging.
+        
+        Each channel's weight is proportional to its calibration-curve sensitivity
+        squared divided by the local pixel noise squared:
+        
+            w_ch = (I - a)^4 / (b^2 * sigma_I^2)
+        
+        where (a, b, c) are the rational-function calibration parameters and
+        sigma_I is the pixel standard deviation inside the ROI.  When calibration
+        is not applied or fit parameters are unavailable, this method falls back
+        to the standard weighted-average approach.
+        
+        Args:
+            means: Array of mean values for each channel (dose if calibrated)
+            std_errors: Array of standard errors for each channel
+            
+        Returns:
+            tuple: (combined_mean, combined_uncertainty)
+        """
+        # Require calibration fit params; fall back otherwise
+        if not self.calibration_applied or self.calibration_fit_params is None:
+            logger.debug("Sensitivity weighting unavailable (no calibration); falling back to weighted_average")
+            self.last_channel_weights = None
+            return self._weighted_average_method(means, std_errors)
+        
+        channels = ("R", "G", "B")
+        n_channels = min(len(means), 3)
+        
+        weights_raw = {}
+        doses = {}
+        
+        for idx in range(n_channels):
+            ch = channels[idx]
+            if ch not in self.calibration_fit_params:
+                continue
+            
+            dose_val = means[idx]
+            se = std_errors[idx]
+            a, b, c = self.calibration_fit_params[ch]
+            
+            # Skip channels with zero or invalid std_error
+            if se <= 0 or np.isnan(dose_val) or np.isnan(se):
+                weights_raw[ch] = 0.0
+                doses[ch] = dose_val
+                continue
+            
+            # Reconstruct pixel intensity from dose:  I = a + b / (D - c)
+            denom_dose = dose_val - c
+            if abs(denom_dose) < 1e-9:
+                # Dose is at the singularity — channel unreliable
+                weights_raw[ch] = 0.0
+                doses[ch] = dose_val
+                continue
+            
+            I_reconstructed = a + b / denom_dose
+            
+            # Sensitivity = (I - a)^2 / |b|
+            I_minus_a = I_reconstructed - a  # = b / (D - c)
+            sensitivity = (I_minus_a ** 2) / abs(b)
+            
+            if sensitivity < 1e-12:
+                weights_raw[ch] = 0.0
+                doses[ch] = dose_val
+                continue
+            
+            # sigma_D = sigma_I / sensitivity, but we already have std_error in dose space (se).
+            # The se passed in is std_dev_pixel / sqrt(N) propagated through calibration,
+            # so we use it directly as sigma_D.
+            # Weight = 1 / sigma_D^2, scaled by sensitivity^2 to prefer responsive channels.
+            # Effective weight = sensitivity^2 / se^2
+            weights_raw[ch] = (sensitivity ** 2) / (se ** 2)
+            doses[ch] = dose_val
+        
+        # Check we have at least one valid weight
+        total_weight = sum(weights_raw.values())
+        if total_weight <= 0:
+            logger.debug("All sensitivity weights are zero; falling back to weighted_average")
+            self.last_channel_weights = None
+            return self._weighted_average_method(means, std_errors)
+        
+        # Normalize weights
+        weights_norm = {ch: w / total_weight for ch, w in weights_raw.items()}
+        self.last_channel_weights = weights_norm
+        
+        # Weighted dose
+        combined_mean = sum(
+            weights_norm.get(channels[i], 0.0) * means[i]
+            for i in range(n_channels)
+            if not np.isnan(means[i])
+        )
+        
+        # Combined uncertainty = 1 / sqrt(sum(w_raw))
+        combined_uncertainty = 1.0 / np.sqrt(total_weight)
         
         return combined_mean, combined_uncertainty
     
@@ -1989,6 +2091,7 @@ class ImageProcessor:
             self._compute_integral_images()
             self.calibration_applied = True
             self.calibration_param_sigmas = param_sigmas  # store for later use
+            self.calibration_fit_params = params  # store (a,b,c) per channel for sensitivity weighting
             logger.info("Calibration applied successfully – dose image ready (3-channel float32)")
             return True
 
