@@ -26,6 +26,7 @@ class MainWindow:
         """Initialize the main window."""
         self.parent = parent
         self.app_config = app_config
+        self._dragged_tab_index = None
         
         # Set window properties
         parent.title("Radiochromic Film Analyzer")
@@ -153,6 +154,7 @@ class MainWindow:
         # Notebook for tabs
         self.notebook = ttk.Notebook(self.controls_frame)
         self.notebook.pack(fill=tk.BOTH, expand=True)
+        self._enable_notebook_tab_reordering()
         
         # Measurement tab with dependency injection
         self.measurement_panel = MeasurementPanel(self.notebook, self.image_processor)
@@ -172,6 +174,7 @@ class MainWindow:
         # Expose notebook to plugin manager now that it exists
         from app.plugins.plugin_manager import plugin_manager
         plugin_manager.init_ui(self, self.notebook, self.image_processor)
+        self._restore_notebook_tab_order()
         
         # Status bar
         self.status_bar = ttk.Frame(self.parent)
@@ -188,6 +191,79 @@ class MainWindow:
         
         self.zoom_label = ttk.Label(self.status_bar, text="Zoom: 100%")
         self.zoom_label.pack(side=tk.RIGHT, padx=5)
+
+    def _enable_notebook_tab_reordering(self):
+        """Allow notebook tabs to be reordered by dragging them."""
+        self.notebook.bind("<ButtonPress-1>", self._on_notebook_tab_press, add="+")
+        self.notebook.bind("<B1-Motion>", self._on_notebook_tab_drag, add="+")
+        self.notebook.bind("<ButtonRelease-1>", self._on_notebook_tab_release, add="+")
+
+    def _get_notebook_tab_order(self):
+        """Return the current notebook tab texts in display order."""
+        return [self.notebook.tab(tab_id, "text") for tab_id in self.notebook.tabs()]
+
+    def _store_notebook_tab_order(self):
+        """Persist current notebook tab order in the application config."""
+        self.app_config["notebook_tab_order"] = self._get_notebook_tab_order()
+
+    def _restore_notebook_tab_order(self):
+        """Restore notebook tab order from the application config when available."""
+        saved_order = self.app_config.get("notebook_tab_order", [])
+        if not saved_order:
+            return
+
+        tab_by_text = {}
+        for tab_id in self.notebook.tabs():
+            tab_text = self.notebook.tab(tab_id, "text")
+            tab_by_text.setdefault(tab_text, []).append(tab_id)
+
+        insert_index = 0
+        for tab_text in saved_order:
+            tab_list = tab_by_text.get(tab_text)
+            if not tab_list:
+                continue
+            self.notebook.insert(insert_index, tab_list.pop(0))
+            insert_index += 1
+
+        self._store_notebook_tab_order()
+
+    def _get_notebook_tab_index_at(self, x, y):
+        """Return the notebook tab index at screen coordinates, or None."""
+        try:
+            return self.notebook.index(f"@{x},{y}")
+        except tk.TclError:
+            return None
+
+    def _on_notebook_tab_press(self, event):
+        """Remember which tab started a drag operation."""
+        self._dragged_tab_index = self._get_notebook_tab_index_at(event.x, event.y)
+
+    def _on_notebook_tab_drag(self, event):
+        """Reorder tabs live while dragging across the notebook header."""
+        if self._dragged_tab_index is None:
+            return
+
+        target_index = self._get_notebook_tab_index_at(event.x, event.y)
+        if target_index is None or target_index == self._dragged_tab_index:
+            return
+
+        tabs = self.notebook.tabs()
+        if self._dragged_tab_index >= len(tabs) or target_index >= len(tabs):
+            return
+
+        dragged_tab = tabs[self._dragged_tab_index]
+        self.notebook.insert(target_index, dragged_tab)
+        self._dragged_tab_index = target_index
+
+    def _on_notebook_tab_release(self, event):
+        """Finish tab reordering when the drag ends."""
+        self._store_notebook_tab_order()
+        self._dragged_tab_index = None
+
+    def get_config(self):
+        """Get the current configuration."""
+        self._store_notebook_tab_order()
+        return self.app_config
     
     def _update_calibration_menu_states(self):
         """Update the enabled/disabled state of calibration menu items based on data availability."""

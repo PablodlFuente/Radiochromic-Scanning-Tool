@@ -110,6 +110,11 @@ class AutoMeasurementsTab(ttk.Frame):
         # Initialize file data manager early (will set UI controls after tree is created)
         self.file_manager = FileDataManager(None, image_processor, main_window)  # tree will be set later
 
+        self.dose_correction_var = tk.StringVar(value="1")
+        self._dose_correction_after_id = None
+        self._dose_correction_tooltip_after_id = None
+        self._dose_correction_tooltip = None
+
         # UI setup
         self._setup_ui()
         
@@ -563,9 +568,12 @@ class AutoMeasurementsTab(ttk.Frame):
         self.param1_var = tk.IntVar(value=15)
         self.param2_var = tk.IntVar(value=40)
         self.default_diameter_var = tk.IntVar(value=300)
-        
-        circle_frame = ttk.LabelFrame(self.frame, text="Circle Detection")
-        circle_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        detection_row = ttk.Frame(self.frame)
+        detection_row.pack(fill=tk.X, padx=10, pady=5)
+
+        circle_frame = ttk.LabelFrame(detection_row, text="Circle Detection")
+        circle_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
         
         # Store references to labels for unit updates
         self.min_radius_label = ttk.Label(circle_frame, text="Min Radius (px):")
@@ -597,6 +605,16 @@ class AutoMeasurementsTab(ttk.Frame):
             variable=self.restrict_diameter_var,
             command=self._apply_diameter_restriction,
         ).grid(row=4, column=0, columnspan=4, sticky=tk.W)
+
+        correction_frame = ttk.LabelFrame(detection_row, text="Dose Correction")
+        correction_frame.pack(side=tk.LEFT, fill=tk.Y, padx=(8, 0))
+        ttk.Label(correction_frame, text="Correction factor:").grid(row=0, column=0, sticky=tk.W, padx=8, pady=(6, 2))
+        self.dose_correction_entry = ttk.Entry(correction_frame, textvariable=self.dose_correction_var, width=10)
+        self.dose_correction_entry.grid(row=1, column=0, sticky=tk.W, padx=8, pady=(0, 6))
+        self.dose_correction_entry.bind("<KeyRelease>", self._on_dose_correction_key_release)
+        self.dose_correction_entry.bind("<FocusOut>", self._on_dose_correction_focus_out)
+        self.dose_correction_entry.bind("<Enter>", self._schedule_dose_correction_tooltip)
+        self.dose_correction_entry.bind("<Leave>", self._hide_dose_correction_tooltip)
         
         # Recalculate when default diameter value changes
         self.default_diameter_var.trace_add("write", lambda *args: self._apply_diameter_restriction())
@@ -604,6 +622,130 @@ class AutoMeasurementsTab(ttk.Frame):
         for name in ('rc_min_area', 'min_circle', 'max_circle', 'min_dist', 'default_diameter'):
             var = getattr(self, f'{name}_var')
             var.trace_add("write", lambda *args, n=name, v=var: self._on_param_change(n, v))
+
+    def _get_dose_correction_factor(self) -> float:
+        """Return the multiplicative dose correction factor."""
+        raw_value = self.dose_correction_var.get().strip()
+        if not raw_value:
+            return 1.0
+        try:
+            factor = float(raw_value)
+        except (ValueError, TypeError):
+            return 1.0
+        return factor if np.isfinite(factor) else 1.0
+
+    def _apply_dose_correction(self, dose, std, unc, avg_val, avg_unc):
+        """Apply the user-defined dose correction factor to measurement outputs."""
+        factor = self._get_dose_correction_factor()
+        if factor == 1.0:
+            return dose, std, unc, avg_val, avg_unc
+
+        def _scale(value):
+            if isinstance(value, tuple):
+                return tuple(_scale(v) for v in value)
+            if isinstance(value, list):
+                return [_scale(v) for v in value]
+            return value * factor
+
+        return (
+            _scale(dose),
+            _scale(std),
+            _scale(unc),
+            _scale(avg_val),
+            _scale(avg_unc),
+        )
+
+    def _measure_corrected_circle(self, cx, cy, radius):
+        """Measure a circle and apply the dose correction factor."""
+        prev_size = self.image_processor.measurement_size
+        try:
+            self.image_processor.measurement_size = radius
+            res = self.image_processor.measure_area(
+                cx * self.image_processor.zoom,
+                cy * self.image_processor.zoom
+            )
+        finally:
+            self.image_processor.measurement_size = prev_size
+
+        if res is None:
+            return None
+
+        dose, std, unc, rgb_mean, rgb_mean_std, pixel_count = res
+        dose, std, unc, rgb_mean, rgb_mean_std = self._apply_dose_correction(
+            dose, std, unc, rgb_mean, rgb_mean_std
+        )
+        return dose, std, unc, rgb_mean, rgb_mean_std, pixel_count
+
+    def _on_dose_correction_changed(self):
+        """Recompute displayed measurements when the correction factor changes."""
+        if not hasattr(self, 'tree') or not self.results:
+            return
+        self._refresh_all_measurements()
+        self._update_ctr_subtraction()
+        self.main_window.update_image()
+
+    def _schedule_dose_correction_update(self, delay_ms=450):
+        """Schedule a deferred dose correction recalculation."""
+        if self._dose_correction_after_id is not None:
+            self.after_cancel(self._dose_correction_after_id)
+        self._dose_correction_after_id = self.after(delay_ms, self._run_dose_correction_update)
+
+    def _run_dose_correction_update(self):
+        """Run the pending dose correction recalculation."""
+        self._dose_correction_after_id = None
+        self._on_dose_correction_changed()
+
+    def _on_dose_correction_key_release(self, _event=None):
+        """Recalculate after the user stops typing for a moment."""
+        self._schedule_dose_correction_update()
+
+    def _on_dose_correction_focus_out(self, _event=None):
+        """Recalculate immediately when the entry loses focus."""
+        if self._dose_correction_after_id is not None:
+            self.after_cancel(self._dose_correction_after_id)
+            self._dose_correction_after_id = None
+        self._on_dose_correction_changed()
+        self._hide_dose_correction_tooltip()
+
+    def _schedule_dose_correction_tooltip(self, _event=None):
+        """Show the dose correction tooltip after a short hover delay."""
+        if self._dose_correction_tooltip_after_id is not None:
+            self.after_cancel(self._dose_correction_tooltip_after_id)
+        self._dose_correction_tooltip_after_id = self.after(700, self._show_dose_correction_tooltip)
+
+    def _show_dose_correction_tooltip(self):
+        """Display the dose correction help tooltip."""
+        self._dose_correction_tooltip_after_id = None
+        if self._dose_correction_tooltip is not None or not hasattr(self, 'dose_correction_entry'):
+            return
+
+        tooltip = tk.Toplevel(self)
+        tooltip.wm_overrideredirect(True)
+        tooltip.attributes("-topmost", True)
+
+        x = self.dose_correction_entry.winfo_rootx() + 12
+        y = self.dose_correction_entry.winfo_rooty() + self.dose_correction_entry.winfo_height() + 6
+        tooltip.wm_geometry(f"+{x}+{y}")
+
+        label = ttk.Label(
+            tooltip,
+            text="Empty or invalid = 1",
+            background="#fff8dc",
+            relief="solid",
+            borderwidth=1,
+            padding=(6, 3),
+        )
+        label.pack()
+        self._dose_correction_tooltip = tooltip
+
+    def _hide_dose_correction_tooltip(self, _event=None):
+        """Cancel pending tooltip display and hide it if visible."""
+        if self._dose_correction_tooltip_after_id is not None:
+            self.after_cancel(self._dose_correction_tooltip_after_id)
+            self._dose_correction_tooltip_after_id = None
+        if self._dose_correction_tooltip is not None:
+            self._dose_correction_tooltip.destroy()
+            self._dose_correction_tooltip = None
 
     # ---------------------------------------------------------------
     # Metadata handling functionality (delegates to MetadataExtractor)
@@ -1076,14 +1218,60 @@ class AutoMeasurementsTab(ttk.Frame):
         
         self.main_window.update_image()
 
+    def _get_circle_coords_from_item(self, item_id):
+        """Resolve circle coordinates from overlay mapping or stored results."""
+        overlay = _get_parent_module()._OVERLAY or {}
+        shape_info = overlay.get("item_to_shape", {}).get(item_id)
+        if shape_info and shape_info[0] == "circle":
+            return shape_info[1]
+
+        parent_id = self.tree.parent(item_id)
+        if not parent_id:
+            return None
+
+        film_name = self.tree.item(parent_id, "text")
+        circle_name = self.tree.item(item_id, "text").replace(" (CTR)", "").replace(" (GLOBAL CTR)", "")
+
+        for result in self.results:
+            if result.get("film") != film_name:
+                continue
+            if result.get("circle", "").replace(" (CTR)", "").replace(" (GLOBAL CTR)", "") != circle_name:
+                continue
+
+            cx = result.get("x")
+            cy = result.get("y")
+            if cx is None or cy is None:
+                return None
+
+            radius = self.original_radii.get(item_id)
+            if radius is None:
+                for mapped_item_id, mapped_shape in overlay.get("item_to_shape", {}).items():
+                    if mapped_shape[0] != "circle":
+                        continue
+                    mx, my, mr = mapped_shape[1]
+                    if abs(mx - cx) < 2 and abs(my - cy) < 2:
+                        radius = mr
+                        break
+
+            return (cx, cy, radius if radius is not None else 20)
+
+        return None
+
     def _on_right_click(self, event):
         """Show 3D view on right-click."""
         item_id = self.tree.identify_row(event.y)
         if not item_id:
             return
-        if item_id in _get_parent_module()._OVERLAY.get("item_to_shape", {}) and _get_parent_module()._OVERLAY["item_to_shape"][item_id][0] == "circle":
-            _, (cx, cy, r) = _get_parent_module()._OVERLAY["item_to_shape"][item_id]
-            self._show_circle_3d(cx, cy, r)
+
+        self.tree.focus(item_id)
+        self.tree.selection_set(item_id)
+
+        circle_coords = self._get_circle_coords_from_item(item_id)
+        if circle_coords is None:
+            return
+
+        cx, cy, r = circle_coords
+        self._show_circle_3d(cx, cy, r)
 
     def _on_edit_label(self, event):
         """Edit item label on double-click."""
@@ -1408,77 +1596,67 @@ class AutoMeasurementsTab(ttk.Frame):
         """Refresh all measurements using the current uncertainty estimation method."""
         if not self.image_processor.has_image() or not hasattr(self, 'tree'):
             return
-        
-        # Get all items from the tree
-        items = self.tree.get_children()
-        if not items:
+
+        film_items = self.tree.get_children()
+        if not film_items:
             return
-        
-        # Re-measure all circles with the new uncertainty method
-        for item in items:
-            item_id = self.tree.item(item, "values")[0]  # Get the ID from first column
-            
-            # Find the shape info for this item
-            if item_id in _get_parent_module()._OVERLAY.get("item_to_shape", {}):
-                shape_info = _get_parent_module()._OVERLAY["item_to_shape"][item_id]
-                if shape_info[0] == "circle":
-                    cx, cy, r = shape_info[1:]
-                    
-                    # Re-measure with current settings
-                    prev_size = self.image_processor.measurement_size
-                    try:
-                        self.image_processor.measurement_size = r
-                        res = self.image_processor.measure_area(
-                            cx * self.image_processor.zoom,
-                            cy * self.image_processor.zoom
-                        )
-                        if res:
-                            # Extract measurement results (always 6-tuple format)
-                            dose, std, unc, rgb_mean, rgb_mean_std, pixel_count = res
-                            
-                            # Get numeric values
-                            if isinstance(dose, tuple):
-                                dose_values = list(dose)
-                                sigma_values = list(std)
-                                avg_val = float(rgb_mean)
-                                avg_unc = float(rgb_mean_std)
-                            else:
-                                dose_values = dose
-                                sigma_values = std
-                                avg_val = float(rgb_mean)
-                                avg_unc = float(rgb_mean_std)
-                            
-                            # Format for TreeView
-                            dose_str, std_str, avg_str, avg_unc_str, ci95_str = self.formatter.format_for_treeview(
-                                dose_values,
-                                sigma_values,
-                                avg_val,
-                                avg_unc,
-                                sig=2
-                            )
-                            
-                            # For CSV export, we need unc_str with full precision
-                            if isinstance(unc, tuple):
-                                unc_parts = [f"±{u}" for u in unc]
-                                unc_str = ", ".join(unc_parts)
-                            else:
-                                unc_str = f"±{unc}"
-                            
-                            # Update tree values
-                            current_values = list(self.tree.item(item, "values"))
-                            if len(current_values) >= 5:
-                                current_values[0] = dose_str    # dose
-                                current_values[1] = std_str     # STD (standard deviation)
-                                current_values[2] = avg_str     # avg
-                                current_values[3] = avg_unc_str # avg_unc (SE)
-                                current_values[4] = ci95_str    # 95% CI
-                                self.tree.item(item, values=current_values)
-                                
-                                # Update original measurements for CTR calculations (use formatted values)
-                                self._store_original_measurement(item, dose_str, std_str, avg_str, avg_unc_str)
-                                
-                    finally:
-                        self.image_processor.measurement_size = prev_size
+
+        overlay = _get_parent_module()._OVERLAY or {}
+        item_to_shape = overlay.get("item_to_shape", {})
+
+        for film_id in film_items:
+            film_name = self.tree.item(film_id, "text")
+            for circle_id in self.tree.get_children(film_id):
+                shape_info = item_to_shape.get(circle_id)
+                if not shape_info or shape_info[0] != "circle":
+                    continue
+
+                cx, cy, r = shape_info[1]
+                res = self._measure_corrected_circle(cx, cy, r)
+                if res is None:
+                    continue
+
+                dose, std, unc, rgb_mean, rgb_mean_std, pixel_count = res
+                avg_std = float(np.mean(std)) if isinstance(std, tuple) else float(std)
+
+                dose_str, std_str, avg_str, avg_unc_str, ci95_str = self.formatter.format_for_treeview(
+                    dose,
+                    std,
+                    float(rgb_mean),
+                    float(rgb_mean_std),
+                    sig=2
+                )
+
+                current_values = list(self.tree.item(circle_id, "values"))
+                if len(current_values) >= 5:
+                    current_values[0] = dose_str
+                    current_values[1] = std_str
+                    current_values[2] = avg_str
+                    current_values[3] = avg_unc_str
+                    current_values[4] = ci95_str
+                    self.tree.item(circle_id, values=current_values)
+                    self._store_original_measurement(circle_id, dose_str, std_str, avg_str, avg_unc_str)
+
+                circle_name = self.tree.item(circle_id, "text").replace(" (CTR)", "").replace(" (GLOBAL CTR)", "")
+                for result in self.results:
+                    result_circle = result.get("circle", "").replace(" (CTR)", "").replace(" (GLOBAL CTR)", "")
+                    if result.get("film") != film_name or result_circle != circle_name:
+                        continue
+
+                    result["dose"] = dose
+                    result["std_per_channel"] = std
+                    result["unc"] = unc
+                    result["avg"] = float(rgb_mean)
+                    result["avg_unc"] = float(rgb_mean_std)
+                    result["std"] = avg_std
+                    result["pixel_count"] = pixel_count
+                    result["dose_numeric"] = dose
+                    result["std_numeric"] = std
+                    result["unc_numeric"] = unc
+                    result["avg_numeric"] = float(rgb_mean)
+                    result["std_avg_numeric"] = avg_std
+                    result["avg_unc_numeric"] = float(rgb_mean_std)
+                    break
 
     # ---------------------------------------------------------------
     # Multi-file functionality
@@ -2003,16 +2181,7 @@ class AutoMeasurementsTab(ttk.Frame):
                 orig_r_int = int(round(original_circles[orig_idx][2]))
 
                 # Measure dose
-                prev_size = self.image_processor.measurement_size
-                try:
-                    self.image_processor.measurement_size = r_int
-                    res = self.image_processor.measure_area(
-                        abs_cx * self.image_processor.zoom,
-                        abs_cy * self.image_processor.zoom
-                    )
-                finally:
-                    self.image_processor.measurement_size = prev_size
-
+                res = self._measure_corrected_circle(abs_cx, abs_cy, r_int)
                 if res is None:
                     continue
 
@@ -2364,16 +2533,7 @@ class AutoMeasurementsTab(ttk.Frame):
                 self.original_radii[item_id] = default_radius
                 
                 # Recalculate measurements
-                prev_size = self.image_processor.measurement_size
-                try:
-                    self.image_processor.measurement_size = default_radius
-                    res = self.image_processor.measure_area(
-                        x_px * self.image_processor.zoom,
-                        y_px * self.image_processor.zoom
-                    )
-                finally:
-                    self.image_processor.measurement_size = prev_size
-                
+                res = self._measure_corrected_circle(x_px, y_px, default_radius)
                 if res is None:
                     continue
                 
@@ -2467,16 +2627,7 @@ class AutoMeasurementsTab(ttk.Frame):
                 new_circles.append((x, y, original_r))
                 
                 # Recalculate measurements with original radii
-                prev_size = self.image_processor.measurement_size
-                try:
-                    self.image_processor.measurement_size = original_r
-                    res = self.image_processor.measure_area(
-                        x * self.image_processor.zoom,
-                        y * self.image_processor.zoom
-                    )
-                finally:
-                    self.image_processor.measurement_size = prev_size
-                
+                res = self._measure_corrected_circle(x, y, original_r)
                 if res is None:
                     continue
                 
@@ -2733,7 +2884,7 @@ class AutoMeasurementsTab(ttk.Frame):
             )
             plot_title = "3D Intensity Map"
             z_label = "Value"
-        
+
         if img is None:
             messagebox.showwarning("3D View", "No image loaded.")
             return
@@ -2772,7 +2923,7 @@ class AutoMeasurementsTab(ttk.Frame):
     def _autosize_columns(self):
         """Adjust column widths to fit content."""
         font = tkfont.nametofont("TkDefaultFont")
-        
+
         # For the name column, account for indentation
         max_name_width = 0
         for item in self.tree.get_children(''):
@@ -2780,10 +2931,10 @@ class AutoMeasurementsTab(ttk.Frame):
             width = font.measure(text)
             if width > max_name_width:
                 max_name_width = width
-            
+
             for child in self.tree.get_children(item):
                 child_text = self.tree.item(child, 'text')
-                width = font.measure(child_text) + 30  # Add indentation
+                width = font.measure(child_text) + 30
                 if width > max_name_width:
                     max_name_width = width
         
@@ -3066,16 +3217,7 @@ class AutoMeasurementsTab(ttk.Frame):
         logging.debug(f"[_insert_circle] Circle {circ_name} will be added to parent film {parent_film_name}")
         
         # Measure the circle
-        prev_size = self.image_processor.measurement_size
-        try:
-            self.image_processor.measurement_size = r
-            res = self.image_processor.measure_area(
-                cx * self.image_processor.zoom,
-                cy * self.image_processor.zoom
-            )
-        finally:
-            self.image_processor.measurement_size = prev_size
-
+        res = self._measure_corrected_circle(cx, cy, r)
         if res:
             # Extract measurement results (always 6-tuple format)
             dose, std, unc, rgb_mean, rgb_mean_std, pixel_count = res

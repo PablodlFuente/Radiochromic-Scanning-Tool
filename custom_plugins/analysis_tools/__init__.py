@@ -168,6 +168,12 @@ class AnalysisTab:
 
         # Introduced values per circle key: (film, circle) -> float
         self._introduced_values: dict[tuple[str, str], float] = {}
+        self._introduced_value_label_var = tk.StringVar(value="Introduced Value")
+        self._dose_tree_index: dict[str, dict[str, object]] = {}
+        self._highlighted_dose_item: str | None = None
+        self._dose_data_rows: list[dict[str, object]] = []
+        self._analysis_results: list[dict[str, object]] = []
+        self._show_analysis_data_var = tk.BooleanVar(value=False)
 
         self._build_ui()
 
@@ -246,11 +252,38 @@ class AnalysisTab:
                    command=self._plot_dose_vs_value).pack(side=tk.LEFT, padx=4)
         ttk.Button(btn_row2, text="Clear", command=self._clear_dose_table).pack(side=tk.LEFT, padx=4)
 
-        # Editable treeview
-        cols2 = ("film", "circle", "dose", "se", "value")
-        self.dose_tree = ttk.Treeview(dose_frame, columns=cols2, show="headings", height=10)
+        self._see_data_switch = tk.Canvas(btn_row2, width=44, height=22,
+                          highlightthickness=0, bd=0)
+        self._see_data_switch.pack(side=tk.LEFT, padx=(12, 4))
+        self._see_data_switch.bind("<Button-1>", self._toggle_see_data_switch)
+        self._see_data_switch.bind("<Return>", self._toggle_see_data_switch)
+        self._see_data_switch.bind("<space>", self._toggle_see_data_switch)
+        self._see_data_switch.configure(cursor="hand2", takefocus=1)
+        ttk.Label(btn_row2, text="See Data").pack(side=tk.LEFT, padx=(0, 4))
+
+        self._force_origin_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(btn_row2, text="Force fit through 0",
+                variable=self._force_origin_var,
+                command=self._on_analysis_option_changed).pack(side=tk.RIGHT, padx=4)
+
+        self._separate_rc_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(btn_row2, text="Plot each RC separately",
+                variable=self._separate_rc_var,
+                command=self._on_analysis_option_changed).pack(side=tk.RIGHT, padx=4)
+
+        label_row = ttk.Frame(dose_frame)
+        label_row.pack(fill=tk.X, padx=6, pady=(0, 4))
+        ttk.Label(label_row, text="X label / data name:").pack(side=tk.LEFT, padx=(0, 6))
+        value_name_entry = ttk.Entry(label_row, textvariable=self._introduced_value_label_var, width=24)
+        value_name_entry.pack(side=tk.LEFT)
+        self._introduced_value_label_var.trace_add("write", self._on_introduced_value_label_changed)
+
+        # Editable treeview with same hierarchy as AutoMeasurements: Film > Circle
+        cols2 = ("dose", "se", "value")
+        self.dose_tree = ttk.Treeview(dose_frame, columns=cols2, show="tree headings", height=10)
+        self.dose_tree.heading("#0", text="Film / Circle", anchor=tk.W)
+        self.dose_tree.column("#0", width=130, minwidth=100)
         for c, w, text in [
-            ("film", 80, "Film"), ("circle", 65, "Circle"),
             ("dose", 90, "Dose (Gy)"), ("se", 80, "SE (Gy)"),
             ("value", 90, "Introduced Value")
         ]:
@@ -261,6 +294,9 @@ class AnalysisTab:
 
         # Double-click to edit the "Introduced Value" column
         self.dose_tree.bind("<Double-1>", self._on_dose_tree_double_click)
+        self.dose_tree.bind("<<TreeviewSelect>>", self._on_dose_tree_select)
+        self._render_see_data_switch()
+        self._refresh_dose_tree_columns()
 
     # ------------------------------------------------------------------
     # UI callbacks
@@ -628,6 +664,311 @@ class AnalysisTab:
     # ------------------------------------------------------------------
     # Dose vs Introduced Value
     # ------------------------------------------------------------------
+    def _toggle_see_data_switch(self, event=None):
+        self._show_analysis_data_var.set(not self._show_analysis_data_var.get())
+        self._render_see_data_switch()
+        self._refresh_dose_tree_columns()
+        return "break"
+
+    def _render_see_data_switch(self):
+        canvas = getattr(self, "_see_data_switch", None)
+        if canvas is None:
+            return
+
+        canvas.delete("all")
+        is_on = self._show_analysis_data_var.get()
+        track_color = "#2f855a" if is_on else "#a0aec0"
+        knob_x = 31 if is_on else 13
+
+        canvas.create_oval(2, 2, 20, 20, fill=track_color, outline=track_color)
+        canvas.create_rectangle(11, 2, 33, 20, fill=track_color, outline=track_color)
+        canvas.create_oval(24, 2, 42, 20, fill=track_color, outline=track_color)
+        canvas.create_oval(knob_x - 8, 3, knob_x + 8, 19, fill="white", outline="#e2e8f0")
+
+    def _get_introduced_value_label(self) -> str:
+        label = self._introduced_value_label_var.get().strip()
+        return label if label else "Introduced Value"
+
+    def _on_introduced_value_label_changed(self, *_args):
+        self._refresh_dose_tree_columns()
+
+    def _on_analysis_option_changed(self):
+        self._recompute_analysis_results()
+        if self._show_analysis_data_var.get():
+            self._refresh_dose_tree()
+
+    def _refresh_dose_tree_columns(self):
+        if self._show_analysis_data_var.get():
+            cols = ("slope", "slope_se", "intercept", "intercept_se", "r2")
+            self.dose_tree.configure(columns=cols)
+            self.dose_tree.heading("#0", text="Series", anchor=tk.W)
+            self.dose_tree.column("#0", width=150, minwidth=110)
+            for col, width, text in [
+                ("slope", 90, "Slope"),
+                ("slope_se", 95, "Unc slope"),
+                ("intercept", 90, "Intercept"),
+                ("intercept_se", 95, "Unc intercept"),
+                ("r2", 70, "R²"),
+            ]:
+                self.dose_tree.heading(col, text=text)
+                self.dose_tree.column(col, width=width, anchor=tk.CENTER)
+        else:
+            cols = ("dose", "se", "value")
+            self.dose_tree.configure(columns=cols)
+            self.dose_tree.heading("#0", text="Film / Circle", anchor=tk.W)
+            self.dose_tree.column("#0", width=130, minwidth=100)
+            for col, width, text in [
+                ("dose", 90, "Dose (Gy)"),
+                ("se", 80, "SE (Gy)"),
+                ("value", 120, self._get_introduced_value_label()),
+            ]:
+                self.dose_tree.heading(col, text=text)
+                self.dose_tree.column(col, width=width, anchor=tk.CENTER)
+
+        self._refresh_dose_tree()
+
+    def _refresh_dose_tree(self):
+        if not hasattr(self, "dose_tree"):
+            return
+
+        selected_info = None
+        selected = self.dose_tree.selection()
+        if selected and selected[0] in self._dose_tree_index:
+            selected_info = self._dose_tree_index[selected[0]]
+
+        self.dose_tree.delete(*self.dose_tree.get_children())
+        self._dose_tree_index.clear()
+
+        if self._show_analysis_data_var.get():
+            self._recompute_analysis_results()
+            self._set_dose_overlay_highlight(None)
+            if not self._analysis_results:
+                self.dose_tree.insert(
+                    "",
+                    "end",
+                    text="No analysis results",
+                    values=("", "", "", "", ""),
+                )
+                return
+
+            for result in self._analysis_results:
+                self.dose_tree.insert(
+                    "",
+                    "end",
+                    text=str(result.get("name", "")),
+                    values=(
+                        str(result.get("slope", "")),
+                        str(result.get("slope_se", "")),
+                        str(result.get("intercept", "")),
+                        str(result.get("intercept_se", "")),
+                        str(result.get("r2", "")),
+                    ),
+                )
+            return
+
+        films: dict[str, str] = {}
+        reselect_item = None
+        for row in self._dose_data_rows:
+            film = str(row["film"])
+            circle = str(row["circle"])
+            film_item = films.get(film)
+            if film_item is None:
+                film_item = self.dose_tree.insert("", "end", text=film, values=("", "", ""), open=True)
+                films[film] = film_item
+
+            circle_item = self.dose_tree.insert(
+                film_item,
+                "end",
+                text=circle,
+                values=(
+                    f"{float(row['dose']):.4f}",
+                    f"{float(row['se']):.4f}",
+                    str(row.get("value", "")),
+                ),
+            )
+            self._dose_tree_index[circle_item] = {
+                "film": film,
+                "circle": circle,
+                "coords": row["coords"],
+            }
+
+            if selected_info and selected_info["film"] == film and selected_info["circle"] == circle:
+                reselect_item = circle_item
+
+        if reselect_item is not None:
+            self.dose_tree.selection_set(reselect_item)
+            self.dose_tree.focus(reselect_item)
+            self._set_dose_overlay_highlight(reselect_item)
+        else:
+            self._set_dose_overlay_highlight(None)
+
+    def _set_dose_overlay_highlight(self, item_id: str | None):
+        overlay = _get_overlay()
+        if overlay is None:
+            return
+
+        if item_id is None:
+            overlay.pop("highlight", None)
+            self._highlighted_dose_item = None
+            self.main_window.update_image()
+            return
+
+        circle_info = self._dose_tree_index.get(item_id)
+        if not circle_info:
+            overlay.pop("highlight", None)
+            self._highlighted_dose_item = None
+            self.main_window.update_image()
+            return
+
+        overlay["highlight"] = ("circle", circle_info["coords"])
+        self._highlighted_dose_item = item_id
+        self.main_window.update_image()
+
+    def _on_dose_tree_select(self, event=None):
+        if self._show_analysis_data_var.get():
+            self._set_dose_overlay_highlight(None)
+            return
+
+        selected = self.dose_tree.selection()
+        if not selected:
+            self._set_dose_overlay_highlight(None)
+            return
+
+        item_id = selected[0]
+        if item_id not in self._dose_tree_index:
+            self._set_dose_overlay_highlight(None)
+            return
+
+        self._set_dose_overlay_highlight(item_id)
+
+    def _collect_film_data(self):
+        film_data: dict[str, list] = {}
+        for row in self._dose_data_rows:
+            film = str(row["film"])
+            val_str = str(row.get("value", "")).strip()
+            if not val_str:
+                continue
+            try:
+                introduced = float(val_str)
+                dose = float(row["dose"])
+                se = float(row["se"])
+            except (ValueError, TypeError):
+                continue
+
+            film_data.setdefault(film, []).append((str(row["circle"]), introduced, dose, se))
+        return film_data
+
+    def _recompute_analysis_results(self):
+        film_data = self._collect_film_data()
+        if not film_data:
+            self._analysis_results = []
+            return
+
+        force_origin = self._force_origin_var.get()
+        separate_rc = self._separate_rc_var.get()
+        sorted_films = sorted(film_data.items())
+        analysis_rows = []
+
+        if separate_rc:
+            for film_name, data in sorted_films:
+                xs = np.array([d[1] for d in data], dtype=np.float64)
+                ys = np.array([d[2] for d in data], dtype=np.float64)
+                errs = np.array([d[3] for d in data], dtype=np.float64)
+                slope, intercept, slope_se, intercept_se, r_squared = self._fit_line(
+                    xs, ys, errs, force_origin
+                )
+                analysis_rows.append({
+                    "name": film_name,
+                    "slope": f"{slope:.6f}",
+                    "slope_se": f"{slope_se:.6f}",
+                    "intercept": f"{intercept:.6f}",
+                    "intercept_se": f"{intercept_se:.6f}",
+                    "r2": f"{r_squared:.6f}",
+                })
+        else:
+            all_data = [d for _, series_data in sorted_films for d in series_data]
+            xs = np.array([d[1] for d in all_data], dtype=np.float64)
+            ys = np.array([d[2] for d in all_data], dtype=np.float64)
+            errs = np.array([d[3] for d in all_data], dtype=np.float64)
+            slope, intercept, slope_se, intercept_se, r_squared = self._fit_line(
+                xs, ys, errs, force_origin
+            )
+            analysis_rows.append({
+                "name": "All RC Data",
+                "slope": f"{slope:.6f}",
+                "slope_se": f"{slope_se:.6f}",
+                "intercept": f"{intercept:.6f}",
+                "intercept_se": f"{intercept_se:.6f}",
+                "r2": f"{r_squared:.6f}",
+            })
+
+        self._analysis_results = analysis_rows
+
+    def _editable_dose_items(self):
+        return [item_id for item_id in self._dose_tree_index.keys() if self.dose_tree.exists(item_id)]
+
+    def _focus_adjacent_dose_item(self, current_item, step):
+        items = self._editable_dose_items()
+        if current_item not in items:
+            return
+        next_index = items.index(current_item) + step
+        if next_index < 0 or next_index >= len(items):
+            return
+        next_item = items[next_index]
+        self.dose_tree.selection_set(next_item)
+        self.dose_tree.focus(next_item)
+        self.dose_tree.see(next_item)
+        self._set_dose_overlay_highlight(next_item)
+        self._open_dose_value_editor(next_item)
+
+    def _fit_line(self, xs: np.ndarray, ys: np.ndarray, errs: np.ndarray, force_origin: bool):
+        weights = np.where(errs > 0, 1.0 / errs**2, 1.0)
+
+        if force_origin:
+            denom = np.sum(weights * xs**2)
+            slope = np.sum(weights * xs * ys) / denom if denom > 0 else 0.0
+            intercept = 0.0
+        else:
+            s = np.sum(weights)
+            sx = np.sum(weights * xs)
+            sy = np.sum(weights * ys)
+            sxx = np.sum(weights * xs**2)
+            sxy = np.sum(weights * xs * ys)
+            denom = s * sxx - sx**2
+            if abs(denom) < 1e-12:
+                slope = 0.0
+                intercept = float(np.average(ys, weights=weights)) if len(ys) else 0.0
+            else:
+                slope = (s * sxy - sx * sy) / denom
+                intercept = (sxx * sy - sx * sxy) / denom
+
+        y_pred = slope * xs + intercept
+        ss_res = np.sum((ys - y_pred)**2)
+        ss_tot = np.sum((ys - np.mean(ys))**2)
+        r_squared = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
+
+        if force_origin:
+            dof = max(len(xs) - 1, 1)
+            sigma2 = np.sum(weights * (ys - y_pred) ** 2) / dof if len(xs) > 1 else 0.0
+            denom = np.sum(weights * xs**2)
+            slope_se = np.sqrt(sigma2 / denom) if denom > 0 and sigma2 > 0 else 0.0
+            intercept_se = 0.0
+        else:
+            dof = max(len(xs) - 2, 1)
+            sigma2 = np.sum(weights * (ys - y_pred) ** 2) / dof if len(xs) > 2 else 0.0
+            s = np.sum(weights)
+            sx = np.sum(weights * xs)
+            sxx = np.sum(weights * xs**2)
+            denom = s * sxx - sx**2
+            if denom > 0 and sigma2 > 0:
+                slope_se = np.sqrt(sigma2 * s / denom)
+                intercept_se = np.sqrt(sigma2 * sxx / denom)
+            else:
+                slope_se = 0.0
+                intercept_se = 0.0
+
+        return slope, intercept, slope_se, intercept_se, r_squared
+
     def _load_circles(self):
         """Load detected circles from AutoMeasurements results."""
         am = _get_auto_measurements()
@@ -636,12 +977,19 @@ class AnalysisTab:
             return
 
         self._clear_dose_table()
+        self._analysis_results = []
+
+        overlay = _get_overlay()
+        item_to_shape = overlay.get("item_to_shape", {}) if overlay else {}
+        loaded_rows = []
 
         for result in am.results:
             film = result.get("film", "")
             circle = result.get("circle", "")
             avg = result.get("avg_numeric", result.get("avg", 0.0))
             se = result.get("avg_unc_numeric", result.get("avg_unc", 0.0))
+            cx = result.get("x")
+            cy = result.get("y")
 
             try:
                 avg = float(avg)
@@ -656,39 +1004,60 @@ class AnalysisTab:
             key = (film, circle)
             prev = self._introduced_values.get(key, "")
 
-            self.dose_tree.insert("", "end", values=(
-                film, circle, f"{avg:.4f}", f"{se:.4f}", str(prev)
-            ))
+            radius = self._find_radius(item_to_shape, am, cx, cy) if cx is not None and cy is not None else 30
+            loaded_rows.append({
+                "film": film,
+                "circle": circle,
+                "dose": avg,
+                "se": se,
+                "value": str(prev),
+                "coords": (cx, cy, radius),
+            })
+
+        self._dose_data_rows = loaded_rows
+        self._recompute_analysis_results()
+        self._refresh_dose_tree()
 
     def _clear_dose_table(self):
-        # Save currently entered values before clearing
-        for item in self.dose_tree.get_children():
-            vals = self.dose_tree.item(item, "values")
-            if vals and len(vals) >= 5:
-                key = (vals[0], vals[1])
-                val_str = vals[4].strip()
-                if val_str:
-                    try:
-                        self._introduced_values[key] = float(val_str)
-                    except ValueError:
-                        pass
-        for item in self.dose_tree.get_children():
-            self.dose_tree.delete(item)
+        for row in self._dose_data_rows:
+            val_str = str(row.get("value", "")).strip()
+            if val_str:
+                try:
+                    self._introduced_values[(str(row["film"]), str(row["circle"]))] = float(val_str)
+                except ValueError:
+                    pass
+
+        self._dose_data_rows = []
+        self._analysis_results = []
+        self.dose_tree.delete(*self.dose_tree.get_children())
+        self._dose_tree_index.clear()
+        self._set_dose_overlay_highlight(None)
 
     def _on_dose_tree_double_click(self, event):
         """Allow editing the 'Introduced Value' column on double-click."""
+        if self._show_analysis_data_var.get():
+            return
+
         region = self.dose_tree.identify_region(event.x, event.y)
         if region != "cell":
             return
 
         col = self.dose_tree.identify_column(event.x)
-        # col is "#1", "#2", ... — we want #5 (value column)
-        if col != "#5":
+        # Tree column is #0, value column is #3
+        if col != "#3":
             return
 
         item = self.dose_tree.identify_row(event.y)
-        if not item:
+        if not item or item not in self._dose_tree_index:
             return
+
+        self._open_dose_value_editor(item)
+
+    def _open_dose_value_editor(self, item):
+        if item not in self._dose_tree_index:
+            return
+
+        col = "#3"
 
         # Get cell bounding box
         bbox = self.dose_tree.bbox(item, column=col)
@@ -697,7 +1066,7 @@ class AnalysisTab:
 
         x, y, w, h = bbox
         current_vals = self.dose_tree.item(item, "values")
-        current_text = current_vals[4] if len(current_vals) >= 5 else ""
+        current_text = current_vals[2] if len(current_vals) >= 3 else ""
 
         # Create entry widget on top of the cell
         entry = ttk.Entry(self.dose_tree, width=10)
@@ -706,107 +1075,144 @@ class AnalysisTab:
         entry.focus_set()
         entry.select_range(0, tk.END)
 
-        def _commit(ev=None):
+        def _commit():
             new_val = entry.get().strip()
             entry.destroy()
             # Update treeview
             vals = list(self.dose_tree.item(item, "values"))
-            vals[4] = new_val
+            vals[2] = new_val
             self.dose_tree.item(item, values=vals)
             # Store
-            key = (vals[0], vals[1])
+            info = self._dose_tree_index.get(item)
+            if info is None:
+                return
+            key = (info["film"], info["circle"])
+            for row in self._dose_data_rows:
+                if row["film"] == info["film"] and row["circle"] == info["circle"]:
+                    row["value"] = new_val
+                    break
             if new_val:
                 try:
                     self._introduced_values[key] = float(new_val)
                 except ValueError:
                     pass
+            elif key in self._introduced_values:
+                self._introduced_values.pop(key, None)
+
+            self._recompute_analysis_results()
+            if self._show_analysis_data_var.get():
+                self._refresh_dose_tree()
+
+        def _commit_and_close(ev=None):
+            _commit()
+
+        def _commit_and_move(step):
+            _commit()
+            self._focus_adjacent_dose_item(item, step)
+            return "break"
 
         def _cancel(ev=None):
             entry.destroy()
 
-        entry.bind("<Return>", _commit)
-        entry.bind("<FocusOut>", _commit)
+        entry.bind("<Return>", _commit_and_close)
+        entry.bind("<FocusOut>", _commit_and_close)
+        entry.bind("<Tab>", lambda ev: _commit_and_move(1))
+        entry.bind("<Shift-Tab>", lambda ev: _commit_and_move(-1))
         entry.bind("<Escape>", _cancel)
 
     def _plot_dose_vs_value(self):
-        """Plot measured dose vs introduced value, per film (RC)."""
+        """Plot measured dose vs introduced value with configurable fitting and grouping."""
         import matplotlib.pyplot as plt
-        from matplotlib.figure import Figure
 
         # Collect data grouped by film
-        film_data: dict[str, list] = {}
-
-        for item in self.dose_tree.get_children():
-            vals = self.dose_tree.item(item, "values")
-            if not vals or len(vals) < 5:
-                continue
-            film = vals[0]
-            val_str = vals[4].strip()
-            if not val_str:
-                continue
-            try:
-                introduced = float(val_str)
-                dose = float(vals[2])
-                se = float(vals[3])
-            except (ValueError, TypeError):
-                continue
-
-            film_data.setdefault(film, []).append((introduced, dose, se))
+        film_data = self._collect_film_data()
 
         if not film_data:
             messagebox.showinfo("Analysis",
                                 "No data to plot. Load circles and enter introduced values first.")
             return
 
-        n_films = len(film_data)
-        fig, axes = plt.subplots(1, n_films, figsize=(5 * n_films, 5), squeeze=False)
+        force_origin = self._force_origin_var.get()
+        separate_rc = self._separate_rc_var.get()
+        sorted_films = sorted(film_data.items())
+        self._recompute_analysis_results()
 
-        for idx, (film_name, data) in enumerate(sorted(film_data.items())):
-            ax = axes[0, idx]
-            xs = np.array([d[0] for d in data])
-            ys = np.array([d[1] for d in data])
-            errs = np.array([d[2] for d in data])
+        if separate_rc:
+            n_films = len(sorted_films)
+            fig, axes = plt.subplots(1, n_films, figsize=(5 * n_films, 5), squeeze=False)
+            axes_list = list(axes[0])
+            grouped_series = [(film_name, data, axes_list[idx], '#2980b9')
+                              for idx, (film_name, data) in enumerate(sorted_films)]
+        else:
+            fig, ax = plt.subplots(1, 1, figsize=(7, 5))
+            palette = plt.cm.get_cmap('tab10', max(len(sorted_films), 1))
+            axes_list = [ax]
+            grouped_series = [
+                (film_name, data, ax, palette(idx))
+                for idx, (film_name, data) in enumerate(sorted_films)
+            ]
 
-            # Plot data points with error bars
-            ax.errorbar(xs, ys, yerr=errs, fmt='o', color='#2980b9',
+        all_xs = []
+        all_ys = []
+
+        for idx, (film_name, data, ax, color) in enumerate(grouped_series):
+            xs = np.array([d[1] for d in data], dtype=np.float64)
+            ys = np.array([d[2] for d in data], dtype=np.float64)
+            errs = np.array([d[3] for d in data], dtype=np.float64)
+            all_xs.extend(xs.tolist())
+            all_ys.extend(ys.tolist())
+
+            label = film_name if not separate_rc else None
+            ax.errorbar(xs, ys, yerr=errs, fmt='o', color=color,
                         markersize=7, capsize=4, markeredgecolor='white',
-                        markeredgewidth=1.2, ecolor='gray', zorder=5)
+                        markeredgewidth=1.2, ecolor='gray', zorder=5, label=label)
 
-            # Linear fit forced through origin: y = m * x
-            # Weighted least squares: m = Σ(w_i * x_i * y_i) / Σ(w_i * x_i²)
-            weights = np.where(errs > 0, 1.0 / errs**2, 1.0)
-            denom = np.sum(weights * xs**2)
-            if denom > 0:
-                m = np.sum(weights * xs * ys) / denom
-            else:
-                m = 1.0
+            if separate_rc or (not separate_rc and idx == len(grouped_series) - 1):
+                fit_xs = xs if separate_rc else np.array(all_xs, dtype=np.float64)
+                fit_ys = ys if separate_rc else np.array(all_ys, dtype=np.float64)
+                fit_errs = errs if separate_rc else np.array([
+                    d[3] for _, series_data in sorted_films for d in series_data
+                ], dtype=np.float64)
 
-            # R² calculation
-            y_pred = m * xs
-            ss_res = np.sum((ys - y_pred)**2)
-            ss_tot = np.sum((ys - np.mean(ys))**2)
-            r_squared = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
+                slope, intercept, slope_se, intercept_se, r_squared = self._fit_line(
+                    fit_xs, fit_ys, fit_errs, force_origin
+                )
 
-            # Plot fit line
-            x_fit = np.linspace(0, max(xs) * 1.1, 100)
-            y_fit = m * x_fit
-            ax.plot(x_fit, y_fit, 'r-', linewidth=1.5, zorder=3)
+                x_min = 0.0 if force_origin else min(0.0, float(np.min(fit_xs)) * 0.95)
+                x_max = float(np.max(fit_xs)) * 1.1 if len(fit_xs) else 1.0
+                if x_max <= x_min:
+                    x_max = x_min + 1.0
+                x_fit = np.linspace(x_min, x_max, 100)
+                y_fit = slope * x_fit + intercept
+                fit_label = 'Fit' if separate_rc else 'Global fit'
+                ax.plot(x_fit, y_fit, '-', color='#c0392b', linewidth=1.5, zorder=3,
+                        label=fit_label if not separate_rc else None)
 
-            # Equation and R² annotation
-            ax.text(0.05, 0.92,
-                    f"y = {m:.4f}·x\nR² = {r_squared:.4f}",
-                    transform=ax.transAxes, fontsize=10,
-                    verticalalignment='top',
-                    bbox=dict(boxstyle='round,pad=0.4', facecolor='wheat', alpha=0.8))
+                if force_origin:
+                    eq_text = f"y = {slope:.4f}·x\nR² = {r_squared:.4f}"
+                else:
+                    eq_text = f"y = {slope:.4f}·x + {intercept:.4f}\nR² = {r_squared:.4f}"
+
+                ax.text(0.05, 0.92,
+                        eq_text,
+                        transform=ax.transAxes, fontsize=10,
+                        verticalalignment='top',
+                        bbox=dict(boxstyle='round,pad=0.4', facecolor='wheat', alpha=0.8))
 
             ax.set_xlabel("Introduced Value", fontsize=11)
             ax.set_ylabel("Measured Dose (Gy)", fontsize=11)
-            ax.set_title(film_name, fontsize=12, fontweight='bold')
+            ax.set_title(film_name if separate_rc else "All RC Data", fontsize=12, fontweight='bold')
             ax.grid(True, alpha=0.3)
 
-            # Force origin
-            ax.set_xlim(left=0)
-            ax.set_ylim(bottom=0)
+            if force_origin:
+                ax.set_xlim(left=0)
+                ax.set_ylim(bottom=0)
+
+        if not separate_rc:
+            axes_list[0].legend(loc='best')
+
+        if self._show_analysis_data_var.get():
+            self._refresh_dose_tree()
 
         fig.tight_layout()
         plt.show()
