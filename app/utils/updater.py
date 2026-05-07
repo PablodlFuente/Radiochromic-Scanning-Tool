@@ -97,6 +97,19 @@ class UpdateChecker:
         except Exception as e:
             logger.error(f"Error getting local commit: {e}")
         return None
+
+    def get_current_branch(self) -> str:
+        """Get the current branch name, or HEAD when detached."""
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True, text=True, cwd=self.app_dir
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+        except Exception as e:
+            logger.error(f"Error getting current branch: {e}")
+        return None
     
     def get_remote_commit(self, branch="master") -> str:
         """Get the latest remote commit hash.
@@ -204,6 +217,84 @@ class UpdateChecker:
             return bool(result.stdout.strip())
         except Exception:
             return False
+
+    def list_remote_versions(self, branch="master", max_count=50) -> dict:
+        """List remote commits for a branch, including date and subject."""
+        if not self.is_git_available():
+            return {
+                'success': False,
+                'versions': [],
+                'error': "Git is not installed or not in PATH"
+            }
+
+        if not self.is_git_repository():
+            return {
+                'success': False,
+                'versions': [],
+                'error': "Application directory is not a git repository"
+            }
+
+        if not self.fetch_updates():
+            return {
+                'success': False,
+                'versions': [],
+                'error': self.error or "Failed to fetch updates"
+            }
+
+        current_commit = self.get_local_commit()
+
+        try:
+            result = subprocess.run(
+                [
+                    "git", "log", f"origin/{branch}",
+                    f"-n{max_count}",
+                    "--date=short",
+                    "--pretty=format:%H%x09%ad%x09%s",
+                ],
+                capture_output=True, text=True, cwd=self.app_dir, timeout=30
+            )
+            if result.returncode != 0:
+                error = result.stderr or "Failed to read remote version history"
+                logger.error(error)
+                return {
+                    'success': False,
+                    'versions': [],
+                    'error': error,
+                }
+
+            versions = []
+            for line in result.stdout.splitlines():
+                parts = line.split("\t", 2)
+                if len(parts) != 3:
+                    continue
+                commit_hash, commit_date, subject = parts
+                versions.append({
+                    'commit': commit_hash,
+                    'short_commit': commit_hash[:8],
+                    'date': commit_date,
+                    'subject': subject,
+                    'is_current': current_commit == commit_hash,
+                })
+
+            return {
+                'success': True,
+                'versions': versions,
+                'current_commit': current_commit[:8] if current_commit else None,
+                'error': None,
+            }
+        except subprocess.TimeoutExpired:
+            return {
+                'success': False,
+                'versions': [],
+                'error': "Reading remote version history timed out",
+            }
+        except Exception as e:
+            logger.error(f"Error listing remote versions: {e}")
+            return {
+                'success': False,
+                'versions': [],
+                'error': str(e),
+            }
     
     def stash_changes(self) -> bool:
         """Stash any local changes."""
@@ -239,6 +330,21 @@ class UpdateChecker:
                 if self.stash_changes():
                     stashed = True
                     logger.info("Stashed local changes before update")
+
+            current_branch = self.get_current_branch()
+            if current_branch != branch:
+                branch_result = subprocess.run(
+                    ["git", "checkout", branch],
+                    capture_output=True, text=True, cwd=self.app_dir, timeout=30
+                )
+                if branch_result.returncode != 0:
+                    error = branch_result.stderr or f"Could not switch to branch '{branch}'"
+                    logger.error(error)
+                    return {
+                        'success': False,
+                        'stashed': stashed,
+                        'error': error
+                    }
             
             # Pull the latest changes
             result = subprocess.run(
@@ -274,6 +380,62 @@ class UpdateChecker:
                 'success': False,
                 'stashed': stashed,
                 'error': str(e)
+            }
+
+    def checkout_version(self, commit_hash: str) -> dict:
+        """Checkout a specific commit in detached HEAD mode."""
+        stashed = False
+
+        try:
+            if self.has_local_changes():
+                if self.stash_changes():
+                    stashed = True
+                    logger.info("Stashed local changes before version change")
+
+            verify_result = subprocess.run(
+                ["git", "rev-parse", "--verify", commit_hash],
+                capture_output=True, text=True, cwd=self.app_dir, timeout=15
+            )
+            if verify_result.returncode != 0:
+                error = verify_result.stderr or f"Commit '{commit_hash}' not found"
+                logger.error(error)
+                return {
+                    'success': False,
+                    'stashed': stashed,
+                    'error': error,
+                }
+
+            checkout_result = subprocess.run(
+                ["git", "checkout", "--detach", commit_hash],
+                capture_output=True, text=True, cwd=self.app_dir, timeout=60
+            )
+            if checkout_result.returncode != 0:
+                error = checkout_result.stderr or f"Could not checkout commit '{commit_hash}'"
+                logger.error(error)
+                return {
+                    'success': False,
+                    'stashed': stashed,
+                    'error': error,
+                }
+
+            logger.info("Checked out version %s", commit_hash)
+            return {
+                'success': True,
+                'stashed': stashed,
+                'error': None,
+            }
+        except subprocess.TimeoutExpired:
+            return {
+                'success': False,
+                'stashed': stashed,
+                'error': "Version change timed out",
+            }
+        except Exception as e:
+            logger.error(f"Error checking out version {commit_hash}: {e}")
+            return {
+                'success': False,
+                'stashed': stashed,
+                'error': str(e),
             }
     
     @staticmethod
