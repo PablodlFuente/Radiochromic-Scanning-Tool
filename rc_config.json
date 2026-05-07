@@ -16,5 +16,11 @@
     "detailed_logging": false,
     "uncertainty_estimation_method": "sensitivity_weighted",
     "calibration_folder": "GM_2025_CanonLide400",
-    "check_updates_on_startup": true
+    "check_updates_on_startup": true,
+    "notebook_tab_order": [
+        "Measurement",
+        "Image",
+        "Analysis",
+        "AutoMeasurements v2"
+    ]
 }
