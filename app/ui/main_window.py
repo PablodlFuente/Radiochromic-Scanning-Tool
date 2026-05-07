@@ -130,6 +130,7 @@ class MainWindow:
         self.help_menu = tk.Menu(self.menu_bar, tearoff=0)
         self.menu_bar.add_cascade(label="Help", menu=self.help_menu)
         self.help_menu.add_command(label="Check for Updates...", command=self.check_for_updates)
+        self.help_menu.add_command(label="Downgrade...", command=self.open_downgrade_dialog)
         self.help_menu.add_separator()
         self.help_menu.add_command(label="About", command=self.show_about)
     
@@ -1607,6 +1608,195 @@ class MainWindow:
         
         # Start checking in background
         threading.Thread(target=check_updates_thread, daemon=True).start()
+
+    def open_downgrade_dialog(self):
+        """Show a dialog that lets the user choose an older version by date."""
+        from app.utils.updater import UpdateChecker
+
+        updater = UpdateChecker()
+        versions_by_item = {}
+
+        dialog = tk.Toplevel(self.parent)
+        dialog.title("Downgrade Version")
+        dialog.geometry("760x500")
+        dialog.minsize(700, 420)
+        dialog.grab_set()
+
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() - 760) // 2
+        y = (dialog.winfo_screenheight() - 500) // 2
+        dialog.geometry(f"+{x}+{y}")
+
+        main_frame = ttk.Frame(dialog, padding=16)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(
+            main_frame,
+            text="Choose Version by Date",
+            font=("Arial", 14, "bold")
+        ).pack(anchor=tk.W, pady=(0, 10))
+
+        ttk.Label(
+            main_frame,
+            text=(
+                "Select a commit from the remote history. The application will switch to that version "
+                "and restart in detached HEAD mode."
+            ),
+            wraplength=700,
+            justify=tk.LEFT,
+        ).pack(anchor=tk.W, pady=(0, 10))
+
+        tree_frame = ttk.Frame(main_frame)
+        tree_frame.pack(fill=tk.BOTH, expand=True)
+
+        columns = ("date", "commit", "message")
+        version_tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=14)
+        version_tree.heading("date", text="Date")
+        version_tree.heading("commit", text="Commit")
+        version_tree.heading("message", text="Message")
+        version_tree.column("date", width=100, anchor=tk.CENTER)
+        version_tree.column("commit", width=90, anchor=tk.CENTER)
+        version_tree.column("message", width=480, anchor=tk.W)
+
+        scrollbar = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=version_tree.yview)
+        version_tree.configure(yscrollcommand=scrollbar.set)
+        version_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        status_text = tk.Text(main_frame, height=6, state=tk.DISABLED, wrap=tk.WORD)
+        status_text.pack(fill=tk.BOTH, expand=False, pady=(12, 10))
+
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill=tk.X)
+
+        downgrade_btn = ttk.Button(button_frame, text="Downgrade to Selected Version", state=tk.DISABLED)
+        downgrade_btn.pack(side=tk.RIGHT, padx=5)
+
+        refresh_btn = ttk.Button(button_frame, text="Refresh List")
+        refresh_btn.pack(side=tk.RIGHT, padx=5)
+
+        close_btn = ttk.Button(button_frame, text="Close", command=dialog.destroy)
+        close_btn.pack(side=tk.RIGHT, padx=5)
+
+        def append_status(text):
+            status_text.config(state=tk.NORMAL)
+            status_text.insert(tk.END, text + "\n")
+            status_text.see(tk.END)
+            status_text.config(state=tk.DISABLED)
+            dialog.update()
+
+        def on_version_select(_event=None):
+            selection = version_tree.selection()
+            if not selection:
+                downgrade_btn.config(state=tk.DISABLED)
+                return
+
+            version_info = versions_by_item.get(selection[0])
+            if version_info is None or version_info.get("is_current"):
+                downgrade_btn.config(state=tk.DISABLED)
+                return
+
+            downgrade_btn.config(state=tk.NORMAL)
+
+        version_tree.bind("<<TreeviewSelect>>", on_version_select)
+
+        def populate_versions(result):
+            version_tree.delete(*version_tree.get_children())
+            versions_by_item.clear()
+
+            if not result['success']:
+                append_status(f"❌ Error: {result['error']}")
+                return
+
+            current_commit = result.get('current_commit')
+            if current_commit:
+                append_status(f"Current version: {current_commit}")
+
+            for version in result['versions']:
+                message = version['subject']
+                if version.get('is_current'):
+                    message = f"[current] {message}"
+                item_id = version_tree.insert(
+                    "",
+                    "end",
+                    values=(version['date'], version['short_commit'], message),
+                )
+                versions_by_item[item_id] = version
+
+            append_status(f"Loaded {len(result['versions'])} remote version(s).")
+            on_version_select()
+
+        def load_versions_thread():
+            self.parent.after(0, lambda: append_status("Fetching remote version history..."))
+            result = updater.list_remote_versions()
+            self.parent.after(0, lambda: populate_versions(result))
+
+        def perform_downgrade_thread(commit_hash, commit_date, subject):
+            try:
+                self.parent.after(0, lambda: append_status(
+                    f"Switching to {commit_hash[:8]} from {commit_date}: {subject}"
+                ))
+
+                if updater.has_local_changes():
+                    self.parent.after(0, lambda: append_status("Stashing local changes..."))
+
+                result = updater.checkout_version(commit_hash)
+                if result['success']:
+                    self.parent.after(0, lambda: append_status("✅ Downgrade successful!"))
+                    self.parent.after(0, lambda: append_status(
+                        "\n⚠️ The application needs to restart to run the selected version."
+                    ))
+
+                    def prompt_restart():
+                        if messagebox.askyesno(
+                            "Downgrade Complete",
+                            "The selected version has been checked out successfully.\n\n"
+                            "Would you like to restart now to apply the change?",
+                            parent=dialog,
+                        ):
+                            dialog.destroy()
+                            updater.restart_application()
+
+                    self.parent.after(0, prompt_restart)
+                else:
+                    self.parent.after(0, lambda: append_status(
+                        f"❌ Error during downgrade:\n{result['error']}"
+                    ))
+            except Exception as exc:
+                self.parent.after(0, lambda: append_status(f"❌ Error: {exc}"))
+            finally:
+                self.parent.after(0, on_version_select)
+
+        def do_downgrade():
+            selection = version_tree.selection()
+            if not selection:
+                return
+
+            version_info = versions_by_item.get(selection[0])
+            if version_info is None:
+                return
+
+            if not messagebox.askyesno(
+                "Confirm Downgrade",
+                f"Downgrade to version from {version_info['date']}\n"
+                f"Commit: {version_info['short_commit']}\n\n"
+                f"{version_info['subject']}\n\n"
+                "The application will restart after changing version.",
+                parent=dialog,
+            ):
+                return
+
+            downgrade_btn.config(state=tk.DISABLED)
+            threading.Thread(
+                target=perform_downgrade_thread,
+                args=(version_info['commit'], version_info['date'], version_info['subject']),
+                daemon=True,
+            ).start()
+
+        downgrade_btn.config(command=do_downgrade)
+        refresh_btn.config(command=lambda: threading.Thread(target=load_versions_thread, daemon=True).start())
+
+        threading.Thread(target=load_versions_thread, daemon=True).start()
     
     def update_status(self, message):
         """Update the status bar message."""
