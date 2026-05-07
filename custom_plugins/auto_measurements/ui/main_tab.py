@@ -612,6 +612,7 @@ class AutoMeasurementsTab(ttk.Frame):
         self.dose_correction_entry = ttk.Entry(correction_frame, textvariable=self.dose_correction_var, width=10)
         self.dose_correction_entry.grid(row=1, column=0, sticky=tk.W, padx=8, pady=(0, 6))
         self.dose_correction_entry.bind("<KeyRelease>", self._on_dose_correction_key_release)
+        self.dose_correction_entry.bind("<Return>", self._on_dose_correction_enter)
         self.dose_correction_entry.bind("<FocusOut>", self._on_dose_correction_focus_out)
         self.dose_correction_entry.bind("<Enter>", self._schedule_dose_correction_tooltip)
         self.dose_correction_entry.bind("<Leave>", self._hide_dose_correction_tooltip)
@@ -706,6 +707,15 @@ class AutoMeasurementsTab(ttk.Frame):
             self._dose_correction_after_id = None
         self._on_dose_correction_changed()
         self._hide_dose_correction_tooltip()
+
+    def _on_dose_correction_enter(self, _event=None):
+        """Apply the correction factor immediately when Enter is pressed."""
+        if self._dose_correction_after_id is not None:
+            self.after_cancel(self._dose_correction_after_id)
+            self._dose_correction_after_id = None
+        self._on_dose_correction_changed()
+        self._hide_dose_correction_tooltip()
+        return "break"
 
     def _schedule_dose_correction_tooltip(self, _event=None):
         """Show the dose correction tooltip after a short hover delay."""
@@ -2868,6 +2878,14 @@ class AutoMeasurementsTab(ttk.Frame):
 
     def _show_circle_3d(self, cx: int, cy: int, r: int):
         """Show 3D visualization of circle area."""
+        try:
+            cx = int(round(float(cx)))
+            cy = int(round(float(cy)))
+            r = max(1, int(round(float(r))))
+        except (TypeError, ValueError):
+            messagebox.showwarning("3D View", "Invalid circle coordinates.")
+            return
+
         # Get image data
         if (
             self.image_processor.calibration_applied

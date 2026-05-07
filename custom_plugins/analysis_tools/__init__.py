@@ -17,10 +17,13 @@ from __future__ import annotations
 
 import sys
 import logging
+import csv
+import io
 import tkinter as tk
 from tkinter import ttk, messagebox
 import numpy as np
 import cv2
+from scipy.ndimage import gaussian_filter
 
 logger = logging.getLogger(__name__)
 
@@ -251,6 +254,7 @@ class AnalysisTab:
         ttk.Button(btn_row2, text="Plot Dose vs Value",
                    command=self._plot_dose_vs_value).pack(side=tk.LEFT, padx=4)
         ttk.Button(btn_row2, text="Clear", command=self._clear_dose_table).pack(side=tk.LEFT, padx=4)
+        ttk.Button(btn_row2, text="Copy as XLSX", command=self._copy_dose_data_for_excel).pack(side=tk.RIGHT, padx=4)
 
         self._see_data_switch = tk.Canvas(btn_row2, width=44, height=22,
                           highlightthickness=0, bd=0)
@@ -329,6 +333,26 @@ class AnalysisTab:
         if not np.any(~np.isnan(roi)):
             return None
         return roi, xx, yy, mask, x_min, y_min
+
+    def _smooth_dose_map(self, dose_2d: np.ndarray, sigma: float = 1.0) -> np.ndarray:
+        """Apply light Gaussian smoothing while preserving NaN regions."""
+        if sigma <= 0:
+            return dose_2d
+
+        valid_mask = np.isfinite(dose_2d)
+        if not np.any(valid_mask):
+            return dose_2d
+
+        filled = np.where(valid_mask, dose_2d, 0.0).astype(np.float64)
+        weights = valid_mask.astype(np.float64)
+
+        blurred_values = gaussian_filter(filled, sigma=sigma, mode="nearest")
+        blurred_weights = gaussian_filter(weights, sigma=sigma, mode="nearest")
+
+        smoothed = np.full(dose_2d.shape, np.nan, dtype=np.float64)
+        valid_blur = blurred_weights > 1e-12
+        smoothed[valid_blur] = blurred_values[valid_blur] / blurred_weights[valid_blur]
+        return smoothed
 
     def _find_radius(self, item_to_shape, am, cx, cy):
         """Find circle radius from overlay or original_radii."""
@@ -490,7 +514,7 @@ class AnalysisTab:
     # ------------------------------------------------------------------
     # Isobar contour extraction (smooth continuous lines)
     # ------------------------------------------------------------------
-    def _extract_isobars(self, dose_2d, cx, cy, radius, n_levels=6):
+    def _extract_isobars(self, dose_2d, cx, cy, radius, n_levels=5):
         """Compute smooth isodose contour lines inside a circle.
 
         Uses matplotlib contour generator for smooth curves, then clips
@@ -517,7 +541,16 @@ class AnalysisTab:
         # Replace NaN with v_min for smooth contouring
         roi_filled = np.where(np.isnan(roi), v_min, roi)
 
-        levels = np.linspace(v_min, v_max, n_levels + 2)[1:-1]
+        percentile_count = max(1, min(int(n_levels), 5))
+        percentile_levels = np.linspace(15.0, 85.0, percentile_count)
+        levels = np.unique(np.percentile(valid_vals, percentile_levels))
+        if len(levels) == 0:
+            return []
+        if len(levels) > 5:
+            levels = levels[:5]
+        levels = levels[(levels > v_min) & (levels < v_max)]
+        if len(levels) == 0:
+            return []
 
         # Use matplotlib to get smooth contour paths
         fig, ax = plt.subplots(1, 1, figsize=(1, 1))
@@ -568,6 +601,7 @@ class AnalysisTab:
             dose_2d = np.nanmean(dose_img, axis=2)
         else:
             dose_2d = dose_img
+        dose_2d = self._smooth_dose_map(dose_2d, sigma=1.0)
 
         self._clear_centroid_table_internal()
         _CENTROID_MARKERS = []
@@ -1032,6 +1066,43 @@ class AnalysisTab:
         self.dose_tree.delete(*self.dose_tree.get_children())
         self._dose_tree_index.clear()
         self._set_dose_overlay_highlight(None)
+
+    def _copy_dose_data_for_excel(self):
+        """Copy current analysis data to the clipboard in tabular form for Excel."""
+        output = io.StringIO()
+        writer = csv.writer(output, delimiter='\t', lineterminator='\n')
+
+        if self._show_analysis_data_var.get():
+            self._recompute_analysis_results()
+            writer.writerow(["Series", "Slope", "Unc slope", "Intercept", "Unc intercept", "R2"])
+            for row in self._analysis_results:
+                writer.writerow([
+                    row.get("name", ""),
+                    row.get("slope", ""),
+                    row.get("slope_se", ""),
+                    row.get("intercept", ""),
+                    row.get("intercept_se", ""),
+                    row.get("r2", ""),
+                ])
+        else:
+            writer.writerow(["Film", "Circle", "Dose (Gy)", "SE (Gy)", self._get_introduced_value_label()])
+            for row in self._dose_data_rows:
+                writer.writerow([
+                    row.get("film", ""),
+                    row.get("circle", ""),
+                    f"{float(row.get('dose', 0.0)):.6f}",
+                    f"{float(row.get('se', 0.0)):.6f}",
+                    row.get("value", ""),
+                ])
+
+        clipboard_text = output.getvalue()
+        if not clipboard_text.strip():
+            messagebox.showinfo("Analysis", "No data available to copy.")
+            return
+
+        self.frame.clipboard_clear()
+        self.frame.clipboard_append(clipboard_text)
+        self.frame.update()
 
     def _on_dose_tree_double_click(self, event):
         """Allow editing the 'Introduced Value' column on double-click."""
