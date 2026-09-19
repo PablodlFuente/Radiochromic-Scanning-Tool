@@ -26,7 +26,7 @@ from scipy.interpolate import griddata
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 from typing import Optional
-from app.utils.image_io import read_image_unchanged
+from app.utils.image_io import read_image_unchanged, storage_bit_depth
 
 logger = logging.getLogger(__name__)
 
@@ -383,33 +383,8 @@ class ImageProcessor:
             height, width = image.shape[:2]
             logger.info(f"Loading image: {file_path}, size: {width}x{height}")
             
-            # For very large images, downsample immediately to save memory
-            if width > 4000 or height > 4000:
-                self._report_progress("loading", 40, "Downsampling large image")
-                scale_factor = min(4000 / width, 4000 / height)
-                new_width = int(width * scale_factor)
-                new_height = int(height * scale_factor)
-                logger.info(f"Downsampling large image to {new_width}x{new_height}")
-                
-                # Use GPU for downsampling if available
-                if self.cuda_available:
-                    try:
-                        # Upload image to GPU
-                        gpu_image = cv2.cuda_GpuMat()
-                        gpu_image.upload(image)
-                        
-                        # Resize on GPU
-                        resized = cv2.cuda.resize(gpu_image, (new_width, new_height), interpolation=cv2.INTER_AREA)
-                        
-                        # Download result
-                        image = resized.download()
-                    except Exception as e:
-                        logger.error(f"GPU downsampling error: {str(e)}, falling back to CPU", exc_info=True)
-                        # Fall back to CPU
-                        image = cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_AREA)
-                else:
-                    # CPU downsampling
-                    image = cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_AREA)
+            # Analysis always uses the stored pixels. Display resizing is done
+            # later and must never replace the scientific source array.
             
             # Check if operation was cancelled
             if self.cancel_operation:
@@ -475,21 +450,17 @@ class ImageProcessor:
             
             logger.info("Computing integral images for fast statistics")
             
-            # For very large images, use a downsampled version for integral images
+            # Integral images are exact or not used. A downsampled integral would
+            # silently change ROI statistics.
             height, width = self.current_image.shape[:2]
             very_large = width > 8000 or height > 8000
             
             if very_large:
-                logger.info(f"Using downsampled integral images for large image ({width}x{height})")
-                downsample_factor = 2
-                if len(self.current_image.shape) == 3:
-                    downsampled = self.current_image[::downsample_factor, ::downsample_factor, :]
-                else:
-                    downsampled = self.current_image[::downsample_factor, ::downsample_factor]
-                
-                # Store the downsample factor for later use
-                self._integral_downsample_factor = downsample_factor
-                image_for_integral = downsampled
+                logger.info("Skipping integral-image cache for large image %sx%s", width, height)
+                self._integral_downsample_factor = 1
+                self.integral_images = None
+                self.integral_images_squared = None
+                return
             else:
                 self._integral_downsample_factor = 1
                 image_for_integral = self.current_image
@@ -1100,9 +1071,6 @@ class ImageProcessor:
     
     def _calculate_stats_from_integral(self, x1, y1, x2, y2, channel=None):
         """Calculate statistics from integral image for a rectangular region."""
-        if self.integral_images is None or self.integral_images_squared is None:
-            return None, None
-        
         # Ensure coordinates are within bounds
         height, width = self.current_image.shape[:2]
         x1 = max(0, min(x1, width - 1))
@@ -1121,6 +1089,15 @@ class ImageProcessor:
         
         if area <= 0:
             return 0, 0
+
+        if self.integral_images is None or self.integral_images_squared is None:
+            region = self.current_image[y1:y2 + 1, x1:x2 + 1]
+            if region.ndim == 3 and channel is not None:
+                region = region[:, :, channel]
+            finite = region[np.isfinite(region)]
+            if finite.size == 0:
+                return np.nan, np.nan
+            return float(np.mean(finite)), float(np.std(finite))
         
         # For color images
         if len(self.current_image.shape) == 3 and channel is not None:
@@ -2062,10 +2039,7 @@ class ImageProcessor:
             self.calibration_bit_depth = 8
     
     def _detect_bit_depth(self, image):
-        """Detect the actual bit depth of an image.
-        
-        Determines bit depth based on dtype and actual maximum value.
-        Supports 8, 10, 12, 14, 16, 24, and 32-bit images.
+        """Return configured acquisition depth or the array storage depth.
         
         Args:
             image: numpy array of the image
@@ -2073,65 +2047,11 @@ class ImageProcessor:
         Returns:
             tuple: (bit_depth, max_possible_value)
         """
-        dtype = image.dtype
-        actual_max = np.max(image)
-        
-        # Map dtypes to their theoretical bit depths
-        dtype_bits = {
-            np.uint8: 8,
-            np.uint16: 16,
-            np.uint32: 32,
-            np.int8: 8,
-            np.int16: 16,
-            np.int32: 32,
-            np.float32: 32,
-            np.float64: 64,
-        }
-        
-        # Get theoretical max for dtype
-        theoretical_bits = dtype_bits.get(dtype.type, 8)
-        
-        if dtype in [np.float32, np.float64]:
-            # For float images, assume normalized [0, 1] or actual range
-            if actual_max <= 1.0:
-                return 8, 1.0  # Normalized float
-            else:
-                # Determine based on actual max value
-                if actual_max <= 255:
-                    return 8, 255
-                elif actual_max <= 4095:
-                    return 12, 4095
-                elif actual_max <= 16383:
-                    return 14, 16383
-                elif actual_max <= 65535:
-                    return 16, 65535
-                else:
-                    return 32, actual_max
-        
-        # For integer types, try to detect actual bit depth from values
-        if theoretical_bits == 16:
-            # Could be 10, 12, 14, or 16-bit stored in uint16
-            if actual_max <= 1023:
-                return 10, 1023
-            elif actual_max <= 4095:
-                return 12, 4095
-            elif actual_max <= 16383:
-                return 14, 16383
-            else:
-                return 16, 65535
-        elif theoretical_bits == 32:
-            # Could be various depths stored in uint32
-            if actual_max <= 255:
-                return 8, 255
-            elif actual_max <= 65535:
-                return 16, 65535
-            elif actual_max <= 16777215:
-                return 24, 16777215
-            else:
-                return 32, 4294967295
-        else:
-            # 8-bit
-            return 8, 255
+        configured = self.config.get("image_bit_depth_override")
+        if configured:
+            bits = int(configured)
+            return bits, float((2 ** bits) - 1)
+        return storage_bit_depth(image)
     
     def get_max_pixel_value(self):
         """Return the maximum possible pixel value for the current image bit depth."""
@@ -2603,7 +2523,11 @@ class ImageProcessor:
                 f"Resizing flat field will reduce correction accuracy. "
                 f"For maximum fidelity, use images at the same resolution as the flat field calibration."
             )
-            # Use bilinear interpolation to resize flat field
+            if not self.config.get("allow_flat_field_resize", False):
+                raise ValueError(
+                    f"Flat field shape {flat.shape[:2]} does not match image {image.shape[:2]}. "
+                    "Create a matching flat field or explicitly enable calibrated resizing."
+                )
             flat = cv2.resize(flat, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_LINEAR)
 
         # For normalized flat field (mean ~= 1.0), the correction is simply: image / flat

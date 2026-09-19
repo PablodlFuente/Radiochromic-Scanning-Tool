@@ -19,8 +19,10 @@ from importlib import import_module
 from types import ModuleType
 from typing import Optional, List
 import numpy as np
+import cv2
 from PIL import Image
 import logging
+from app.utils.image_io import read_image_unchanged, write_tiff_unchanged
 
 # For matplotlib plots
 import matplotlib.pyplot as plt
@@ -400,8 +402,9 @@ Click "Next" to begin the calibration process."""
         for filepath in files:
             try:
                 # Load image
-                img = Image.open(filepath)
-                img_array = np.array(img)
+                img_array = read_image_unchanged(filepath)
+                if img_array.ndim == 3 and img_array.shape[2] == 3:
+                    img_array = cv2.cvtColor(img_array, cv2.COLOR_BGR2RGB)
 
                 # Validate: must be RGB or grayscale
                 if len(img_array.shape) == 2:
@@ -491,9 +494,7 @@ Click "Next" to begin the calibration process."""
                 # 8-bit images
                 save_array = np.clip(self.averaged_blank, 0, 255).astype(np.uint8)
             
-            # Save as TIFF
-            img = Image.fromarray(save_array)
-            img.save(output_path, format='TIFF')
+            write_tiff_unchanged(output_path, save_array)
             
             logger.info(f"Saved master_flat.tif to {output_path}")
             

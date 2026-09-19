@@ -13,7 +13,7 @@ import csv
 from pathlib import Path
 from scipy.optimize import curve_fit
 from scipy.interpolate import CubicSpline
-from app.utils.image_io import read_image_unchanged
+from app.utils.image_io import read_image_unchanged, storage_bit_depth
 
 class CalibrationApp:
     def __init__(self, root, data_dir=None):
@@ -184,10 +184,12 @@ class CalibrationApp:
         
         flat = self.flat_field
         
-        # Resize flat field if needed
+        # A flat field is tied to scanner coordinates and cannot be stretched
+        # silently without changing the correction geometry.
         if flat.shape[:2] != image.shape[:2]:
-            print(f"Resizing flat field from {flat.shape[:2]} to {image.shape[:2]}")
-            flat = cv2.resize(flat, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_LINEAR)
+            raise ValueError(
+                f"Flat field shape {flat.shape[:2]} does not match image {image.shape[:2]}"
+            )
         
         orig_dtype = image.dtype
         mean_per_channel = np.mean(flat, axis=(0, 1), keepdims=True)
@@ -421,48 +423,7 @@ class CalibrationApp:
         Returns:
             tuple: (bit_depth, max_possible_value)
         """
-        dtype = image.dtype
-        actual_max = np.max(image)
-        
-        # For float images
-        if np.issubdtype(dtype, np.floating):
-            if actual_max <= 1.0:
-                return 8, 1.0  # Normalized float
-            elif actual_max <= 255:
-                return 8, 255
-            elif actual_max <= 4095:
-                return 12, 4095
-            elif actual_max <= 16383:
-                return 14, 16383
-            elif actual_max <= 65535:
-                return 16, 65535
-            else:
-                return 32, actual_max
-        
-        # For 16-bit integer types, detect actual bit depth from values
-        if dtype == np.uint16:
-            if actual_max <= 1023:
-                return 10, 1023
-            elif actual_max <= 4095:
-                return 12, 4095
-            elif actual_max <= 16383:
-                return 14, 16383
-            else:
-                return 16, 65535
-        
-        # For 32-bit integer types
-        if dtype == np.uint32:
-            if actual_max <= 255:
-                return 8, 255
-            elif actual_max <= 65535:
-                return 16, 65535
-            elif actual_max <= 16777215:
-                return 24, 16777215
-            else:
-                return 32, 4294967295
-        
-        # Default: 8-bit
-        return 8, 255
+        return storage_bit_depth(image)
 
     def _highlight_selected_item(self):
         """Updates the visual highlight of the selected item in the list."""
