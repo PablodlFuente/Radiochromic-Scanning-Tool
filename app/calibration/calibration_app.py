@@ -10,11 +10,13 @@ import os
 import re
 import numpy as np
 import csv
+from pathlib import Path
 from scipy.optimize import curve_fit
 from scipy.interpolate import CubicSpline
+from app.utils.image_io import read_image_unchanged
 
 class CalibrationApp:
-    def __init__(self, root):
+    def __init__(self, root, data_dir=None):
         self.root = root
         self.root.title("Radiochromic Film Calibration")
         self.root.geometry("1200x800")
@@ -68,15 +70,10 @@ class CalibrationApp:
         self.is_panning = False # Flag to indicate if panning is active
         # self.canvas_mode_var = tk.StringVar(value="pan") # Removed, ROI drawing is always active
         self.measured_data_labels = {} # To hold labels for displaying ROI stats
-        self.csv_filename = "calibration_data.csv"
-        # Remove ALL CSV files in the working directory to start with a clean run
-        for fname in os.listdir('.'):
-            if fname.lower().endswith('.csv'):
-                try:
-                    os.remove(fname)
-                except Exception as e:
-                    print(f"Warning: could not remove {fname}: {e}")
-        self._initialize_csv_file()  # Create fresh calibration CSV
+        self.data_dir = Path(data_dir or os.getcwd()).resolve()
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.csv_filename = str(self.data_dir / "calibration_data.csv")
+        self._initialize_csv_file()
         self.excluded_points: set[tuple[str,int]] = set() # Set to keep track of excluded calibration points as (channel, index) tuples
         self._manual_override: dict[str, tuple[float,float,float]] = {} # store manual parameters keyed by channel when user overrides
         self.calibration_bit_depth = 8  # Default to 8-bit, updated when images are loaded
@@ -158,10 +155,7 @@ class CalibrationApp:
     def _load_field_flattening(self):
         """Load field flattening data if available."""
         # Look for field_flattening.npz in the current directory (calibration_data)
-        ff_paths = [
-            os.path.join(os.getcwd(), "field_flattening.npz"),
-            os.path.join(os.path.dirname(os.getcwd()), "field_flattening.npz"),
-        ]
+        ff_paths = [str(self.data_dir / "field_flattening.npz")]
         
         for ff_path in ff_paths:
             if os.path.isfile(ff_path):
@@ -502,9 +496,7 @@ class CalibrationApp:
         self.current_image_path = image_path # Set current image path here
         try:
             # Use OpenCV to load image preserving 16-bit depth
-            cv_img = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
-            if cv_img is None:
-                raise ValueError(f"Could not load image: {image_path}")
+            cv_img = read_image_unchanged(image_path)
             
             # Convert BGR to RGB
             if len(cv_img.shape) == 3:
@@ -1220,7 +1212,7 @@ class CalibrationApp:
 
     def _apply_fit(self):
         """Save current entries to CSV and close window."""
-        fname = "fit_parameters.csv"
+        fname = str(self.data_dir / "fit_parameters.csv")
         try:
             with open(fname, 'w', newline='', encoding='utf-8') as f:  # Added encoding='utf-8'
                 w = csv.writer(f)
@@ -1548,7 +1540,7 @@ class CalibrationApp:
             rows.append(res['y'])
 
         # transpose rows to columns
-        fname = 'spline_points.csv'
+        fname = str(self.data_dir / 'spline_points.csv')
         try:
             with open(fname,'w',newline='') as f:
                 w=csv.writer(f)

@@ -780,10 +780,6 @@ Click 'Open Dose Calibration' to launch the calibration tool."""
 
     def _launch_calibration_app(self):
         """Launch the calibration app in a separate window."""
-        # Preserve original working directory
-        self._old_cwd = os.getcwd()
-        os.chdir(self._data_dir)
-
         try:
             module = _load_external_calibration_module()
             if not hasattr(module, "CalibrationApp"):
@@ -797,22 +793,17 @@ Click 'Open Dose Calibration' to launch the calibration tool."""
             cal_window.geometry("1200x800")
             
             # The CalibrationApp expects a root-like widget
-            self._calibration_app = CalibrationApp(cal_window)
+            self._calibration_app = CalibrationApp(cal_window, data_dir=self._data_dir)
             
             self.cal_status_var.set("Dose calibration window opened.")
             
-            # When calibration window closes, restore cwd
+            # Keep the calibration data path explicit; do not change process cwd.
             def on_cal_close():
-                try:
-                    os.chdir(self._old_cwd)
-                except:
-                    pass
                 cal_window.destroy()
             
             cal_window.protocol("WM_DELETE_WINDOW", on_cal_close)
 
         except Exception as exc:
-            os.chdir(self._old_cwd)
             self.cal_status_var.set(f"Error: {exc}")
             logger.error(f"Failed to load calibration app: {exc}", exc_info=True)
             messagebox.showerror("Calibration Error", 
@@ -824,12 +815,6 @@ Click 'Open Dose Calibration' to launch the calibration tool."""
 
     def _on_close(self):
         """Handle wizard close."""
-        # Restore working directory if changed
-        if hasattr(self, '_old_cwd'):
-            try:
-                os.chdir(self._old_cwd)
-            except Exception:
-                pass
         self.destroy()
 
 

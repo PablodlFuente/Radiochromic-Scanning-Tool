@@ -10,7 +10,6 @@ from tkinter import messagebox
 import logging
 import os
 import glob
-import tempfile
 import shutil
 import threading
 from app.ui.main_window import MainWindow
@@ -93,16 +92,6 @@ class RCAnalyzer(tk.Tk):
                         logger.debug(f"Removed old log file: {old_log}")
                     except Exception as e:
                         logger.warning(f"Could not remove log file {old_log}: {str(e)}")
-            
-            # Clean up temporary files in system temp directory
-            temp_dir = tempfile.gettempdir()
-            temp_files = glob.glob(os.path.join(temp_dir, "*_bin*.pkl"))
-            for temp_file in temp_files:
-                try:
-                    os.remove(temp_file)
-                    logger.debug(f"Removed temporary file: {temp_file}")
-                except Exception as e:
-                    logger.warning(f"Could not remove temporary file {temp_file}: {str(e)}")
             
             # Clean up local temp directory
             local_temp_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "temp")

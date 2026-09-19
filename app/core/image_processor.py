@@ -26,6 +26,7 @@ from scipy.interpolate import griddata
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 from typing import Optional
+from app.utils.image_io import read_image_unchanged
 
 logger = logging.getLogger(__name__)
 
@@ -329,76 +330,6 @@ class ImageProcessor:
         
         return True
 
-    def _sanitize_filename(self, file_path: str) -> tuple[str, bool]:
-        """Check if filename has problematic Unicode characters and rename if needed.
-        
-        OpenCV's imread cannot handle certain Unicode characters in file paths.
-        This method detects such characters and renames the file.
-        
-        Returns:
-            tuple: (new_file_path, was_renamed)
-        """
-        import unicodedata
-        
-        directory = os.path.dirname(file_path)
-        filename = os.path.basename(file_path)
-        
-        # Map of accented characters to their base form
-        accent_map = {
-            'á': 'a', 'à': 'a', 'ä': 'a', 'â': 'a', 'ã': 'a',
-            'é': 'e', 'è': 'e', 'ë': 'e', 'ê': 'e',
-            'í': 'i', 'ì': 'i', 'ï': 'i', 'î': 'i',
-            'ó': 'o', 'ò': 'o', 'ö': 'o', 'ô': 'o', 'õ': 'o',
-            'ú': 'u', 'ù': 'u', 'ü': 'u', 'û': 'u',
-            'ñ': 'n', 'ç': 'c',
-            'Á': 'A', 'À': 'A', 'Ä': 'A', 'Â': 'A', 'Ã': 'A',
-            'É': 'E', 'È': 'E', 'Ë': 'E', 'Ê': 'E',
-            'Í': 'I', 'Ì': 'I', 'Ï': 'I', 'Î': 'I',
-            'Ó': 'O', 'Ò': 'O', 'Ö': 'O', 'Ô': 'O', 'Õ': 'O',
-            'Ú': 'U', 'Ù': 'U', 'Ü': 'U', 'Û': 'U',
-            'Ñ': 'N', 'Ç': 'C',
-        }
-        
-        new_filename = []
-        has_problematic_chars = False
-        
-        for char in filename:
-            if char in accent_map:
-                new_filename.append(accent_map[char])
-                has_problematic_chars = True
-            elif ord(char) > 127:
-                # Other non-ASCII characters -> underscore
-                new_filename.append('_')
-                has_problematic_chars = True
-            else:
-                new_filename.append(char)
-        
-        if not has_problematic_chars:
-            return file_path, False
-        
-        new_filename = ''.join(new_filename)
-        new_path = os.path.join(directory, new_filename)
-        
-        # Check for collision: if new_path already exists and is different from original
-        if os.path.exists(new_path) and os.path.normpath(new_path) != os.path.normpath(file_path):
-            # Add a unique suffix to avoid overwriting
-            base, ext = os.path.splitext(new_filename)
-            counter = 1
-            while os.path.exists(new_path):
-                new_filename = f"{base}_{counter}{ext}"
-                new_path = os.path.join(directory, new_filename)
-                counter += 1
-            logger.info(f"Collision detected, using unique filename: {new_filename}")
-        
-        # Rename the file
-        try:
-            os.rename(file_path, new_path)
-            logger.info(f"Renamed file with Unicode characters: '{filename}' -> '{new_filename}'")
-            return new_path, True
-        except Exception as e:
-            logger.error(f"Could not rename file: {e}")
-            return file_path, False
-
     def load_image(self, file_path):
         """Load an image from the specified path."""
         try:
@@ -408,14 +339,8 @@ class ImageProcessor:
             # Calibration state resets when loading a new image
             self.calibration_applied = False
             
-            # Check for problematic Unicode characters in filename
-            original_path = file_path
-            file_path, was_renamed = self._sanitize_filename(file_path)
-            if was_renamed:
-                # Store info for UI notification
-                self._renamed_file_info = (os.path.basename(original_path), os.path.basename(file_path))
-            else:
-                self._renamed_file_info = None
+            file_path = os.path.abspath(file_path)
+            self._renamed_file_info = None
             
             # Report progress
             self._report_progress("loading", 0, "Starting image load")
@@ -434,13 +359,7 @@ class ImageProcessor:
             self._report_progress("loading", 10, "Reading image file")
             
             # Load image with OpenCV for better performance
-            image = cv2.imread(file_path, cv2.IMREAD_UNCHANGED)
-            
-            # Explicit check: cv2.imread returns None if it cannot read the file
-            if image is None:
-                logger.error(f"cv2.imread failed to read file: {file_path}")
-                logger.error("Possible causes: file path contains special characters, file is corrupted, or unsupported format")
-                raise IOError(f"Could not read image file. The file may be corrupted, in an unsupported format, or the path contains special characters that weren't properly sanitized.")
+            image = read_image_unchanged(file_path)
             
             # Check if operation was cancelled
             if self.cancel_operation:
