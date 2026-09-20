@@ -259,6 +259,7 @@ def on_config_change(config, image_processor):
         if _AUTO_MEASUREMENTS_INSTANCE is not None:
             # Force refresh of all existing measurements with new calibration/uncertainty settings
             _AUTO_MEASUREMENTS_INSTANCE._refresh_all_measurements()
+            _AUTO_MEASUREMENTS_INSTANCE._update_ctr_subtraction()
             logging.info("Auto-measurements refreshed due to configuration change (calibration or uncertainty method)")
         else:
             logging.warning("Auto-measurements instance not available for config change notification")

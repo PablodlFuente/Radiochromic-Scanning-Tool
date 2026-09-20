@@ -167,239 +167,104 @@ class CSVExporter:
             'avg_unc': avg_unc_numeric,
         }
     
-    def export_all_files(self, current_results, ctr_map, date_var, metadata_date, 
-                        original_measurements=None, original_radii=None, original_values=None):
-        """Export measurements from all files to CSV.
-        
-        Args:
-            current_results: Current file's results list
-            ctr_map: Current file's CTR map {film_name: circle_id}
-            date_var: tkinter StringVar containing date
-            metadata_date: Date extracted from metadata
-            original_measurements: Original measurements dict (optional)
-            original_radii: Original radii dict (optional)
-            original_values: Original values dict (optional)
-        
-        Returns:
-            bool: True if export successful, False otherwise
-        """
-        import csv
-        import os
+    COLUMNS = [
+        "schema_version", "Filename", "Date", "Film", "Circle",
+        "doses_per_channel", "STD_doses_per_channel", "average",
+        "standard_uncertainty_average", "expanded_uncertainty_k1.96",
+        "pixel_count", "uncertainty_calculation_method", "channel_weights",
+        "calibration_id", "calibration_integrity", "units", "valid_pixel_counts",
+        "measurement_status", "x", "y", "radius", "dose_correction_factor",
+        "flat_applied", "ctr_context",
+    ]
+
+    def result_row(self, result, file_path=""):
+        """Serialize one measurement using only its recorded provenance."""
+        values = self.get_export_values_for_result(result)
+        for field, value in values.items():
+            items = value if isinstance(value, (tuple, list)) else (value,)
+            if any(math.isinf(item) for item in items):
+                raise ValueError(f"Infinite value in {field}")
+            if field in ("std", "avg_unc") and any(item < 0 for item in items):
+                raise ValueError(f"Negative uncertainty in {field}")
+        mean, uncertainty = values["avg"], values["avg_unc"]
+        if isinstance(mean, (tuple, list)) or isinstance(uncertainty, (tuple, list)):
+            raise ValueError("Average and its uncertainty must be scalars.")
+        provenance = result.get("provenance", {})
+        status = "valid"
+        doses = values["dose"] if isinstance(values["dose"], (tuple, list)) else (values["dose"],)
+        if not math.isfinite(mean):
+            status = "invalid"
+        elif not math.isfinite(uncertainty):
+            status = "uncertainty_unavailable"
+        elif any(not math.isfinite(value) for value in doses):
+            status = "partial_channels"
+        counts = result.get("valid_pixel_counts", [])
+        if counts and min(counts) < result.get("pixel_count", 0) and status == "valid":
+            status = "partial_pixels"
+        return [
+            3, os.path.basename(provenance.get("source_file") or file_path),
+            provenance.get("date", ""), result["film"], result["circle"],
+            self.format_for_csv(values["dose"]), self.format_for_csv(values["std"]),
+            self.format_for_csv(mean), self.format_for_csv(uncertainty),
+            self.format_for_csv(1.96 * uncertainty) if math.isfinite(uncertainty) else "",
+            result.get("pixel_count", ""), provenance.get("uncertainty_method", "unknown"),
+            json.dumps(result.get("channel_weights") or {}, sort_keys=True),
+            provenance.get("calibration_id", ""), provenance.get("calibration_integrity", "unknown"),
+            provenance.get("units", "unknown"), json.dumps(counts), status,
+            result.get("x", ""), result.get("y", ""), result.get("radius", ""),
+            provenance.get("dose_correction_factor", ""), provenance.get("flat_applied", False),
+            json.dumps(result.get("ctr_context", {}), sort_keys=True),
+        ]
+
+    def write_results(self, filename, datasets):
+        """Validate all rows before atomically replacing the destination."""
+        from app.utils.atomic_file import atomic_open
+        rows = [
+            self.result_row(result, path)
+            for path, results in datasets
+            for result in sorted(results, key=lambda row: (row.get("film", ""), row.get("circle", "")))
+        ]
+        if not rows:
+            raise ValueError("No measurements to export.")
+        with atomic_open(filename, newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(self.COLUMNS)
+            writer.writerows(rows)
+        return len(rows)
+
+    def export_all_files(self, current_results, ctr_map, date_var, metadata_date,
+                         original_measurements=None, original_radii=None, original_values=None):
+        """Export measured files without relabelling stored results with current settings."""
         from tkinter import filedialog, messagebox
-        
-        # Use empty dicts if not provided
-        if original_measurements is None:
-            original_measurements = {}
-        if original_radii is None:
-            original_radii = {}
-        if original_values is None:
-            original_values = {}
-        
-        # Store current file data before checking
         self.file_manager.store_current_data(
-            lambda: current_results,
-            lambda: ctr_map,
-            lambda: original_measurements,
-            lambda: original_radii,
-            lambda: original_values
+            lambda: current_results, lambda: ctr_map,
+            lambda: original_measurements or {}, lambda: original_radii or {},
+            lambda: original_values or {},
         )
-        
-        # Check if any files have data
-        total_measurements = 0
-        unmeasured_files = []
-        
-        for file_path in self.file_manager.file_list:
-            if file_path in self.file_manager.file_data:
-                file_results = self.file_manager.file_data[file_path]['results']
-                total_measurements += len(file_results)
-                if not self.file_manager.file_data[file_path]['measured']:
-                    unmeasured_files.append(os.path.basename(file_path))
-        
-        # Check current file as well
-        if current_results:
-            total_measurements += len(current_results)
-        
-        if total_measurements == 0:
+        datasets = [
+            (path, self.file_manager.file_data[path]["results"])
+            for path in self.file_manager.file_list
+            if path in self.file_manager.file_data
+            and self.file_manager.file_data[path].get("measured")
+        ]
+        if current_results and (not self.file_manager.file_list or
+                self.file_manager.current_file_index >= len(self.file_manager.file_list)):
+            datasets.append((getattr(self.image_processor, "current_file", "") or "", current_results))
+        if not any(results for _, results in datasets):
             messagebox.showwarning("Export", "No measurement data to export.")
             return False
-        
-        # Warn about unmeasured files
-        if unmeasured_files:
-            unmeasured_list = "\n".join(unmeasured_files)
-            response = messagebox.askyesno(
-                "Unmeasured Files", 
-                f"The following files have no measurements:\n\n{unmeasured_list}\n\nDo you want to continue with the export?"
-            )
-            if not response:
-                return False
-
-        # Ask for file location
         filename = filedialog.asksaveasfilename(
-            title="Save CSV (All Files)",
-            filetypes=[("CSV files", "*.csv")],
-            defaultextension=".csv"
+            title="Save CSV (All Files)", filetypes=[("CSV files", "*.csv")], defaultextension=".csv"
         )
-        
         if not filename:
             return False
-            
         try:
-            with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
-                # Define CSV columns
-                cols = [
-                    "schema_version", "Filename", "Date", "Film", "Circle",
-                    "doses_per_channel", "STD_doses_per_channel",
-                    "average", "standard_uncertainty_average", "expanded_uncertainty_k1.96",
-                    "pixel_count", "uncertainty_calculation_method", "channel_weights",
-                    "calibration_id", "calibration_integrity",
-                ]
-                
-                writer = csv.writer(csvfile)
-                writer.writerow(cols)
-                
-                # Get uncertainty calculation method
-                uncertainty_method = self.image_processor.config.get("uncertainty_estimation_method", "weighted_average")
-                calibration_id, calibration_integrity = self._calibration_export_metadata()
-                
-                # Export data from all files
-                total_rows = 0
-                
-                for file_path in self.file_manager.file_list:
-                    if file_path not in self.file_manager.file_data or not self.file_manager.file_data[file_path]['measured']:
-                        continue
-                        
-                    file_data = self.file_manager.file_data[file_path]
-                    file_results = file_data['results']
-                    
-                    if not file_results:
-                        continue
-                    
-                    # Get date for this file
-                    date_to_use = date_var.get() or metadata_date or ""
-                    
-                    # Extract filename without path
-                    file_name = os.path.basename(file_path)
-                    
-                    # Get CTR map for this file
-                    ctr_map_by_name = file_data.get('ctr_map_by_name', {})
-                    
-                    # Sort results by film name
-                    sorted_results = sorted(file_results, key=lambda r: r.get('film', ''))
-                    
-                    # Process results for this file
-                    for result in sorted_results:
-                        film_name = result['film']
-                        circle_name = result['circle']
-                        
-                        # Get export values
-                        export_values = self.get_export_values_for_result(result)
-                        
-                        # Format values
-                        doses_formatted = self.format_for_csv(export_values['dose'])
-                        std_formatted = self.format_for_csv(export_values['std'])
-                        avg_formatted = self.format_for_csv(export_values['avg'])
-                        se_average_formatted = self.format_for_csv(export_values['avg_unc'])
-                        
-                        # Calculate 95% CI
-                        ci95_formatted = ""
-                        try:
-                            se_numeric = export_values['avg_unc']
-                            if isinstance(se_numeric, str):
-                                se_numeric = float(se_numeric.replace('±', '').strip())
-                            if math.isfinite(float(se_numeric)) and se_numeric >= 0:
-                                ci95_val = se_numeric * 1.96
-                                ci95_formatted = self.format_for_csv(ci95_val)
-                        except (ValueError, TypeError):
-                            pass
-                        
-                        # Format channel weights
-                        weights = result.get('channel_weights')
-                        weights_str = ""
-                        if weights and isinstance(weights, dict):
-                            weights_str = f"R:{weights.get('R',0)*100:.0f}% G:{weights.get('G',0)*100:.0f}% B:{weights.get('B',0)*100:.0f}%"
-                        
-                        # Create row
-                        row_data = [
-                            2, file_name, date_to_use, film_name, circle_name,
-                            doses_formatted, std_formatted, avg_formatted, se_average_formatted,
-                            ci95_formatted, result.get('pixel_count', ''), uncertainty_method,
-                            weights_str, calibration_id, calibration_integrity,
-                        ]
-                        
-                        writer.writerow(row_data)
-                        total_rows += 1
-                
-                # Also export current file data if it has unsaved measurements
-                if current_results and (not self.file_manager.file_list or 
-                                       self.file_manager.current_file_index >= len(self.file_manager.file_list)):
-                    date_to_use = date_var.get() or metadata_date or ""
-                    
-                    # Get current file name
-                    current_file_name = ""
-                    if hasattr(self.image_processor, 'image_path') and self.image_processor.image_path:
-                        current_file_name = os.path.basename(self.image_processor.image_path)
-                    
-                    # Build ctr_map_by_name from current ctr_map
-                    current_ctr_map_by_name = {}
-                    for film_name, ctr_id in ctr_map.items():
-                        if self.tree.exists(ctr_id):
-                            ctr_circle_name = self.tree.item(ctr_id, 'text').replace(" (CTR)", "")
-                            current_ctr_map_by_name[film_name] = ctr_circle_name
-                    
-                    # Sort results
-                    sorted_current_results = sorted(current_results, key=lambda r: r.get('film', ''))
-                    
-                    for result in sorted_current_results:
-                        film_name = result['film']
-                        circle_name = result['circle']
-                        
-                        # Get export values
-                        export_values = self.get_export_values_for_result(result)
-                        
-                        # Format values
-                        doses_formatted = self.format_for_csv(export_values['dose'])
-                        std_formatted = self.format_for_csv(export_values['std'])
-                        avg_formatted = self.format_for_csv(export_values['avg'])
-                        se_average_formatted = self.format_for_csv(export_values['avg_unc'])
-                        
-                        # Calculate 95% CI
-                        ci95_formatted = ""
-                        try:
-                            se_numeric = export_values['avg_unc']
-                            if isinstance(se_numeric, str):
-                                se_numeric = float(se_numeric.replace('±', '').strip())
-                            if math.isfinite(float(se_numeric)) and se_numeric >= 0:
-                                ci95_val = se_numeric * 1.96
-                                ci95_formatted = self.format_for_csv(ci95_val)
-                        except (ValueError, TypeError):
-                            pass
-                        
-                        # Format channel weights
-                        weights = result.get('channel_weights')
-                        weights_str = ""
-                        if weights and isinstance(weights, dict):
-                            weights_str = f"R:{weights.get('R',0)*100:.0f}% G:{weights.get('G',0)*100:.0f}% B:{weights.get('B',0)*100:.0f}%"
-                        
-                        row_data = [
-                            2, current_file_name, date_to_use, film_name, circle_name,
-                            doses_formatted, std_formatted, avg_formatted, se_average_formatted,
-                            ci95_formatted, result.get('pixel_count', ''), uncertainty_method,
-                            weights_str, calibration_id, calibration_integrity,
-                        ]
-                        
-                        writer.writerow(row_data)
-                        total_rows += 1
-            
-            # Show success message
-            messagebox.showinfo("Export Complete", 
-                              f"CSV successfully exported to:\n{filename}\n\n"
-                              f"Total measurements exported: {total_rows}")
-            return True
-                              
+            count = self.write_results(filename, datasets)
         except Exception as exc:
-            messagebox.showerror("Export Error", f"Error exporting CSV:\n{str(exc)}")
+            messagebox.showerror("Export Error", f"CSV was not replaced:\n{exc}")
             return False
-
+        messagebox.showinfo("Export Complete", f"CSV exported to:\n{filename}\n\nMeasurements: {count}")
+        return True
 
 # ============================================================================
 # PLUGIN INTERFACE

@@ -659,15 +659,24 @@ class AutoMeasurementsTab(ttk.Frame):
 
     def _measure_corrected_circle(self, cx, cy, radius):
         """Measure a circle and apply the dose correction factor."""
-        prev_size = self.image_processor.measurement_size
-        try:
-            self.image_processor.measurement_size = radius
-            res = self.image_processor.measure_area(
-                cx * self.image_processor.zoom,
-                cy * self.image_processor.zoom
-            )
-        finally:
-            self.image_processor.measurement_size = prev_size
+        processor = self.image_processor
+        with processor.processing_lock:
+            res = processor.measure_circle(cx, cy, radius)
+            self._last_measurement_context = {
+                "provenance": {
+                    **dict(processor.calibration_provenance),
+                    "units": "Gy" if processor.calibration_applied else "scanner_intensity",
+                    "calibration_id": processor.calibration_provenance.get("calibration_id", ""),
+                    "calibration_integrity": processor.calibration_provenance.get("calibration_integrity", "not_applied"),
+                    "uncertainty_method": processor.config.get("uncertainty_estimation_method", "weighted_average"),
+                    "source_file": processor.current_file,
+                    "date": self.date_var.get() or self.metadata_date or "",
+                    "dose_correction_factor": self._get_dose_correction_factor(),
+                },
+                "valid_pixel_counts": list(getattr(processor, "last_valid_pixel_counts", [])),
+                "channel_weights": dict(processor.last_channel_weights or {}),
+                "radius": radius,
+            }
 
         if res is None:
             return None
@@ -1627,6 +1636,10 @@ class AutoMeasurementsTab(ttk.Frame):
                         result["avg_unc_original"] = result.get("avg_unc_numeric", orig_unc)
                     result["avg_numeric"] = corrected_avg
                     result["avg_unc_numeric"] = corrected_unc
+                    result["ctr_context"] = {
+                        "mode": "global", "value": ctr_avg, "uncertainty": ctr_unc,
+                        "control_film": self.global_ctr.get("film_name", ""),
+                    }
 
     def _restore_original_measurements(self):
         """Restore original measurements (delegates to CTR manager)."""
@@ -1704,6 +1717,9 @@ class AutoMeasurementsTab(ttk.Frame):
                     result["avg_numeric"] = float(rgb_mean)
                     result["std_avg_numeric"] = avg_std
                     result["avg_unc_numeric"] = float(rgb_mean_std)
+                    result.update(self._last_measurement_context)
+                    result.pop("avg_original", None)
+                    result.pop("avg_unc_original", None)
                     break
 
     # ---------------------------------------------------------------
@@ -1729,6 +1745,12 @@ class AutoMeasurementsTab(ttk.Frame):
     
     def _load_file_data(self, file_path):
         """Load data for a specific file (delegates to FileDataManager)."""
+        # A global control belongs to this image, not to arbitrary TreeView IDs
+        # subsequently allocated to a different image.
+        self.global_ctr = None
+        self.global_ctr_label.config(text="Global CTR: None")
+        if _get_parent_module()._OVERLAY:
+            _get_parent_module()._OVERLAY.pop("global_ctr", None)
         # Clear existing CTR data before loading new file data
         self.ctr_manager.ctr_map.clear()
         self.ctr_manager.original_measurements.clear()
@@ -2322,6 +2344,7 @@ class AutoMeasurementsTab(ttk.Frame):
                     "std_avg_numeric": avg_std,          # Raw average std (float)
                     "avg_unc_numeric": avg_unc,          # Raw SE/uncertainty value (float)
                     "channel_weights": channel_weights,  # Sensitivity weights {'R': w, 'G': w, 'B': w} or None
+                    **self._last_measurement_context,
                 })
 
             # Automatically detect CTR circle
@@ -2655,6 +2678,9 @@ class AutoMeasurementsTab(ttk.Frame):
                         rec["dose_numeric"] = dose
                         rec["std_numeric"] = std
                         rec["unc_numeric"] = unc
+                        rec.update(self._last_measurement_context)
+                        rec.pop("avg_original", None)
+                        rec.pop("avg_unc_original", None)
                         break
 
             _get_parent_module()._OVERLAY["circles"] = new_circles
@@ -2749,6 +2775,9 @@ class AutoMeasurementsTab(ttk.Frame):
                         rec["dose_numeric"] = dose
                         rec["std_numeric"] = std
                         rec["unc_numeric"] = unc
+                        rec.update(self._last_measurement_context)
+                        rec.pop("avg_original", None)
+                        rec.pop("avg_unc_original", None)
                         break
 
             _get_parent_module()._OVERLAY["circles"] = new_circles
@@ -3378,6 +3407,7 @@ class AutoMeasurementsTab(ttk.Frame):
             "std_avg_numeric": avg_std,
             "avg_unc_numeric": avg_unc,                 # Raw SE/uncertainty value (float)
             "channel_weights": channel_weights,          # Sensitivity weights {'R': w, 'G': w, 'B': w} or None
+            **self._last_measurement_context,
         })
 
         self.main_window.update_image()

@@ -10,6 +10,7 @@ import os
 import json
 import logging
 from datetime import datetime
+from copy import deepcopy
 
 from ..models import DetectionParams, Circle, Film
 
@@ -245,11 +246,11 @@ class FileDataManager:
             
             results = get_results_callback()
             self.file_data[current_file] = {
-                'results': results.copy(),
+                'results': deepcopy(results),
                 'ctr_map_by_name': ctr_map_by_name,  # Store by name instead of ID
-                'original_measurements': get_original_measurements_callback().copy(),
+                'original_measurements': deepcopy(get_original_measurements_callback()),
                 'radii_by_name': radii_by_name.copy(),
-                'original_values': get_original_values_callback().copy(),
+                'original_values': deepcopy(get_original_values_callback()),
                 'measured': len(results) > 0,
                 'overlay_state': overlay_state
             }
@@ -287,7 +288,7 @@ class FileDataManager:
         ctr_map_by_name = {}
         
         if file_path in self.file_data:
-            data = self.file_data[file_path]
+            data = deepcopy(self.file_data[file_path])
             set_results_callback(data['results'].copy())
             
             # Load ctr_map_by_name (will be converted to IDs in _update_treeview_from_data)

@@ -181,7 +181,7 @@ class CTRManager:
             return True
         return False
     
-    def _compute_averaged_ctr(self, film_name: str, ctr_ids: list, results_lookup: dict) -> Tuple[float, float]:
+    def _compute_averaged_ctr(self, film_name: str, ctr_ids: list, results_lookup: dict, *, return_ids=False):
         """Compute averaged CTR value and uncertainty from multiple CTR circles.
         
         When multiple CTR circles are selected, computes:
@@ -198,6 +198,7 @@ class CTRManager:
         """
         ctr_values = []
         ctr_uncertainties = []
+        valid_ids = []
         
         for ctr_id in ctr_ids:
             if not self.tree.exists(ctr_id):
@@ -230,14 +231,10 @@ class CTRManager:
             if np.isfinite(ctr_avg) and np.isfinite(ctr_unc) and ctr_unc >= 0:
                 ctr_values.append(ctr_avg)
                 ctr_uncertainties.append(ctr_unc)
+                valid_ids.append(ctr_id)
         
-        if not ctr_values:
-            return float("nan"), float("nan")
-        
-        if len(ctr_values) == 1:
-            return ctr_values[0], ctr_uncertainties[0]
-        
-        return summarize_controls(ctr_values, ctr_uncertainties)
+        summary = summarize_controls(ctr_values, ctr_uncertainties)
+        return (*summary, valid_ids) if return_ids else summary
     
     def apply_ctr_subtraction(self, results_list: list) -> None:
         """Apply CTR subtraction to all circles in films with CTR.
@@ -265,7 +262,9 @@ class CTRManager:
                 continue
             
             # Compute averaged CTR value from all CTR circles in this film
-            ctr_avg, ctr_unc = self._compute_averaged_ctr(film_name, ctr_ids, results_lookup)
+            ctr_avg, ctr_unc, valid_ctr_ids = self._compute_averaged_ctr(
+                film_name, ctr_ids, results_lookup, return_ids=True
+            )
             
             if not (np.isfinite(ctr_avg) and np.isfinite(ctr_unc)):
                 continue
@@ -317,14 +316,14 @@ class CTRManager:
                 
                 # All circles (including CTRs) subtract the averaged CTR value
                 # CTR circles will show their deviation from the average CTR
-                is_control = circle_id in ctr_ids
+                is_control = circle_id in valid_ctr_ids
                 corrected_avg, corrected_unc = subtract_control(
                     orig_avg,
                     orig_unc,
                     ctr_avg,
                     ctr_unc,
-                    member_index=ctr_ids.index(circle_id) if is_control else None,
-                    member_count=len(ctr_ids),
+                    member_index=valid_ctr_ids.index(circle_id) if is_control else None,
+                    member_count=len(valid_ctr_ids),
                     member_uncertainty=orig_unc if is_control else None,
                 )
                 
@@ -356,6 +355,10 @@ class CTRManager:
                     
                     result['avg_numeric'] = corrected_avg
                     result['avg_unc_numeric'] = corrected_unc
+                    result['ctr_context'] = {
+                        'mode': 'per_film', 'value': ctr_avg, 'uncertainty': ctr_unc,
+                        'controls': [self.tree.item(item, 'text') for item in valid_ctr_ids],
+                    }
     
     def restore_original_measurements(self, results_list=None):
         """Restore original measurements without CTR subtraction.
@@ -363,6 +366,8 @@ class CTRManager:
         Args:
             results_list: Optional list of result dictionaries to update with original values
         """
+        for result in results_list or []:
+            result.pop('ctr_context', None)
         for item_id, orig_data in self.original_measurements.items():
             if self.tree.exists(item_id):
                 # The orig_data already contains formatted strings (dose_str, std_str, avg_str, avg_unc_str)
