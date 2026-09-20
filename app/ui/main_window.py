@@ -39,6 +39,9 @@ class MainWindow:
         
         # Loading state
         self.loading_image = False
+        self._image_load_lock = threading.Lock()
+        self._image_load_request_id = 0
+        self._image_load_callbacks = {}
         
         # Create UI
         self._create_menu()
@@ -341,11 +344,9 @@ class MainWindow:
         )
         
         if file_path:
-            self.update_status("Loading image...")
-            # Load image in a separate thread
-            threading.Thread(target=self._load_image_thread, args=(file_path,), daemon=True).start()
+            self.load_image(file_path)
     
-    def _load_image_thread(self, file_path):
+    def _load_image_thread(self, file_path, request_id):
         """Load image in a background thread with improved error handling."""
         try:
             # Set loading flag
@@ -370,51 +371,53 @@ class MainWindow:
             estimated_load_time = 5 + (file_size_mb / 20)  # Base + size-dependent factor
             logger.debug(f"Estimated load time: {estimated_load_time:.1f} seconds")
             
-            # Load the image
-            load_success = self.image_processor.load_image(file_path)
+            # Serialize mutations of ImageProcessor. A newer request supersedes
+            # the UI result of an older one, but both cannot write concurrently.
+            with self._image_load_lock:
+                if request_id != self._image_load_request_id:
+                    return
+                load_success = self.image_processor.load_image(file_path)
             
             if not load_success:
                 raise Exception("Image processor reported loading failure")
             
             # Schedule UI updates on the main thread
-            self.parent.after(0, lambda: self._finish_loading_image(file_path))
+            self.parent.after(0, lambda: self._finish_loading_image(file_path, request_id))
         except (IOError, OSError) as e:
             logger.error(f"File access error loading image: {str(e)}", exc_info=True)
-            self.parent.after(0, lambda: messagebox.showerror("File Error", 
-                                                            f"Could not access the image file:\n{str(e)}"))
-            self.parent.after(0, lambda: self.update_status("Error: Could not access image file"))
-            self.loading_image = False
+            message = str(e)
+            self.parent.after(0, lambda: self._finish_image_load_error(
+                request_id, "File Error", f"Could not access the image file:\n{message}",
+                "Error: Could not access image file",
+            ))
         except MemoryError as e:
             logger.error(f"Out of memory loading image: {str(e)}", exc_info=True)
-            self.parent.after(0, lambda: messagebox.showerror("Memory Error", 
-                                                            "Not enough memory to load this image.\n"
-                                                            "Try closing other applications or using a smaller image."))
-            self.parent.after(0, lambda: self.update_status("Error: Out of memory"))
-            self.loading_image = False
+            self.parent.after(0, lambda: self._finish_image_load_error(
+                request_id, "Memory Error",
+                "Not enough memory to load this image.\nTry closing other applications or using a smaller image.",
+                "Error: Out of memory",
+            ))
         except Exception as e:
             logger.error(f"Error loading image: {str(e)}", exc_info=True)
-            self.parent.after(0, lambda: messagebox.showerror("Error", 
-                                                            f"Could not load image:\n{str(e)}"))
-            self.parent.after(0, lambda: self.update_status("Error loading image"))
-            self.loading_image = False
+            message = str(e)
+            self.parent.after(0, lambda: self._finish_image_load_error(
+                request_id, "Error", f"Could not load image:\n{message}", "Error loading image"
+            ))
+
+    def _finish_image_load_error(self, request_id, title, message, status):
+        """Report an image-load failure only if it belongs to the active request."""
+        if request_id != self._image_load_request_id:
+            return
+        self._image_load_callbacks.pop(request_id, None)
+        self.loading_image = False
+        messagebox.showerror(title, message)
+        self.update_status(status)
     
-    def _finish_loading_image(self, file_path):
+    def _finish_loading_image(self, file_path, request_id):
         """Finish loading image on the main thread."""
+        if request_id != self._image_load_request_id:
+            return
         try:
-            # Check if file was renamed due to Unicode characters
-            if hasattr(self.image_processor, '_renamed_file_info') and self.image_processor._renamed_file_info:
-                old_name, new_name = self.image_processor._renamed_file_info
-                messagebox.showinfo(
-                    "File Renamed",
-                    f"The filename contained special characters that OpenCV cannot read.\n\n"
-                    f"Original: {old_name}\n"
-                    f"Renamed to: {new_name}\n\n"
-                    f"The file has been renamed automatically."
-                )
-                # Update file_path to the new name
-                file_path = os.path.join(os.path.dirname(file_path), new_name)
-                self.image_processor._renamed_file_info = None
-            
             # Fit image to screen by default
             self.image_panel.fit_to_screen()
             
@@ -467,6 +470,10 @@ class MainWindow:
             
             # Update calibration menu states (enable/disable based on data availability)
             self._update_calibration_menu_states()
+
+            callback = self._image_load_callbacks.pop(request_id, None)
+            if callback:
+                callback(file_path)
             
             logger.info(f"Loaded image: {file_path}")
         except Exception as e:
@@ -476,10 +483,20 @@ class MainWindow:
             # Clear loading flag
             self.loading_image = False
     
-    def load_image(self, file_path):
+    def load_image(self, file_path, on_complete=None):
         """Load an image from the specified path."""
         self.update_status("Loading image...")
-        threading.Thread(target=self._load_image_thread, args=(file_path,), daemon=True).start()
+        self.loading_image = True
+        self._image_load_request_id += 1
+        request_id = self._image_load_request_id
+        self._image_load_callbacks.clear()
+        if on_complete:
+            self._image_load_callbacks[request_id] = on_complete
+        threading.Thread(
+            target=self._load_image_thread,
+            args=(file_path, request_id),
+            daemon=True,
+        ).start()
     
     def _update_recent_menu(self):
         """Update the recent files menu."""

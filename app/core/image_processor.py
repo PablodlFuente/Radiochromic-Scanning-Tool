@@ -6,7 +6,7 @@ processing, and analysis.
 """
 
 import numpy as np
-from PIL import Image, ImageTk, ImageOps, ImageEnhance
+from PIL import Image, ImageOps, ImageEnhance
 import cv2
 import logging
 import os
@@ -1790,11 +1790,8 @@ class ImageProcessor:
             else:
                 pil_image = Image.fromarray(image).convert("L")
 
-            # Convert to PhotoImage for Tkinter
-            image_tk = ImageTk.PhotoImage(pil_image)
-        
-            # Return the image and its dimensions
-            return image_tk, pil_image.width, pil_image.height
+            # Tk PhotoImage objects must be created on the main UI thread.
+            return pil_image, pil_image.width, pil_image.height
         except Exception as e:
             logger.error(f"Error preparing display image: {str(e)}", exc_info=True)
             return None, 0, 0

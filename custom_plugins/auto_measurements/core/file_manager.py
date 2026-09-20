@@ -346,19 +346,16 @@ class FileDataManager:
         import os
         
         try:
-            # Load the image through the main window
-            self.main_window.load_image(file_path)
-            
-            # Update TreeView with loaded data (will call load_file_data internally)
-            update_treeview_callback()
-            
-            # Update image display to show overlay for this file
-            self.main_window.update_image()
-            
-            # Update UI
-            filename = os.path.basename(file_path)
-            if self.current_file_label:
-                self.current_file_label.config(text=f"Current: {filename}", foreground="black")
+            def finish_loaded_file(_loaded_path):
+                # Restore measurements and overlays only after the asynchronous
+                # image load has committed its new image state.
+                update_treeview_callback()
+                self.main_window.update_image()
+                filename = os.path.basename(file_path)
+                if self.current_file_label:
+                    self.current_file_label.config(text=f"Current: {filename}", foreground="black")
+
+            self.main_window.load_image(file_path, on_complete=finish_loaded_file)
             
         except Exception as e:
             # Clean error message to avoid Unicode encoding issues in messagebox

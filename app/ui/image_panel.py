@@ -13,6 +13,7 @@ import queue
 import time
 import cv2
 import numpy as np
+from PIL import ImageTk
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,7 @@ class ImagePanel:
         self.loading = False
         self.current_image_tk = None
         self.is_adjustment = False  # Flag to indicate if this is an adjustment or initial load
+        self._display_request_id = 0
         
         # Measurement display
         self.measurement_visible = False
@@ -528,30 +530,42 @@ class ImagePanel:
             self._show_loading()
         
         # Process image in a separate thread
-        threading.Thread(target=self._process_and_display_image, daemon=True).start()
-    
-    def _process_and_display_image(self):
+        self._display_request_id += 1
+        request_id = self._display_request_id
+        threading.Thread(
+            target=self._process_and_display_image,
+            args=(request_id,),
+            daemon=True,
+        ).start()
+
+    def _process_and_display_image(self, request_id):
         """Process and display the image in a background thread."""
         try:
             # Get the processed image
             logger.debug("Getting display image from image processor")
-            image_tk, width, height = self.image_processor.get_display_image()
+            pil_image, width, height = self.image_processor.get_display_image()
             
-            if image_tk is None:
+            if pil_image is None:
                 logger.error("Image processor returned None for display image")
             else:
                 logger.debug(f"Got display image with dimensions: {width}x{height}")
             
             # Schedule UI update on the main thread
-            self.canvas.after(0, lambda: self._update_canvas(image_tk, width, height))
+            self.canvas.after(
+                0,
+                lambda: self._update_canvas(pil_image, width, height, request_id),
+            )
         except Exception as e:
             logger.error(f"Error processing image: {str(e)}", exc_info=True)
             # Hide loading indicator on error
             self.canvas.after(0, self._hide_loading)
     
-    def _update_canvas(self, image_tk, width, height):
+    def _update_canvas(self, pil_image, width, height, request_id):
         """Update the canvas with the processed image."""
-        if image_tk:
+        if request_id != self._display_request_id:
+            return
+        if pil_image:
+            image_tk = ImageTk.PhotoImage(pil_image)
             # Update canvas scrollregion
             self.canvas.config(scrollregion=(0, 0, width, height))
         
