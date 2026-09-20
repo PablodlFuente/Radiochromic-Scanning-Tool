@@ -39,6 +39,55 @@ _ISOBAR_CONTOURS: list = []
 _SHOW_ISOBARS: bool = False
 
 
+def fit_weighted_line(xs, ys, uncertainties, force_origin=False):
+    """Weighted linear fit with honest handling of insufficient information."""
+    xs = np.asarray(xs, dtype=float)
+    ys = np.asarray(ys, dtype=float)
+    uncertainties = np.asarray(uncertainties, dtype=float)
+    finite = np.isfinite(xs) & np.isfinite(ys)
+    xs, ys, uncertainties = xs[finite], ys[finite], uncertainties[finite]
+    parameter_count = 1 if force_origin else 2
+    if xs.size < parameter_count or np.ptp(xs) == 0:
+        return (float("nan"),) * 5
+
+    positive = uncertainties[np.isfinite(uncertainties) & (uncertainties > 0)]
+    absolute_uncertainties = positive.size == uncertainties.size
+    if positive.size:
+        effective = uncertainties.copy()
+        effective[~np.isfinite(effective) | (effective <= 0)] = np.median(positive)
+        weights = 1.0 / effective**2
+    else:
+        weights = np.ones_like(xs)
+
+    design = xs[:, None] if force_origin else np.column_stack((xs, np.ones_like(xs)))
+    information = design.T @ (weights[:, None] * design)
+    try:
+        covariance = np.linalg.inv(information)
+    except np.linalg.LinAlgError:
+        return (float("nan"),) * 5
+    coefficients = covariance @ (design.T @ (weights * ys))
+    slope = float(coefficients[0])
+    intercept = 0.0 if force_origin else float(coefficients[1])
+    prediction = slope * xs + intercept
+    residuals = ys - prediction
+
+    if not absolute_uncertainties:
+        degrees_of_freedom = xs.size - parameter_count
+        covariance = (
+            covariance * float(np.sum(weights * residuals**2) / degrees_of_freedom)
+            if degrees_of_freedom > 0 else np.full_like(covariance, np.nan)
+        )
+    standard_errors = np.sqrt(np.maximum(np.diag(covariance), 0.0))
+    slope_se = float(standard_errors[0])
+    intercept_se = 0.0 if force_origin else float(standard_errors[1])
+
+    weighted_mean = float(np.average(ys, weights=weights))
+    total = float(np.sum(weights * (ys - weighted_mean) ** 2))
+    residual = float(np.sum(weights * residuals**2))
+    r_squared = float(1.0 - residual / total) if total > 0 else float("nan")
+    return slope, intercept, slope_se, intercept_se, r_squared
+
+
 # ---------------------------------------------------------------------------
 # Helpers to reach the AutoMeasurements plugin
 # ---------------------------------------------------------------------------
@@ -484,7 +533,10 @@ class AnalysisTab:
         real_img = ((real_img - z_min) / span).astype(np.float64)
 
         # Generate synthetic Gaussian centered at the patch center
-        center_y, center_x = h_roi / 2.0, w_roi / 2.0
+        x_origin = float(xx[0, 0])
+        y_origin = float(yy[0, 0])
+        center_x = float(cx - x_origin)
+        center_y = float(cy - y_origin)
         # Estimate sigma from the ROI radius (~radius/2 is a reasonable fit)
         sigma = radius * 0.5
 
@@ -509,14 +561,12 @@ class AnalysisTab:
         # Phase correlate returns (dx, dy) shift from ref to real
         (shift_x, shift_y), response = cv2.phaseCorrelate(ref_windowed, real_windowed)
 
-        # The geometric center of the ROI in absolute coords
-        x_min = int(cx - radius)
-        y_min = int(cy - radius)
-        # Reference Gaussian is at (center_x, center_y) in local coords
-        # = (x_min + center_x, y_min + center_y) in absolute coords
-        # The real peak is shifted by (shift_x, shift_y) from the reference
-        dose_cx = x_min + center_x + shift_x
-        dose_cy = y_min + center_y + shift_y
+        if not np.isfinite(response) or response < 0.05:
+            return None
+        dose_cx = cx + shift_x
+        dose_cy = cy + shift_y
+        if (dose_cx - cx) ** 2 + (dose_cy - cy) ** 2 > radius ** 2:
+            return None
 
         return dose_cx, dose_cy
 
@@ -965,52 +1015,7 @@ class AnalysisTab:
         self._open_dose_value_editor(next_item)
 
     def _fit_line(self, xs: np.ndarray, ys: np.ndarray, errs: np.ndarray, force_origin: bool):
-        weights = np.where(errs > 0, 1.0 / errs**2, 1.0)
-
-        if force_origin:
-            denom = np.sum(weights * xs**2)
-            slope = np.sum(weights * xs * ys) / denom if denom > 0 else 0.0
-            intercept = 0.0
-        else:
-            s = np.sum(weights)
-            sx = np.sum(weights * xs)
-            sy = np.sum(weights * ys)
-            sxx = np.sum(weights * xs**2)
-            sxy = np.sum(weights * xs * ys)
-            denom = s * sxx - sx**2
-            if abs(denom) < 1e-12:
-                slope = 0.0
-                intercept = float(np.average(ys, weights=weights)) if len(ys) else 0.0
-            else:
-                slope = (s * sxy - sx * sy) / denom
-                intercept = (sxx * sy - sx * sxy) / denom
-
-        y_pred = slope * xs + intercept
-        ss_res = np.sum((ys - y_pred)**2)
-        ss_tot = np.sum((ys - np.mean(ys))**2)
-        r_squared = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
-
-        if force_origin:
-            dof = max(len(xs) - 1, 1)
-            sigma2 = np.sum(weights * (ys - y_pred) ** 2) / dof if len(xs) > 1 else 0.0
-            denom = np.sum(weights * xs**2)
-            slope_se = np.sqrt(sigma2 / denom) if denom > 0 and sigma2 > 0 else 0.0
-            intercept_se = 0.0
-        else:
-            dof = max(len(xs) - 2, 1)
-            sigma2 = np.sum(weights * (ys - y_pred) ** 2) / dof if len(xs) > 2 else 0.0
-            s = np.sum(weights)
-            sx = np.sum(weights * xs)
-            sxx = np.sum(weights * xs**2)
-            denom = s * sxx - sx**2
-            if denom > 0 and sigma2 > 0:
-                slope_se = np.sqrt(sigma2 * s / denom)
-                intercept_se = np.sqrt(sigma2 * sxx / denom)
-            else:
-                slope_se = 0.0
-                intercept_se = 0.0
-
-        return slope, intercept, slope_se, intercept_se, r_squared
+        return fit_weighted_line(xs, ys, errs, force_origin)
 
     def _load_circles(self):
         """Load detected circles from AutoMeasurements results."""
