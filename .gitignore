@@ -7,7 +7,7 @@ rc_config.json
 .idea
 .venv
 Improvements.txt
-.github
+.github/copilot-instructions.md
 .gitignore
 calibration_data/*
 FUTURE_IMPROVEMENTS.md
