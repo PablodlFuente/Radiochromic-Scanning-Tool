@@ -16,6 +16,7 @@ from scipy.optimize import curve_fit
 from scipy.interpolate import CubicSpline
 from app.utils.image_io import read_image_unchanged, storage_bit_depth
 from app.paths import CALIBRATION_ROOT
+from app.core.calibration_manifest import update_calibration_manifest
 
 class CalibrationApp:
     def __init__(self, root, data_dir=None):
@@ -1214,6 +1215,23 @@ class CalibrationApp:
                         "weighted_nonlinear_least_squares",
                     ])
             os.replace(temporary_name, fname)
+            update_calibration_manifest(
+                self.data_dir,
+                "dose_calibration",
+                {
+                    "model": "intensity = a + b / (dose - c)",
+                    "fit_method": "weighted_nonlinear_least_squares",
+                    "weight_source": "roi_spatial_standard_deviation",
+                    "bit_depth": int(self.calibration_bit_depth),
+                    "dose_range": [dose_min, dose_max],
+                    "fit_to_spline": bool(self.fit_to_spline_var.get()),
+                    "excluded_points": [
+                        {"channel": channel, "index": int(index)}
+                        for channel, index in sorted(self.excluded_points)
+                    ],
+                },
+                source_paths=self.image_files,
+            )
             messagebox.showinfo("Fit saved", f"Fit parameters saved to {fname.resolve()}\\nCalibration bit depth: {self.calibration_bit_depth}-bit")
             self.fit_window.destroy()
         except Exception as e:

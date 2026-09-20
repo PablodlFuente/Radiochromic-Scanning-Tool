@@ -24,6 +24,7 @@ from PIL import Image
 import logging
 from app.utils.image_io import read_image_unchanged, write_tiff_unchanged
 from app.paths import CALIBRATION_ROOT, CONFIG_FILE
+from app.core.calibration_manifest import update_calibration_manifest
 
 # For matplotlib plots
 import matplotlib.pyplot as plt
@@ -713,6 +714,25 @@ To update this data, go back and load new blank scans."""
                 date_created=self.flat_field_data["date_created"],
                 num_images_averaged=self.flat_field_data["num_images_averaged"],
                 image_shape=self.flat_field_data["image_shape"]
+            )
+
+            blank_sources = []
+            if self.blank_source_dir:
+                blank_sources = [
+                    os.path.join(self.blank_source_dir, filename)
+                    for filename in self.blank_filenames
+                ]
+            update_calibration_manifest(
+                self._data_dir,
+                "field_flattening",
+                {
+                    "method": "per-channel mean-normalized averaged blank",
+                    "num_images_averaged": len(self.blank_images),
+                    "image_shape": list(img.shape),
+                    "mean_per_channel": mean_per_channel.tolist(),
+                    "std_per_channel": [float(value) for value in self.flat_field_data["std_per_channel"]],
+                },
+                source_paths=blank_sources,
             )
 
             logger.info(f"Field flattening data saved to: {save_path}")

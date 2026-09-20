@@ -28,6 +28,7 @@ from matplotlib.colors import LinearSegmentedColormap
 from typing import Optional
 from app.utils.image_io import read_image_unchanged, storage_bit_depth
 from app.paths import CALIBRATION_ROOT
+from app.core.calibration_manifest import verify_calibration_manifest
 from app.core.dosimetry import (
     CHANNELS,
     combine_channel_estimates,
@@ -1388,6 +1389,16 @@ class ImageProcessor:
             logger.error("Calibration parameters file 'fit_parameters.csv' not found")
             return False
 
+        integrity = verify_calibration_manifest(os.path.dirname(csv_path))
+        if integrity is None:
+            logger.warning("Using a legacy calibration without an integrity manifest")
+        elif not integrity.get("manifest") or not integrity.get("fit_parameters.csv", False):
+            logger.error("Calibration integrity verification failed: %s", integrity)
+            return False
+        elif "calibration_data.csv" in integrity and not integrity["calibration_data.csv"]:
+            logger.error("Calibration table differs from its recorded manifest")
+            return False
+
         import csv
 
         params = {}
@@ -1941,6 +1952,15 @@ class ImageProcessor:
         ff_path = self._find_field_flattening_file()
         if ff_path is None:
             logger.debug("No field flattening file found")
+            self.flat_field = None
+            self.flat_field_info = None
+            return False
+
+        integrity = verify_calibration_manifest(os.path.dirname(ff_path))
+        if integrity is not None and (
+            not integrity.get("manifest") or not integrity.get("field_flattening.npz", False)
+        ):
+            logger.error("Field-flattening integrity verification failed: %s", integrity)
             self.flat_field = None
             self.flat_field_info = None
             return False
