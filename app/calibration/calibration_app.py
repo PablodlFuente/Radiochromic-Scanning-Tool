@@ -16,7 +16,7 @@ from scipy.optimize import curve_fit
 from scipy.interpolate import CubicSpline
 from app.utils.image_io import read_image_unchanged, storage_bit_depth
 from app.paths import CALIBRATION_ROOT
-from app.core.calibration_manifest import update_calibration_manifest
+from app.core.calibration_manifest import update_calibration_manifest, verify_calibration_manifest
 
 class CalibrationApp:
     def __init__(self, root, data_dir=None):
@@ -157,18 +157,28 @@ class CalibrationApp:
     
     def _load_field_flattening(self):
         """Load field flattening data if available."""
+        self._flat_field_error = None
         # Look for field_flattening.npz in the current directory (calibration_data)
         ff_paths = [str(self.data_dir / "field_flattening.npz")]
         
         for ff_path in ff_paths:
             if os.path.isfile(ff_path):
                 try:
-                    data = np.load(ff_path, allow_pickle=True)
-                    self.flat_field = data['flat_field']
+                    integrity = verify_calibration_manifest(self.data_dir)
+                    if integrity is not None and not (
+                        integrity.get("manifest") and integrity.get("field_flattening.npz")
+                    ):
+                        raise ValueError("Flat-field integrity verification failed")
+                    with np.load(ff_path, allow_pickle=False) as data:
+                        flat = np.array(data['flat_field'], dtype=float, copy=True)
+                    if not np.all(np.isfinite(flat) & (flat > 0)):
+                        raise ValueError("Flat-field values must be finite and positive")
+                    self.flat_field = flat
                     print(f"Loaded field flattening from: {ff_path}")
                     print(f"  Flat field shape: {self.flat_field.shape}")
                     return
                 except Exception as e:
+                    self._flat_field_error = str(e)
                     print(f"Failed to load field flattening: {e}")
         
         print("No field flattening data found - images will not be corrected")
@@ -182,6 +192,8 @@ class CalibrationApp:
         Returns:
             Corrected image with same dtype
         """
+        if getattr(self, "_flat_field_error", None):
+            raise ValueError(f"Cannot calibrate with an invalid flat-field: {self._flat_field_error}")
         if self.flat_field is None:
             return image
         
@@ -1171,6 +1183,8 @@ class CalibrationApp:
         """Save current entries to CSV and close window."""
         fname = self.data_dir / "fit_parameters.csv"
         try:
+            if getattr(self, "_flat_field_error", None):
+                raise ValueError(f"Cannot save calibration: {self._flat_field_error}")
             if self.fit_type_var.get() != "standard":
                 raise ValueError("Select a rational fit before saving dose parameters.")
             for channel in ("R", "G", "B"):
@@ -1217,7 +1231,10 @@ class CalibrationApp:
                 "dose_calibration",
                 {
                     "model": "intensity = a + b / (dose - c)",
-                    "fit_method": "weighted_nonlinear_least_squares",
+                    "fit_methods": {
+                        ch: self.latest_fit_results[f"Fit {ch}"]["fit_method"]
+                        for ch in ("R", "G", "B")
+                    },
                     "weight_source": "roi_spatial_standard_deviation",
                     "bit_depth": int(self.calibration_bit_depth),
                     "dose_ranges": {

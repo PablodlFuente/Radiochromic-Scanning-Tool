@@ -14,6 +14,7 @@ from app.calibration.calibration_app import CalibrationApp
 from custom_plugins.auto_measurements.core.exporter import CSVExporter
 from custom_plugins.auto_measurements.core.ctr_manager import CTRManager
 from custom_plugins.auto_measurements.core.formatter import MeasurementFormatter
+from custom_plugins.auto_measurements.ui.main_tab import AutoMeasurementsTab
 
 
 def processor(image):
@@ -43,6 +44,12 @@ def measurement(value=1.0, **provenance):
 
 
 class ProcessingWorkflowTests(unittest.TestCase):
+    def test_rectangular_roi_has_exact_requested_even_dimensions(self):
+        p = processor(np.ones((9, 9)))
+        p.measurement_shape = "rectangular"
+        p.measurement_size_rect = (4, 2)
+        self.assertEqual(p.measure_area(4, 4)[-1], 8)
+
     def test_preview_binning_preserves_uint16_analysis_and_calibration(self):
         p = processor(np.full((4, 4, 3), 1000, dtype=np.uint16))
         p.current_image = np.full((4, 4, 3), 2.5, dtype=np.float64)
@@ -93,6 +100,17 @@ class ProcessingWorkflowTests(unittest.TestCase):
 
 
 class ExportWorkflowTests(unittest.TestCase):
+    def test_locked_destination_preserves_csv_and_removes_temporary_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "results.csv"
+            target.write_text("previous", encoding="utf-8")
+            exporter = CSVExporter(None, None, None)
+            with patch("app.utils.atomic_file.os.replace", side_effect=PermissionError("locked")):
+                with self.assertRaises(PermissionError):
+                    exporter.write_results(target, [("image.tif", [measurement()])])
+            self.assertEqual(target.read_text(encoding="utf-8"), "previous")
+            self.assertEqual(list(Path(tmp).glob("*.tmp")), [])
+
     def test_invalid_late_row_preserves_existing_csv(self):
         exporter = CSVExporter(None, None, None)
         with tempfile.TemporaryDirectory() as tmp:
@@ -124,6 +142,15 @@ class ExportWorkflowTests(unittest.TestCase):
 
 
 class CalibrationPersistenceTests(unittest.TestCase):
+    def test_calibration_dialog_rejects_nonpositive_flat(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            np.savez(Path(tmp) / "field_flattening.npz", flat_field=np.zeros((2, 2, 3)))
+            app = SimpleNamespace(data_dir=Path(tmp), flat_field=None)
+            CalibrationApp._load_field_flattening(app)
+            self.assertIsNone(app.flat_field)
+            with self.assertRaises(ValueError):
+                CalibrationApp._apply_field_flattening(app, np.ones((2, 2, 3)))
+
     def test_saved_parameters_keep_precision_and_channel_fit_domains(self):
         with tempfile.TemporaryDirectory() as tmp:
             results = {
@@ -148,6 +175,17 @@ class CalibrationPersistenceTests(unittest.TestCase):
 
 
 class ControlWorkflowTests(unittest.TestCase):
+    def test_global_control_uses_remeasured_numeric_value(self):
+        tab = SimpleNamespace(
+            global_ctr={"item_id": "control", "film_name": "F", "circle_data": {"avg_original": 99}},
+            tree=SimpleNamespace(exists=lambda item: True, item=lambda *args: "C (GLOBAL CTR)",
+                                 get_children=lambda: ()),
+            results=[{"film": "F", "circle": "C", "avg_numeric": .25, "avg_unc_numeric": .02}],
+        )
+        AutoMeasurementsTab._apply_global_ctr_subtraction(tab)
+        self.assertEqual(tab.global_ctr["circle_data"]["avg_original"], .25)
+        self.assertEqual(tab.global_ctr["circle_data"]["avg_unc_numeric"], .02)
+
     def test_invalid_control_is_excluded_from_covariance_membership(self):
         tree = SimpleNamespace(exists=lambda item:True, item=lambda item, field:item)
         manager = CTRManager(tree, MeasurementFormatter)

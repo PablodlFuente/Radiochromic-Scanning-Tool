@@ -1558,6 +1558,18 @@ class AutoMeasurementsTab(ttk.Frame):
         
         global_ctr_data = self.global_ctr.get("circle_data", {})
         global_ctr_item_id = self.global_ctr.get("item_id")
+        if not global_ctr_item_id or not self.tree.exists(global_ctr_item_id):
+            return
+        control_name = self.tree.item(global_ctr_item_id, "text").replace(" (CTR)", "").replace(" (GLOBAL CTR)", "")
+        control = next((result for result in self.results
+                        if result.get("film") == self.global_ctr.get("film_name")
+                        and result.get("circle", "").replace(" (CTR)", "").replace(" (GLOBAL CTR)", "") == control_name), None)
+        if control is not None:
+            global_ctr_data = {
+                "avg_original": control.get("avg_original", control.get("avg_numeric", np.nan)),
+                "avg_unc_numeric": control.get("avg_unc_original", control.get("avg_unc_numeric", np.nan)),
+            }
+            self.global_ctr["circle_data"] = global_ctr_data
         
         # Get CTR average value and uncertainty
         try:

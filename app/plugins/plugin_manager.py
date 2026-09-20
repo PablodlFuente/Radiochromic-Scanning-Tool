@@ -227,6 +227,12 @@ class PluginManager:
                 except Exception as exc:
                     logger.error("Plugin '%s' config change notification failed: %s", name, exc, exc_info=True)
 
+    def notify_image_loaded(self, file_path):
+        """Invalidate image-specific UI state before restoring any saved file results."""
+        for name, module in self._plugins.items():
+            if self.is_active(name) and hasattr(module, "on_image_loaded"):
+                module.on_image_loaded(file_path)
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------

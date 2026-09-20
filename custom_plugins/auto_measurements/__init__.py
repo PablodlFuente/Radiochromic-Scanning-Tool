@@ -251,6 +251,32 @@ def _draw_dashed_circle(img, center, radius, color, thickness):
 # Configuration change handler
 # -------------------------------------------------------------------------
 
+def on_image_loaded(file_path):
+    """Clear the displayed image state; FileDataManager may then restore its snapshot."""
+    global _OVERLAY
+    tab = _AUTO_MEASUREMENTS_INSTANCE
+    if tab is None:
+        return
+    tab.results = []
+    for item in tab.tree.get_children():
+        tab.tree.delete(item)
+    tab.ctr_manager.ctr_map.clear()
+    tab.ctr_manager.original_measurements.clear()
+    tab.original_values = {}
+    tab.original_radii = {}
+    tab.detected_radii = {}
+    tab.global_ctr = None
+    tab.global_ctr_label.config(text="")
+    for entry in (tab.year_entry, tab.month_entry, tab.day_entry):
+        if entry.cget("foreground") == "gray":
+            entry.delete(0, "end")
+            entry.config(foreground="black", font=("Arial", 9))
+    tab.metadata_date = tab._extract_date_from_metadata()
+    tab.metadata_date_label.config(text=f"(Metadata: {tab.metadata_date})" if tab.metadata_date else "")
+    _OVERLAY = None
+    update_overlay_shape(tab.image_processor.original_image.shape)
+
+
 def on_config_change(config, image_processor):
     """Handle configuration changes - refresh measurements when calibration or uncertainty method changes."""
     global _AUTO_MEASUREMENTS_INSTANCE

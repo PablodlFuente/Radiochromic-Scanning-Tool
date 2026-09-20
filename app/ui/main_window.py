@@ -418,6 +418,8 @@ class MainWindow:
         if request_id != self._image_load_request_id:
             return
         try:
+            from app.plugins.plugin_manager import plugin_manager
+            plugin_manager.notify_image_loaded(file_path)
             # Fit image to screen by default
             self.image_panel.fit_to_screen()
             

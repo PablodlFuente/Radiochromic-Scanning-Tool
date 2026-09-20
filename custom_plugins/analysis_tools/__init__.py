@@ -129,6 +129,12 @@ def teardown():
     _SHOW_ISOBARS = False
 
 
+def on_image_loaded(file_path):
+    global _CENTROID_MARKERS, _ISOBAR_CONTOURS
+    _CENTROID_MARKERS = []
+    _ISOBAR_CONTOURS = []
+
+
 def process(image):
     """Draw centroid markers and optional isobars on the image overlay."""
     global _CENTROID_MARKERS, _ISOBAR_CONTOURS, _SHOW_ISOBARS

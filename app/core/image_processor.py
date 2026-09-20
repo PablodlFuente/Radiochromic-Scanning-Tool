@@ -354,14 +354,6 @@ class ImageProcessor:
             # Reset cancel flag
             self.cancel_operation = False
             
-            # Calibration state resets when loading a new image
-            self.calibration_applied = False
-            self.flat_applied = False
-            self.flattened_image = None
-            self.calibration_source_image = None
-            self.calibration_provenance = {}
-            self.state_revision += 1
-            
             file_path = os.path.abspath(file_path)
             self._renamed_file_info = None
             
@@ -426,6 +418,12 @@ class ImageProcessor:
             logger.info(f"Detected {self.image_bit_depth}-bit image (max value: {self.image_max_value})")
             
             # Store images - ensure we're preserving the original data type
+            self.calibration_applied = False
+            self.flat_applied = False
+            self.flattened_image = None
+            self.calibration_source_image = None
+            self.calibration_provenance = {}
+            self.state_revision += 1
             self.original_image = image
             self.current_image = self.original_image.copy()
             self.current_file = file_path
@@ -1304,9 +1302,10 @@ class ImageProcessor:
                 rows, columns = rows + y0, columns + x0
             elif self.measurement_shape == "rectangular":
                 roi_width, roi_height = self.measurement_size_rect
-                x1, x2 = max(0, image_x - roi_width // 2), min(width - 1, image_x + roi_width // 2)
-                y1, y2 = max(0, image_y - roi_height // 2), min(height - 1, image_y + roi_height // 2)
-                rows, columns = np.mgrid[y1:y2 + 1, x1:x2 + 1]
+                x0, y0 = image_x - roi_width // 2, image_y - roi_height // 2
+                x1, x2 = max(0, x0), min(width, x0 + roi_width)
+                y1, y2 = max(0, y0), min(height, y0 + roi_height)
+                rows, columns = np.mgrid[y1:y2, x1:x2]
                 rows, columns = rows.ravel(), columns.ravel()
             elif self.measurement_shape == "line":
                 orientation = getattr(self, "line_orientation", "horizontal")
