@@ -1068,7 +1068,10 @@ class ImageProcessor:
                     
                     # If we have binned data with standard deviation, include it
                     if self.binned_image is not None and 'std_dev' in self.binned_image:
-                        std_dev = tuple(map(float, self.binned_image['std_dev'][img_y, img_x]))
+                        std_map = self.binned_image['std_dev']
+                        bin_y = min(img_y // max(1, self.binning), std_map.shape[0] - 1)
+                        bin_x = min(img_x // max(1, self.binning), std_map.shape[1] - 1)
+                        std_dev = tuple(map(float, std_map[bin_y, bin_x]))
                         return img_x, img_y, (rgb, std_dev)
                     
                     return img_x, img_y, rgb
@@ -1081,7 +1084,10 @@ class ImageProcessor:
                     
                     # If we have binned data with standard deviation, include it
                     if self.binned_image is not None and 'std_dev' in self.binned_image:
-                        std_dev = float(self.binned_image['std_dev'][img_y, img_x])
+                        std_map = self.binned_image['std_dev']
+                        bin_y = min(img_y // max(1, self.binning), std_map.shape[0] - 1)
+                        bin_x = min(img_x // max(1, self.binning), std_map.shape[1] - 1)
+                        std_dev = float(std_map[bin_y, bin_x])
                         return img_x, img_y, (value, std_dev)
                     
                     return img_x, img_y, value

@@ -61,6 +61,14 @@ class ProcessingWorkflowTests(unittest.TestCase):
         p.set_binning(1)
         self.assertEqual(p.current_image[0, 0, 0], 2.5)
 
+    def test_binned_pixel_information_maps_full_resolution_coordinates(self):
+        p = processor(np.arange(8 * 8 * 3, dtype=np.uint16).reshape(8, 8, 3))
+        p.set_binning(2)
+        x, y, value = p.get_pixel_info(7, 7)
+        self.assertEqual((x, y), (7, 7))
+        expected_std = tuple(p.binned_image["std_dev"][3, 3])
+        np.testing.assert_allclose(value[1], expected_std)
+
     def test_circle_ignores_manual_tool_and_restores_it(self):
         p = processor(np.arange(49).reshape(7, 7))
         p.measurement_shape = "rectangular"
