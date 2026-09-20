@@ -8,7 +8,7 @@ metadata extraction, CTR management, file data management, and CSV export.
 from .formatter import MeasurementFormatter
 from .detection import DetectionEngine
 from .metadata import MetadataExtractor
-from .ctr_manager import CTRManager
+from .ctr_manager import CTRManager, subtract_control, summarize_controls
 from .file_manager import FileDataManager
 from .exporter import CSVExporter
 
@@ -17,6 +17,8 @@ __all__ = [
     'DetectionEngine',
     'MetadataExtractor',
     'CTRManager',
+    'subtract_control',
+    'summarize_controls',
     'FileDataManager',
     'CSVExporter'
 ]

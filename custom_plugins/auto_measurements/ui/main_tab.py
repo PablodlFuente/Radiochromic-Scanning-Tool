@@ -46,6 +46,7 @@ from ..core import (
     DetectionEngine,
     MetadataExtractor,
     CTRManager,
+    subtract_control,
     FileDataManager,
     CSVExporter
 )
@@ -1402,6 +1403,20 @@ class AutoMeasurementsTab(ttk.Frame):
         # Get parent film name (if any)
         film_id = self.tree.parent(item_id)
         film_name = self.tree.item(film_id, "text") if film_id else "No film"
+        circle_name_clean = self.tree.item(item_id, "text").replace(" (CTR)", "").replace(" (GLOBAL CTR)", "")
+        matching_result = next((
+            result for result in self.results
+            if result.get("film") == film_name
+            and result.get("circle", "").replace(" (CTR)", "").replace(" (GLOBAL CTR)", "") == circle_name_clean
+        ), None)
+        if matching_result:
+            avg_value = float(matching_result.get("avg_original", matching_result.get("avg_numeric", avg_value)))
+            avg_unc_value = float(matching_result.get(
+                "avg_unc_original", matching_result.get("avg_unc_numeric", 0.0)
+            ))
+            circle_data["avg_numeric"] = avg_value
+            circle_data["avg_original"] = avg_value
+            circle_data["avg_unc_numeric"] = avg_unc_value
         
         # Store global CTR info
         self.global_ctr = {
@@ -1537,7 +1552,7 @@ class AutoMeasurementsTab(ttk.Frame):
         # Get CTR average value and uncertainty
         ctr_avg = float(global_ctr_data.get("avg_original", global_ctr_data.get("avg_numeric", 0)))
         # Parse uncertainty from string if needed
-        ctr_unc_str = global_ctr_data.get("avg_unc", "0")
+        ctr_unc_str = global_ctr_data.get("avg_unc_numeric", global_ctr_data.get("avg_unc", "nan"))
         try:
             ctr_unc = float(str(ctr_unc_str).replace("±", "").strip())
         except (ValueError, TypeError):
@@ -1547,6 +1562,10 @@ class AutoMeasurementsTab(ttk.Frame):
         # (user may have a zero-dose control)
         
         # Iterate over ALL films in the TreeView
+        results_lookup = {
+            (result.get("film"), result.get("circle", "").replace(" (CTR)", "").replace(" (GLOBAL CTR)", "")): result
+            for result in self.results
+        }
         for film_id in self.tree.get_children():
             film_name = self.tree.item(film_id, "text")
             
@@ -1557,18 +1576,30 @@ class AutoMeasurementsTab(ttk.Frame):
                 if not orig_data:
                     continue
                 
-                # Get original values with full precision
-                try:
-                    orig_avg = float(str(orig_data["avg"]).replace("±", "").strip())
-                    orig_unc_str = str(orig_data["avg_unc"]).replace("±", "").strip()
-                    orig_unc = float(orig_unc_str) if orig_unc_str else 0.0
-                except (ValueError, TypeError):
-                    continue
+                circle_name = self.tree.item(circle_id, "text").replace(" (CTR)", "").replace(" (GLOBAL CTR)", "")
+                result = results_lookup.get((film_name, circle_name))
+                if result:
+                    orig_avg = float(result.get("avg_original", result.get("avg_numeric", np.nan)))
+                    orig_unc = float(result.get("avg_unc_original", result.get("avg_unc_numeric", np.nan)))
+                else:
+                    try:
+                        orig_avg = float(str(orig_data["avg"]).replace("±", "").strip())
+                        orig_unc = float(str(orig_data["avg_unc"]).replace("±", "").strip())
+                    except (ValueError, TypeError):
+                        continue
                 
                 # Subtract CTR with proper error propagation: σ_corrected = √(σ_orig² + σ_ctr²)
                 # All circles (including Global CTR itself) get the same treatment
-                corrected_avg = orig_avg - ctr_avg  # Can be negative
-                corrected_unc = sqrt(orig_unc**2 + ctr_unc**2)
+                is_control = circle_id == global_ctr_item_id
+                corrected_avg, corrected_unc = subtract_control(
+                    orig_avg,
+                    orig_unc,
+                    ctr_avg,
+                    ctr_unc,
+                    member_index=0 if is_control else None,
+                    member_count=1,
+                    member_uncertainty=orig_unc if is_control else None,
+                )
                 ci95_value = corrected_unc * 1.96
                 
                 # Update TreeView with corrected values
@@ -1581,14 +1612,12 @@ class AutoMeasurementsTab(ttk.Frame):
                 ))
                 
                 # Also update results list for CSV export
-                circle_name = self.tree.item(circle_id, "text").replace(" (CTR)", "").replace(" (GLOBAL CTR)", "")
-                for result in self.results:
-                    if result.get("film") == film_name and result.get("circle") == circle_name:
-                        if "avg_original" not in result:
-                            result["avg_original"] = result.get("avg_numeric", orig_avg)
-                        result["avg_numeric"] = corrected_avg
-                        result["avg_unc_numeric"] = corrected_unc
-                        break
+                if result:
+                    if "avg_original" not in result:
+                        result["avg_original"] = result.get("avg_numeric", orig_avg)
+                        result["avg_unc_original"] = result.get("avg_unc_numeric", orig_unc)
+                    result["avg_numeric"] = corrected_avg
+                    result["avg_unc_numeric"] = corrected_unc
 
     def _restore_original_measurements(self):
         """Restore original measurements (delegates to CTR manager)."""

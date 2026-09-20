@@ -6,13 +6,45 @@ in radiochromic film dosimetry for background dose correction.
 """
 
 from typing import Optional, List, Tuple
-from math import sqrt
+import numpy as np
 import tkinter as tk
 from tkinter import ttk, messagebox
 import logging
 
 from ..models import Circle, CTR_DOSE_THRESHOLD
 from .formatter import MeasurementFormatter
+
+
+def summarize_controls(values, uncertainties):
+    """Return an arithmetic control mean and a non-double-counted uncertainty."""
+    values = np.asarray(values, dtype=float)
+    uncertainties = np.asarray(uncertainties, dtype=float)
+    valid = np.isfinite(values) & np.isfinite(uncertainties) & (uncertainties >= 0)
+    values, uncertainties = values[valid], uncertainties[valid]
+    if not values.size:
+        return float("nan"), float("nan")
+    mean = float(np.mean(values))
+    propagated_variance = float(np.sum(uncertainties ** 2) / values.size ** 2)
+    observed_variance = float(np.var(values, ddof=1) / values.size) if values.size > 1 else 0.0
+    # The observed spread already contains measurement noise. Taking the larger
+    # variance accounts for excess heterogeneity without adding that noise twice.
+    return mean, float(np.sqrt(max(propagated_variance, observed_variance)))
+
+
+def subtract_control(value, uncertainty, control_value, control_uncertainty, *,
+                     member_index=None, member_count=0, member_uncertainty=None):
+    """Subtract a control mean with covariance for controls used in that mean."""
+    value, uncertainty = float(value), float(uncertainty)
+    control_value, control_uncertainty = float(control_value), float(control_uncertainty)
+    corrected = value - control_value
+    covariance = 0.0
+    if member_index is not None and member_count > 0 and member_uncertainty is not None:
+        covariance = float(member_uncertainty) ** 2 / member_count
+    variance = uncertainty ** 2 + control_uncertainty ** 2 - 2.0 * covariance
+    if member_count == 1 and member_index is not None:
+        # X - X is identically zero, including its uncertainty.
+        return 0.0, 0.0
+    return corrected, float(np.sqrt(max(variance, 0.0)))
 
 
 class CTRManager:
@@ -195,25 +227,7 @@ class CTRManager:
         if len(ctr_values) == 1:
             return ctr_values[0], ctr_uncertainties[0]
         
-        # Multiple CTRs: compute average and combined uncertainty
-        import numpy as np
-        ctr_mean = np.mean(ctr_values)
-        
-        # Combined uncertainty: sqrt(std_dev_of_means^2 + mean_of_individual_uncertainties^2)
-        # This accounts for both the spread between CTR circles AND their individual uncertainties
-        std_of_values = np.std(ctr_values, ddof=1) if len(ctr_values) > 1 else 0.0
-        mean_unc = np.mean(ctr_uncertainties)
-        
-        # Error propagation: combine uncertainty from averaging and individual measurement uncertainties
-        # SE of mean = std / sqrt(n) for the spread between CTR values
-        se_of_mean = std_of_values / sqrt(len(ctr_values))
-        # Propagated uncertainty from individual measurements
-        propagated_unc = sqrt(sum(u**2 for u in ctr_uncertainties)) / len(ctr_uncertainties)
-        
-        # Total uncertainty: quadrature sum
-        combined_unc = sqrt(se_of_mean**2 + propagated_unc**2)
-        
-        return float(ctr_mean), float(combined_unc)
+        return summarize_controls(ctr_values, ctr_uncertainties)
     
     def apply_ctr_subtraction(self, results_list: list) -> None:
         """Apply CTR subtraction to all circles in films with CTR.
@@ -282,8 +296,16 @@ class CTRManager:
                 
                 # All circles (including CTRs) subtract the averaged CTR value
                 # CTR circles will show their deviation from the average CTR
-                corrected_avg = orig_avg - ctr_avg  # Can be negative for CTR below average
-                corrected_unc = sqrt(orig_unc**2 + ctr_unc**2)
+                is_control = circle_id in ctr_ids
+                corrected_avg, corrected_unc = subtract_control(
+                    orig_avg,
+                    orig_unc,
+                    ctr_avg,
+                    ctr_unc,
+                    member_index=ctr_ids.index(circle_id) if is_control else None,
+                    member_count=len(ctr_ids),
+                    member_uncertainty=orig_unc if is_control else None,
+                )
                 
                 # Get current TreeView values to preserve dose and std columns
                 current_values = list(self.tree.item(circle_id, "values"))
@@ -414,4 +436,4 @@ class CTRManager:
 
 
 
-__all__ = ['CTRManager']
+__all__ = ['CTRManager', 'subtract_control', 'summarize_controls']
