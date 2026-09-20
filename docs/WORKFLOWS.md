@@ -21,7 +21,7 @@ Abra `Tools → Calibration Wizard` y seleccione una carpeta de calibración.
 2. Revise media, desviación, extremos y mapa espacial por canal.
 3. Aplique la normalización para generar `field_flattening.npz`.
 
-Cuando se promedian varios blancos, se escribe también `master_flat.tif` junto a sus fuentes. El archivo preserva 8 o 16 bits. Puede ejecutarse un flujo exclusivo de uniformidad para actualizar el flat-field.
+Cuando se promedian varios blancos, se escribe también `master_flat.tif` en la carpeta de calibración. El archivo preserva 8 o 16 bits. Los blancos deben compartir geometría y tipo de almacenamiento y tener valores positivos y finitos. Puede ejecutarse un flujo exclusivo de uniformidad para actualizar el flat-field.
 
 ### 2. Dosis–respuesta
 
@@ -43,6 +43,8 @@ Los parámetros introducidos manualmente no disponen de una covarianza estimada 
 
 Antes de usar los artefactos, el programa verifica los hashes del manifiesto cuando existe. Una discrepancia bloquea el artefacto afectado. Una carpeta sin manifiesto se identifica como no verificada.
 
+El ajuste registra el flat-field con el que se construyó. Si ese flat cambia, debe realizarse un ajuste compatible. Una operación de corrección fallida deja la imagen en intensidad sin corregir, desactiva los indicadores correspondientes e informa del error.
+
 Cada canal genera una matriz de dosis, una máscara de validez y una máscara de extrapolación. Con la configuración predeterminada, los valores fuera del intervalo calibrado no participan en las ROIs.
 
 ## Medida manual
@@ -57,6 +59,8 @@ Seleccione una ROI circular, rectangular o de línea y sitúela sobre la imagen.
 
 Los histogramas conservan como máximo 1000 muestras elegidas de forma determinista. Este muestreo afecta a la visualización, no a los estadísticos de la ROI.
 
+`Preview binning` modifica exclusivamente la representación. Las coordenadas, el radio, los estadísticos y el análisis dosimétrico utilizan la resolución original. Los círculos de AutoMeasurements tienen geometría circular con independencia de la herramienta manual seleccionada.
+
 ## AutoMeasurements
 
 1. Añada uno o varios archivos TIFF.
@@ -70,7 +74,7 @@ Cada archivo mantiene su conjunto de películas, círculos, resultados y control
 
 ## Controles CTR
 
-Marque uno o varios círculos como CTR para corregir las medidas de su película. Un CTR global se aplica a todas las películas del conjunto. Los valores originales de precisión completa se conservan para que activar, desactivar o cambiar el control no acumule sustracciones.
+Marque uno o varios círculos como CTR para corregir las medidas de su película. Un CTR global se aplica a todas las películas de la imagen activa. La selección global se limpia al cargar otra imagen; los resultados guardados conservan el contexto del CTR aplicado. Los valores originales de precisión completa se conservan para que activar, desactivar o cambiar el control no acumule sustracciones.
 
 El programa valida valor e incertidumbre antes de aplicar la corrección. Consulte las ecuaciones en [Modelo matemático e incertidumbre](MATHEMATICAL_MODEL.md#sustracción-de-controles-ctr).
 
@@ -89,6 +93,8 @@ Revise visualmente los centroides y la geometría de cada ROI. La incertidumbre 
 ## Exportar
 
 Use `Export CSV` al terminar la revisión. El exportador procesa los valores numéricos sin redondeo intermedio, rechaza campos científicos no numéricos e incorpora identificador y estado de integridad de la calibración. La presentación redondeada del TreeView no se usa como fuente si existe el valor numérico.
+
+La fecha y el método se registran al realizar cada medida. Seleccione la fecha manual antes de medir; una fecha manual actúa como entrada del usuario, mientras que la fecha de metadatos depende del archivo. Para modificar la procedencia de un resultado, vuelva a medirlo. Consulte el esquema CSV y sus estados en [Formatos](DATA_FORMATS.md).
 
 ## Actualizaciones y plugins
 

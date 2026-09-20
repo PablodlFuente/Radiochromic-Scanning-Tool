@@ -49,6 +49,7 @@ La extrapolación está desactivada por defecto. Un flat-field con dimensiones d
 - [Modelo matemático e incertidumbre](docs/MATHEMATICAL_MODEL.md)
 - [Flujos de calibración y análisis](docs/WORKFLOWS.md)
 - [Formatos, configuración y trazabilidad](docs/DATA_FORMATS.md)
+- [Arquitectura y verificación](docs/ARCHITECTURE.md)
 
 ## Pruebas
 

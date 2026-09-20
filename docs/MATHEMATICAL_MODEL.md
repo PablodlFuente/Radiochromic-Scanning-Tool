@@ -77,7 +77,7 @@ $$
 J(I)=\left(\frac{b}{(I-a)^2},\frac{1}{I-a},1\right).
 $$
 
-Se promedia el jacobiano de la ROI y se propaga la matriz completa:
+Se promedia el jacobiano de la ROI y se propaga la matriz completa. El promedio utiliza exactamente los píxeles con dosis finita del canal correspondiente; los píxeles excluidos del dominio no contribuyen tampoco al jacobiano:
 
 $$
 u_{k,\mathrm{cal}}^2=\bar J_k C_k\bar J_k^\mathsf{T}.
@@ -175,6 +175,12 @@ Puede estimarse $q$ o imponer $q=0$. La covarianza es $(X^\mathsf{T}WX)^{-1}$ cu
 ## Centroides
 
 El módulo de análisis compara el centro geométrico de cada círculo con un centro estimado en dosis. Están disponibles centroide ponderado, potencia gaussiana, ponderación radial y correlación de fase. Las coordenadas calculadas en una ROI recortada se trasladan al origen real de esa ROI en la imagen. Las isodosis son contornos calculados dentro de cada región.
+
+## Alcance del presupuesto de incertidumbre
+
+La expresión $s/\sqrt{N}$ supone independencia de las fluctuaciones de los píxeles para la contribución estadística de la muestra; no estima un tamaño efectivo de muestra por autocorrelación espacial. La combinación RGB no estima una matriz de covarianza experimental entre canales. La corrección CTR incluye la covarianza por pertenencia al conjunto de controles, pero no estima otras covarianzas entre regiones debidas al escáner, la dosis de referencia o una calibración compartida.
+
+Estos términos, la incertidumbre del flat-field y las contribuciones del protocolo experimental requieren evaluación externa cuando sean relevantes. Por ello, la incertidumbre informada es el presupuesto implementado por el software, no una garantía de cobertura metrológica completa. El factor 1.96 expresa cobertura normal aproximada, no un intervalo validado experimentalmente para cualquier muestra.
 
 ## Referencias
 

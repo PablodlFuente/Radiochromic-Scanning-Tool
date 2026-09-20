@@ -15,9 +15,9 @@ Cada calibración reside bajo `calibration_data/<nombre>/`.
 
 El manifiesto se escribe de forma atómica. Para cada fuente registra nombre, tamaño y SHA-256; para cada artefacto registra tamaño y SHA-256. También almacena fechas UTC, commit Git, Python y plataforma.
 
-## CSV de resultados, esquema 2
+## CSV de resultados, esquema 3
 
-Todas las filas contienen `schema_version = 2`.
+Todas las filas contienen `schema_version = 3`. La procedencia se captura al medir y pertenece a cada resultado, no a la configuración seleccionada al exportar. La exportación valida el conjunto completo antes de reemplazar atómicamente el destino.
 
 | Columna | Significado |
 |---|---|
@@ -34,13 +34,20 @@ Todas las filas contienen `schema_version = 2`.
 | `uncertainty_calculation_method` | Método de combinación de canales. |
 | `channel_weights` | Pesos normalizados R, G y B. |
 | `calibration_id` | Identidad del conjunto de calibración. |
-| `calibration_integrity` | `verified` o `failed`. |
+| `calibration_integrity` | Estado registrado al medir: `verified`, `legacy-unverified` o `unknown` si no consta procedencia. |
+| `units` | `Gy` para dosis calibrada; `scanner_intensity` para intensidad sin calibrar. |
+| `valid_pixel_counts` | Número de píxeles finitos por canal; puede diferir de `pixel_count`. |
+| `measurement_status` | `valid`, `partial_pixels`, `partial_channels`, `uncertainty_unavailable` o `invalid`. |
+| `x`, `y`, `radius` | Centro y radio de la ROI en píxeles de la imagen original. |
+| `dose_correction_factor` | Factor multiplicativo aplicado a la medida. |
+| `flat_applied` | Indica si se aplicó corrección espacial. |
+| `ctr_context` | Contexto JSON del control utilizado, valor e incertidumbre. |
 
 Las listas multicanal se serializan como valores separados por comas dentro del campo CSV. `expanded_uncertainty_k1.96` es una incertidumbre expandida; no sustituye una evaluación del factor de cobertura cuando la distribución o los grados de libertad requieren otro tratamiento.
 
 ## Configuración
 
-`rc_config.json` se crea en la raíz del proyecto y no forma parte del repositorio. Las claves ausentes se completan con los valores predeterminados. La escritura reemplaza el archivo de forma atómica.
+`rc_config.json` se utiliza en la raíz del proyecto como configuración local. Las claves ausentes se completan con los valores predeterminados. La escritura reemplaza el archivo de forma atómica.
 
 | Clave | Valor predeterminado | Efecto |
 |---|---:|---|
