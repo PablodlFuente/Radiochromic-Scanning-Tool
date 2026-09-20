@@ -27,6 +27,12 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 from typing import Optional
 from app.utils.image_io import read_image_unchanged, storage_bit_depth
+from app.core.dosimetry import (
+    CHANNELS,
+    combine_channel_estimates,
+    invert_rational_response,
+    parameter_uncertainty_for_mean_dose,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +52,11 @@ class ImageProcessor:
         # Track whether dose calibration is currently applied
         self.calibration_applied = False
         self.calibration_fit_params = None  # dict {'R': (a,b,c), ...} stored on apply_calibration
+        self.calibration_param_covariances = None
+        self.calibration_dose_ranges = None
+        self.calibration_source_image = None
+        self.dose_valid_mask_channels = None
+        self.dose_extrapolated_mask_channels = None
         self.last_channel_weights = None  # last sensitivity weights {'R': w, 'G': w, 'B': w}
         # Track whether field flattening is currently applied
         self.flat_applied = False
@@ -446,6 +457,13 @@ class ImageProcessor:
         """Compute integral images for fast statistics calculation."""
         try:
             if self.current_image is None:
+                return
+
+            if not np.all(np.isfinite(self.current_image)):
+                logger.info("Skipping integral-image cache because the image contains invalid pixels")
+                self._integral_downsample_factor = 1
+                self.integral_images = None
+                self.integral_images_squared = None
                 return
             
             logger.info("Computing integral images for fast statistics")
@@ -1175,551 +1193,152 @@ class ImageProcessor:
         return coordinates
     
     def _calculate_combined_uncertainty(self, means, std_errors):
-        """
-        Calculate combined uncertainty using the configured estimation method.
-        
-        Args:
-            means: Array of mean values for each channel
-            std_errors: Array of standard errors for each channel
-            
-        Returns:
-            tuple: (combined_mean, combined_uncertainty)
-        """
+        """Combine channel estimates using their dose-space uncertainties."""
         method = self.config.get("uncertainty_estimation_method", "weighted_average")
-        
-        if method == "sensitivity_weighted":
-            return self._sensitivity_weighted_method(means, std_errors)
-        elif method == "birge_factor":
-            return self._birge_factor_method(means, std_errors)
-        elif method == "dersimonian_laird":
-            return self._dersimonian_laird_method(means, std_errors)
-        else:  # Default: weighted_average
-            return self._weighted_average_method(means, std_errors)
+        result = combine_channel_estimates(means, std_errors, method)
+        self.last_channel_weights = {
+            channel: float(weight)
+            for channel, weight in zip(CHANNELS, result.weights)
+        }
+        return result.value, result.uncertainty
     
     def _weighted_average_method(self, means, std_errors):
-        """
-        Calculate combined uncertainty using weighted average (original method).
-        
-        Args:
-            means: Array of mean values for each channel
-            std_errors: Array of standard errors for each channel
-            
-        Returns:
-            tuple: (combined_mean, combined_uncertainty)
-        """
-        # Avoid division by zero
-        valid_indices = std_errors > 0
-        if not np.any(valid_indices):
-            return np.mean(means), 0.0
-        
-        valid_means = means[valid_indices]
-        valid_std_errors = std_errors[valid_indices]
-        
-        weights = 1 / (valid_std_errors**2)
-        combined_mean = np.average(valid_means, weights=weights)
-        combined_uncertainty = 1 / np.sqrt(np.sum(weights))
-        
-        return combined_mean, combined_uncertainty
+        result = combine_channel_estimates(means, std_errors, "weighted_average")
+        return result.value, result.uncertainty
     
     def _sensitivity_weighted_method(self, means, std_errors):
-        """
-        Calculate combined dose using sensitivity-weighted channel averaging.
-        
-        Each channel's weight is proportional to its calibration-curve sensitivity
-        squared divided by the local pixel noise squared:
-        
-            w_ch = (I - a)^4 / (b^2 * sigma_I^2)
-        
-        where (a, b, c) are the rational-function calibration parameters and
-        sigma_I is the pixel standard deviation inside the ROI.  When calibration
-        is not applied or fit parameters are unavailable, this method falls back
-        to the standard weighted-average approach.
-        
-        Args:
-            means: Array of mean values for each channel (dose if calibrated)
-            std_errors: Array of standard errors for each channel
-            
-        Returns:
-            tuple: (combined_mean, combined_uncertainty)
-        """
-        # Require calibration fit params; fall back otherwise
-        if not self.calibration_applied or self.calibration_fit_params is None:
-            logger.debug("Sensitivity weighting unavailable (no calibration); falling back to weighted_average")
-            self.last_channel_weights = None
-            return self._weighted_average_method(means, std_errors)
-        
-        channels = ("R", "G", "B")
-        n_channels = min(len(means), 3)
-        
-        weights_raw = {}
-        doses = {}
-        
-        for idx in range(n_channels):
-            ch = channels[idx]
-            if ch not in self.calibration_fit_params:
-                continue
-            
-            dose_val = means[idx]
-            se = std_errors[idx]
-            a, b, c = self.calibration_fit_params[ch]
-            
-            # Skip channels with zero or invalid std_error
-            if se <= 0 or np.isnan(dose_val) or np.isnan(se):
-                weights_raw[ch] = 0.0
-                doses[ch] = dose_val
-                continue
-            
-            # Reconstruct pixel intensity from dose:  I = a + b / (D - c)
-            denom_dose = dose_val - c
-            if abs(denom_dose) < 1e-9:
-                # Dose is at the singularity — channel unreliable
-                weights_raw[ch] = 0.0
-                doses[ch] = dose_val
-                continue
-            
-            I_reconstructed = a + b / denom_dose
-            
-            # Sensitivity = (I - a)^2 / |b|
-            I_minus_a = I_reconstructed - a  # = b / (D - c)
-            sensitivity = (I_minus_a ** 2) / abs(b)
-            
-            if sensitivity < 1e-12:
-                weights_raw[ch] = 0.0
-                doses[ch] = dose_val
-                continue
-            
-            # sigma_D = sigma_I / sensitivity, but we already have std_error in dose space (se).
-            # The se passed in is std_dev_pixel / sqrt(N) propagated through calibration,
-            # so we use it directly as sigma_D.
-            # Weight = 1 / sigma_D^2, scaled by sensitivity^2 to prefer responsive channels.
-            # Effective weight = sensitivity^2 / se^2
-            weights_raw[ch] = (sensitivity ** 2) / (se ** 2)
-            doses[ch] = dose_val
-        
-        # Check we have at least one valid weight
-        total_weight = sum(weights_raw.values())
-        if total_weight <= 0:
-            logger.debug("All sensitivity weights are zero; falling back to weighted_average")
-            self.last_channel_weights = None
-            return self._weighted_average_method(means, std_errors)
-        
-        # Normalize weights
-        weights_norm = {ch: w / total_weight for ch, w in weights_raw.items()}
-        self.last_channel_weights = weights_norm
-        
-        # Weighted dose
-        combined_mean = sum(
-            weights_norm.get(channels[i], 0.0) * means[i]
-            for i in range(n_channels)
-            if not np.isnan(means[i])
-        )
-        
-        # Combined uncertainty = 1 / sqrt(sum(w_raw))
-        combined_uncertainty = 1.0 / np.sqrt(total_weight)
-        
-        return combined_mean, combined_uncertainty
+        # ``std_errors`` is already expressed in dose units and therefore
+        # already includes calibration-curve sensitivity. Applying sensitivity
+        # again would double-count it and make the result depend on intensity
+        # units. The legacy setting is retained as a compatible name for the
+        # inverse-dose-variance combination.
+        result = combine_channel_estimates(means, std_errors, "sensitivity_weighted")
+        self.last_channel_weights = {
+            channel: float(weight)
+            for channel, weight in zip(CHANNELS, result.weights)
+        }
+        return result.value, result.uncertainty
     
     def _birge_factor_method(self, means, std_errors):
-        """
-        Calculate combined uncertainty using Birge factor method.
-        
-        The Birge factor inflates uncertainties globally when χ²_ν > 1.
-        
-        Args:
-            means: Array of mean values for each channel
-            std_errors: Array of standard errors for each channel
-            
-        Returns:
-            tuple: (combined_mean, combined_uncertainty)
-        """
-        # Avoid division by zero
-        valid_indices = std_errors > 0
-        if not np.any(valid_indices):
-            return np.mean(means), 0.0
-        
-        valid_means = means[valid_indices]
-        valid_std_errors = std_errors[valid_indices]
-        n = len(valid_means)
-        
-        if n <= 1:
-            return valid_means[0] if n == 1 else 0.0, valid_std_errors[0] if n == 1 else 0.0
-        
-        # Calculate initial weighted average
-        weights = 1 / (valid_std_errors**2)
-        weighted_mean = np.average(valid_means, weights=weights)
-        
-        # Calculate χ² statistic
-        chi_squared = np.sum(weights * (valid_means - weighted_mean)**2)
-        chi_squared_nu = chi_squared / (n - 1)  # Reduced chi-squared
-        
-        # Apply Birge factor if χ²_ν > 1
-        if chi_squared_nu > 1:
-            birge_factor = np.sqrt(chi_squared_nu)
-            inflated_std_errors = birge_factor * valid_std_errors
-            
-            # Recalculate with inflated uncertainties
-            new_weights = 1 / (inflated_std_errors**2)
-            combined_mean = np.average(valid_means, weights=new_weights)
-            combined_uncertainty = 1 / np.sqrt(np.sum(new_weights))
-        else:
-            # Use original weighted average
-            combined_mean = weighted_mean
-            combined_uncertainty = 1 / np.sqrt(np.sum(weights))
-        
-        return combined_mean, combined_uncertainty
+        result = combine_channel_estimates(means, std_errors, "birge_factor")
+        return result.value, result.uncertainty
     
     def _dersimonian_laird_method(self, means, std_errors):
-        """
-        Calculate combined uncertainty using DerSimonian-Laird random effects model.
-        
-        This method incorporates between-channel heterogeneity via τ².
-        
-        Args:
-            means: Array of mean values for each channel
-            std_errors: Array of standard errors for each channel
-            
-        Returns:
-            tuple: (combined_mean, combined_uncertainty)
-        """
-        # Avoid division by zero
-        valid_indices = std_errors > 0
-        if not np.any(valid_indices):
-            return np.mean(means), 0.0
-        
-        valid_means = means[valid_indices]
-        valid_std_errors = std_errors[valid_indices]
-        n = len(valid_means)
-        
-        if n <= 1:
-            return valid_means[0] if n == 1 else 0.0, valid_std_errors[0] if n == 1 else 0.0
-        
-        # Initial weights
-        w_i = 1 / (valid_std_errors**2)
-        
-        # Calculate fixed effects estimate
-        D_fixed = np.sum(w_i * valid_means) / np.sum(w_i)
-        
-        # Calculate Q statistic 
-        Q = np.sum(w_i * (valid_means - D_fixed)**2)
-        
-        # Estimate between-channel variance τ²
-        sum_w_i = np.sum(w_i)
-        sum_w_i_squared = np.sum(w_i**2)
-        
-        denominator = sum_w_i - (sum_w_i_squared / sum_w_i)
-        if denominator > 0:
-            tau_squared = max(0, (Q - (n - 1)) / denominator)
-        else:
-            tau_squared = 0
-        
-        # New weights incorporating τ²
-        w_i_star = 1 / (valid_std_errors**2 + tau_squared)
-        
-        # Final combined estimate
-        combined_mean = np.sum(w_i_star * valid_means) / np.sum(w_i_star)
-        combined_uncertainty = 1 / np.sqrt(np.sum(w_i_star))
-        
-        return combined_mean, combined_uncertainty
+        result = combine_channel_estimates(means, std_errors, "dersimonian_laird")
+        return result.value, result.uncertainty
+
+    def _summarize_roi_pixels(self, pixels, source_pixels=None):
+        """Return channel statistics, including shared calibration uncertainty."""
+        values = np.asarray(pixels)
+        if values.ndim == 1:
+            values = values[:, None]
+        means, standard_deviations, uncertainties = [], [], []
+        for index in range(values.shape[1]):
+            channel_values = values[:, index].astype(float)
+            finite = channel_values[np.isfinite(channel_values)]
+            if not finite.size:
+                means.append(np.nan)
+                standard_deviations.append(np.nan)
+                uncertainties.append(np.nan)
+                continue
+            mean = float(np.mean(finite))
+            standard_deviation = float(np.std(finite))
+            statistical = standard_deviation / np.sqrt(finite.size)
+            parameter = 0.0
+            if self.calibration_applied and source_pixels is not None:
+                source = np.asarray(source_pixels)
+                if source.ndim == 1:
+                    source = source[:, None]
+                channel = "G" if values.shape[1] == 1 else CHANNELS[index]
+                parameter = parameter_uncertainty_for_mean_dose(
+                    source[:, index],
+                    self.calibration_fit_params[channel],
+                    self.calibration_param_covariances[channel],
+                )
+            total = (
+                float(np.hypot(statistical, parameter))
+                if np.isfinite(parameter)
+                else float("nan")
+            )
+            means.append(mean)
+            standard_deviations.append(standard_deviation)
+            uncertainties.append(total)
+        return np.asarray(means), np.asarray(standard_deviations), np.asarray(uncertainties)
 
     def measure_area(self, canvas_x, canvas_y):
-        """Measure the area at the specified canvas position."""
+        """Measure a ROI without treating invalid calibrated pixels as data."""
         if self.current_image is None:
             return None
-
         try:
-            # Calculate position in the current image
-            img_x = int(canvas_x / self.zoom)
-            img_y = int(canvas_y / self.zoom)
-        
-            # Check if position is within image bounds
-            if (0 <= img_x < self.current_image.shape[1] and
-                0 <= img_y < self.current_image.shape[0]):
-        
-                actual_size = self.measurement_size
-        
-                # Create mask for the region of interest
-                if self.measurement_shape == "circular":
-                    # Create circular mask using OpenCV
-                    mask = np.zeros(self.current_image.shape[:2], dtype=np.uint8)
-                    cv2.circle(mask, (img_x, img_y), actual_size, 255, -1)
-                
-                    # Get coordinates of all pixels in the mask
-                    y_coords, x_coords = np.where(mask > 0)
-                
-                    # Store coordinates relative to the center of the measurement
-                    rel_coords = np.column_stack((x_coords - img_x, y_coords - img_y))
-                
-                    # Count pixels in the mask
-                    pixel_count = len(x_coords)
-                
-                    # For circular regions, we can't use integral images directly
-                    # So we'll use the traditional approach
-                    if len(self.current_image.shape) == 3:  # Color image
-                        # Use OpenCV's built-in functions for faster processing
-                        means, std_devs = cv2.meanStdDev(self.current_image, mask=mask)
-                        means = means.flatten()
-                        std_devs = std_devs.flatten()
-                        std_err = std_devs / np.sqrt(pixel_count) if pixel_count > 0 else np.zeros_like(std_devs)
-                        
-                        # Calculate combined uncertainty using the configured method
-                        rgb_mean, rgb_mean_std = self._calculate_combined_uncertainty(means, std_err)
-                        # Collect raw data for histogram (sample if too many pixels)
-                        if len(x_coords) > 1000:
-                            # Take a random sample of 1000 pixels
-                            indices = np.random.choice(len(x_coords), 1000, replace=False)
-                            sample_x = x_coords[indices]
-                            sample_y = y_coords[indices]
-                            sample_rel = rel_coords[indices]
-                        else:
-                            sample_x = x_coords
-                            sample_y = y_coords
-                            sample_rel = rel_coords
-                    
-                        # Collect raw data for histogram (preserve original dtype for 16-bit support)
-                        masked_data = np.zeros((len(sample_x), self.current_image.shape[2]), dtype=self.current_image.dtype)
-                        for c in range(self.current_image.shape[2]):
-                            masked_data[:, c] = np.array([self.current_image[x, y, c] for x, y in zip(sample_y, sample_x)])
-                    
-                        # Store the raw data and coordinates for later use
-                        self.last_measurement_raw_data = masked_data
-                        self.last_measurement_coordinates = sample_rel
-                        self.last_auto_measure_time = time.time()
+            image_x, image_y = int(canvas_x / self.zoom), int(canvas_y / self.zoom)
+            height, width = self.current_image.shape[:2]
+            if not (0 <= image_x < width and 0 <= image_y < height):
+                return None
 
-                        return (
-                            tuple(means),
-                            tuple(std_devs),
-                            tuple(std_err),
-                            rgb_mean,
-                            rgb_mean_std,
-                            pixel_count
-                        )
-                    else:  # Grayscale image
-                        # For grayscale, use a more efficient approach
-                        mean, std_dev = cv2.meanStdDev(self.current_image, mask=mask)
-                        mean = float(mean[0][0])
-                        std_dev = float(std_dev[0][0])
-                    
-                        # Calculate std_err
-                        std_err = std_dev / np.sqrt(pixel_count) if pixel_count > 0 else 0
-                    
-                        # Collect raw data for histogram (sample if too many pixels)
-                        if len(x_coords) > 1000:
-                            # Take a random sample of 1000 pixels
-                            indices = np.random.choice(len(x_coords), 1000, replace=False)
-                            sample_x = x_coords[indices]
-                            sample_y = y_coords[indices]
-                            sample_rel = rel_coords[indices]
-                        else:
-                            sample_x = x_coords
-                            sample_y = y_coords
-                            sample_rel = rel_coords
-                    
-                        # Collect raw data for histogram (preserve original dtype for 16-bit support)
-                        masked_data = np.zeros(len(sample_x), dtype=self.current_image.dtype)
-                        for i, (x, y) in enumerate(zip(sample_x, sample_y)):
-                            masked_data[i] = self.current_image[y, x] # Note: Grayscale indexing was [y,x], seems correct as per typical image coord. conventions if x=col, y=row
-                    
-                        # Store the raw data and coordinates for later use
-                        self.last_measurement_raw_data = masked_data
-                        self.last_measurement_coordinates = sample_rel
-                        self.last_auto_measure_time = time.time()
-                    
-
-
-                        # For grayscale, we don't need combined uncertainty (only one channel)
-                        return mean, std_dev, std_err, mean, std_err, pixel_count
-
-                elif self.measurement_shape == "rectangular":
-                    # For rectangular regions, use width and height from measurement_size_rect
-                    width, height = self.measurement_size_rect
-                    
-                    # Calculate region boundaries
-                    x1 = max(0, img_x - width // 2)
-                    y1 = max(0, img_y - height // 2)
-                    x2 = min(self.current_image.shape[1] - 1, img_x + width // 2)
-                    y2 = min(self.current_image.shape[0] - 1, img_y + height // 2)
-                
-                    # Ensure x1 < x2 and y1 < y2
-                    if x1 >= x2 or y1 >= y2:
-                        logger.warning("Invalid region for rectangular measurement")
+            if self.measurement_shape == "circular":
+                yy, xx = np.ogrid[:height, :width]
+                selected = (xx - image_x) ** 2 + (yy - image_y) ** 2 <= self.measurement_size ** 2
+                rows, columns = np.where(selected)
+            elif self.measurement_shape == "rectangular":
+                roi_width, roi_height = self.measurement_size_rect
+                x1, x2 = max(0, image_x - roi_width // 2), min(width - 1, image_x + roi_width // 2)
+                y1, y2 = max(0, image_y - roi_height // 2), min(height - 1, image_y + roi_height // 2)
+                rows, columns = np.mgrid[y1:y2 + 1, x1:x2 + 1]
+                rows, columns = rows.ravel(), columns.ravel()
+            elif self.measurement_shape == "line":
+                orientation = getattr(self, "line_orientation", "horizontal")
+                if orientation == "horizontal":
+                    rows, columns = np.full(width, image_y), np.arange(width)
+                elif orientation == "vertical":
+                    rows, columns = np.arange(height), np.full(height, image_x)
+                elif orientation == "manual" and self.manual_line_points and len(self.manual_line_points) >= 2:
+                    points = [
+                        (y, x) for x, y in self._bresenham_line(*self.manual_line_points[0], *self.manual_line_points[1])
+                        if 0 <= x < width and 0 <= y < height
+                    ]
+                    if not points:
                         return None
-                
-                    pixel_count = (x2 - x1 + 1) * (y2 - y1 + 1)
-                
-                    if len(self.current_image.shape) == 3:  # Color image
-                        means = []
-                        std_devs = []
-                        std_err = []
-                    
-                        for c in range(self.current_image.shape[2]):
-                            mean, std_dev = self._calculate_stats_from_integral(x1, y1, x2, y2, channel=c)
-                            means.append(mean)
-                            std_devs.append(std_dev)
-                            std_err.append(std_dev / np.sqrt(pixel_count) if pixel_count > 0 else 0)
-                    
-                        # Calculate combined uncertainty using the configured method
-                        means_array = np.array(means)
-                        std_err_array = np.array(std_err)
-                        rgb_mean, rgb_mean_std = self._calculate_combined_uncertainty(means_array, std_err_array)
-                    
-                        # Collect raw data for histogram
-                        masked_data = self.current_image[y1:y2+1, x1:x2+1, :].reshape(-1, self.current_image.shape[2])
-                    
-                        # Store the raw data and coordinates for later use
-                        self.last_measurement_raw_data = masked_data
-                        # For rectangular, relative coordinates are just the grid within the rectangle
-                        rel_x, rel_y = np.meshgrid(np.arange(x1 - img_x, x2 - img_x + 1), np.arange(y1 - img_y, y2 - img_y + 1))
-                        self.last_measurement_coordinates = np.column_stack((rel_x.ravel(), rel_y.ravel()))
-                        self.last_auto_measure_time = time.time()
-                    
-                        return (
-                            tuple(means),
-                            tuple(std_devs),
-                            tuple(std_err),
-                            rgb_mean,
-                            rgb_mean_std,
-                            pixel_count
-                        )
-                    else:  # Grayscale image
-                        mean, std_dev = self._calculate_stats_from_integral(x1, y1, x2, y2)
-                        std_err = std_dev / np.sqrt(pixel_count) if pixel_count > 0 else 0
-                    
-                        # Collect raw data for histogram
-                        masked_data = self.current_image[y1:y2+1, x1:x2+1].ravel()
-                    
-                        # Store the raw data and coordinates for later use
-                        self.last_measurement_raw_data = masked_data
-                        rel_x, rel_y = np.meshgrid(np.arange(x1 - img_x, x2 - img_x + 1), np.arange(y1 - img_y, y2 - img_y + 1))
-                        self.last_measurement_coordinates = np.column_stack((rel_x.ravel(), rel_y.ravel()))
-                        self.last_auto_measure_time = time.time()
-                    
-                        # For grayscale, we don't need combined uncertainty (only one channel)
-                        return mean, std_dev, std_err, mean, std_err, pixel_count
-                elif self.measurement_shape == "line":
-                    # For line profiles, get pixels along the line based on orientation
-                    orientation = getattr(self, 'line_orientation', 'horizontal')
-                    
-                    if orientation == "horizontal":
-                        # Horizontal line - vary X, keep Y fixed
-                        # Use full width of image as line length
-                        x_start = 0
-                        x_end = self.current_image.shape[1] - 1
-                        y_fixed = img_y
-                        
-                        if y_fixed < 0 or y_fixed >= self.current_image.shape[0]:
-                            logger.warning("Invalid Y position for horizontal line measurement")
-                            return None
-                        
-                        if len(self.current_image.shape) == 3:  # Color image
-                            line_pixels = self.current_image[y_fixed, x_start:x_end+1, :]
-                        else:  # Grayscale
-                            line_pixels = self.current_image[y_fixed, x_start:x_end+1]
-                        
-                        # Coordinates are (row, col) pairs for each pixel
-                        coordinates = np.column_stack([
-                            np.full(x_end - x_start + 1, y_fixed),
-                            np.arange(x_start, x_end + 1)
-                        ])
-                        
-                    elif orientation == "vertical":
-                        # Vertical line - vary Y, keep X fixed
-                        # Use full height of image as line length
-                        y_start = 0
-                        y_end = self.current_image.shape[0] - 1
-                        x_fixed = img_x
-                        
-                        if x_fixed < 0 or x_fixed >= self.current_image.shape[1]:
-                            logger.warning("Invalid X position for vertical line measurement")
-                            return None
-                        
-                        if len(self.current_image.shape) == 3:  # Color image
-                            line_pixels = self.current_image[y_start:y_end+1, x_fixed, :]
-                        else:  # Grayscale
-                            line_pixels = self.current_image[y_start:y_end+1, x_fixed]
-                        
-                        # Coordinates are (row, col) pairs for each pixel
-                        coordinates = np.column_stack([
-                            np.arange(y_start, y_end + 1),
-                            np.full(y_end - y_start + 1, x_fixed)
-                        ])
-                        
-                    elif orientation == "manual":
-                        # Manual line - use Bresenham's algorithm to get pixels between two points
-                        if self.manual_line_points is None or len(self.manual_line_points) < 2:
-                            logger.warning("Manual line orientation selected but no points defined")
-                            return None
-                        
-                        x1, y1 = self.manual_line_points[0]
-                        x2, y2 = self.manual_line_points[1]
-                        
-                        # Get line pixels using Bresenham's algorithm
-                        line_coords = self._bresenham_line(x1, y1, x2, y2)
-                        
-                        # Filter out coordinates outside image bounds
-                        valid_coords = []
-                        for x, y in line_coords:
-                            if 0 <= y < self.current_image.shape[0] and 0 <= x < self.current_image.shape[1]:
-                                valid_coords.append((y, x))  # (row, col)
-                        
-                        if len(valid_coords) == 0:
-                            logger.warning("Manual line is completely outside image bounds")
-                            return None
-                        
-                        coordinates = np.array(valid_coords)
-                        
-                        # Extract pixel values
-                        if len(self.current_image.shape) == 3:  # Color image
-                            line_pixels = self.current_image[coordinates[:, 0], coordinates[:, 1], :]
-                        else:  # Grayscale
-                            line_pixels = self.current_image[coordinates[:, 0], coordinates[:, 1]]
-                    
-                    else:
-                        logger.warning(f"Unknown line orientation: {orientation}")
-                        return None
-                    
-                    pixel_count = len(line_pixels)
-                
-                    if len(self.current_image.shape) == 3:  # Color image
-                        means = np.mean(line_pixels, axis=0)
-                        std_devs = np.std(line_pixels, axis=0)
-                        std_err = std_devs / np.sqrt(pixel_count) if pixel_count > 0 else np.zeros_like(std_devs)
-                    
-                        # Calculate combined uncertainty using the configured method
-                        rgb_mean, rgb_mean_std = self._calculate_combined_uncertainty(means, std_err)
-                    
-                        self.last_measurement_raw_data = line_pixels
-                        self.last_measurement_coordinates = coordinates
-                        self.last_auto_measure_time = time.time()
-                    
-                        return (
-                            tuple(means),
-                            tuple(std_devs),
-                            tuple(std_err),
-                            rgb_mean,
-                            rgb_mean_std,
-                            pixel_count
-                        )
-                    else:  # Grayscale image
-                        mean = np.mean(line_pixels)
-                        std_dev = np.std(line_pixels)
-                        std_err = std_dev / np.sqrt(pixel_count) if pixel_count > 0 else 0
-                    
-                        self.last_measurement_raw_data = line_pixels
-                        self.last_measurement_coordinates = coordinates
-                        self.last_auto_measure_time = time.time()
-                    
-                        # For grayscale, we don't need combined uncertainty (only one channel)
-                        return mean, std_dev, std_err, mean, std_err, pixel_count
+                    rows, columns = np.asarray(points).T
                 else:
-                    logger.warning(f"Unknown measurement shape: {self.measurement_shape}")
                     return None
             else:
-                logger.debug(f"Measurement position ({img_x}, {img_y}) is outside image bounds")
+                logger.warning("Unknown measurement shape: %s", self.measurement_shape)
                 return None
-        except Exception as e:
-            logger.error(f"Error measuring area: {str(e)}", exc_info=True)
+
+            pixels = self.current_image[rows, columns]
+            source_pixels = (
+                self.calibration_source_image[rows, columns]
+                if self.calibration_applied and self.calibration_source_image is not None
+                else None
+            )
+            means, deviations, uncertainties = self._summarize_roi_pixels(pixels, source_pixels)
+            pixel_count = int(len(rows))
+
+            sample_indices = np.arange(pixel_count)
+            if pixel_count > 1000:
+                # Deterministic sampling makes repeated measurements reproducible.
+                sample_indices = np.linspace(0, pixel_count - 1, 1000, dtype=int)
+            self.last_measurement_raw_data = np.asarray(pixels)[sample_indices]
+            self.last_measurement_coordinates = np.column_stack((
+                columns[sample_indices] - image_x,
+                rows[sample_indices] - image_y,
+            ))
+            self.last_auto_measure_time = time.time()
+
+            if means.size == 1:
+                return (
+                    float(means[0]), float(deviations[0]), float(uncertainties[0]),
+                    float(means[0]), float(uncertainties[0]), pixel_count,
+                )
+            combined_mean, combined_uncertainty = self._calculate_combined_uncertainty(means, uncertainties)
+            return (
+                tuple(means), tuple(deviations), tuple(uncertainties),
+                combined_mean, combined_uncertainty, pixel_count,
+            )
+        except Exception as exc:
+            logger.error("Error measuring area: %s", exc, exc_info=True)
             return None
-    
+
     def has_image(self):
         """Check if an image is loaded."""
         return self.current_image is not None
@@ -1758,245 +1377,143 @@ class ImageProcessor:
         return True
     
     def apply_calibration(self):
-        """Apply nonlinear calibration to the **current_image**.
-
-        The calibration parameters (a, b, c) for the inverse response
-        y = a + b / (x - c)   with *y* being the stored pixel value and *x*
-        the absorbed dose, are stored in a CSV file named
-        ``calibration_data/fit_parameters.csv`` generated by the external
-        *Calibration Wizard*.
-
-        The dose is obtained by inverting the model:
-
-            dose = c + b / (pixel - a)
-
-        On success ``self.current_image`` becomes a **float32 single-channel**
-        array containing the dose for each pixel (NaN where the inversion is
-        undefined).  Integral images are recomputed to keep measurement logic
-        working.
-        
-        NOTE: Field flattening is now applied independently via apply_flat().
-        Call apply_flat() before apply_calibration() if both are desired.
-        """
-        # Require an image to work on.
+        """Apply the nonlinear calibration with domain and covariance checks."""
         if self.current_image is None:
             logger.warning("apply_calibration called with no image loaded")
             return False
 
-        # Work on current_image (may already have flat applied)
-        image_to_calibrate = self.current_image.copy()
-
-        # ------------------------------------------------------------------
-        # Locate *fit_parameters.csv* written by the calibration wizard
-        # ------------------------------------------------------------------
         csv_path = self._find_fit_parameters_file()
-
         if csv_path is None:
-            logger.error("Calibration parameters file 'fit_parameters.csv' not found in calibration_data directory")
+            logger.error("Calibration parameters file 'fit_parameters.csv' not found")
             return False
 
-        # Import here to avoid top-level dependency cycles
         import csv
 
-        # ------------------------------------------------------------------
-        # Parse CSV and retrieve (a, b, c) and their sigmas for each RGB channel
-        # ------------------------------------------------------------------
-        params: dict[str, tuple[float, float, float]] = {}
-        param_sigmas: dict[str, tuple[float, float, float]] = {}
-        calibration_bit_depth_from_file = None
+        params = {}
+        covariances = {}
+        dose_ranges = {}
+        calibration_bit_depth = None
+
+        def parse_float(row, key, default=np.nan):
+            try:
+                value = row.get(key, "")
+                return float(value) if value not in (None, "") else float(default)
+            except (TypeError, ValueError):
+                return float(default)
+
         try:
-            with open(csv_path, newline="", encoding="utf-8") as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    ch = row.get("Channel", "").strip().upper()
-                    if ch not in ("R", "G", "B"):
+            with open(csv_path, newline="", encoding="utf-8") as handle:
+                for row in csv.DictReader(handle):
+                    channel = row.get("Channel", "").strip().upper()
+                    if channel not in CHANNELS:
                         continue
-                    try:
-                        a = float(row.get("a", "nan"))
-                        b = float(row.get("b", "nan"))
-                        c = float(row.get("c", "nan"))
-                    except ValueError:
+                    values = tuple(parse_float(row, key) for key in ("a", "b", "c"))
+                    if not np.all(np.isfinite(values)):
                         continue
-                    params[ch] = (a, b, c)
+                    params[channel] = values
+                    if calibration_bit_depth is None:
+                        depth = parse_float(row, "bit_depth")
+                        if np.isfinite(depth):
+                            calibration_bit_depth = int(depth)
 
-                    # Read calibration bit depth if present
-                    if calibration_bit_depth_from_file is None:
-                        bit_depth_str = row.get("bit_depth")
-                        if bit_depth_str:
-                            try:
-                                calibration_bit_depth_from_file = int(bit_depth_str)
-                            except ValueError:
-                                pass
-
-                    # Optional std_err columns – tolerate multiple naming conventions
-                    try:
-                        sa = float(row.get("sigma_a") or row.get("sa") or row.get("σa") or 0.0)
-                        sb = float(row.get("sigma_b") or row.get("sb") or row.get("σb") or 0.0)
-                        sc = float(row.get("sigma_c") or row.get("sc") or row.get("σc") or 0.0)
-                    except ValueError:
-                        sa = sb = sc = 0.0
-                    param_sigmas[ch] = (sa, sb, sc)
-            
-            # Update calibration bit depth
-            if calibration_bit_depth_from_file:
-                self.calibration_bit_depth = calibration_bit_depth_from_file
-                logger.info(f"Calibration bit depth from file: {self.calibration_bit_depth}-bit")
-            else:
-                self.calibration_bit_depth = 8  # Legacy calibration
-                logger.info("No bit_depth in calibration file, assuming 8-bit")
-                
+                    covariance = np.array([
+                        [parse_float(row, "cov_aa"), parse_float(row, "cov_ab"), parse_float(row, "cov_ac")],
+                        [parse_float(row, "cov_ab"), parse_float(row, "cov_bb"), parse_float(row, "cov_bc")],
+                        [parse_float(row, "cov_ac"), parse_float(row, "cov_bc"), parse_float(row, "cov_cc")],
+                    ])
+                    if not np.all(np.isfinite(covariance)):
+                        sigmas = np.array([
+                            parse_float(row, "σa", parse_float(row, "sigma_a", 0.0)),
+                            parse_float(row, "σb", parse_float(row, "sigma_b", 0.0)),
+                            parse_float(row, "σc", parse_float(row, "sigma_c", 0.0)),
+                        ])
+                        covariance = np.diag(np.square(sigmas))
+                    covariances[channel] = covariance
+                    low, high = parse_float(row, "dose_min"), parse_float(row, "dose_max")
+                    if np.isfinite(low) and np.isfinite(high):
+                        dose_ranges[channel] = (low, high)
         except Exception as exc:
             logger.error("Failed to read calibration parameters: %s", exc, exc_info=True)
             return False
 
-        # Ensure we have the three colour channels
-        if not all(ch in params for ch in ("R", "G", "B")):
-            logger.error("Incomplete calibration parameters – need R, G and B channels")
+        if not all(channel in params for channel in CHANNELS):
+            logger.error("Incomplete calibration parameters; R, G and B are required")
             return False
 
-        # ------------------------------------------------------------------
-        # Apply inverse calibration and compute std_err propagation
-        # ------------------------------------------------------------------
-        try:
-            # Use the appropriate image: flattened if flat was applied, otherwise original
-            # This ensures the calibration is applied to the correct pixel values
-            if self.flat_applied and self.flattened_image is not None:
-                source_img = self.flattened_image.copy()
-                logger.debug("Using flattened image for calibration")
-            elif self.original_image is not None:
-                source_img = self.original_image.copy()
-                logger.debug("Using original image for calibration")
-            else:
-                source_img = self.current_image.copy()
-                logger.debug("Using current image for calibration")
-            
-            img_float = source_img.astype(np.float32)
-            
-            # Scale pixel values if image bit depth differs from calibration bit depth
-            calibration_max = (2 ** self.calibration_bit_depth) - 1  # e.g., 255 for 8-bit
-            image_max = self.image_max_value  # e.g., 65535 for 16-bit
-            
-            if image_max != calibration_max and image_max > 0:
-                scale_factor = calibration_max / image_max
-                img_float = img_float * scale_factor
-                logger.info(f"Scaled pixel values from {self.image_bit_depth}-bit to {self.calibration_bit_depth}-bit range for calibration (factor: {scale_factor:.6f})")
+        # Legacy parameter files did not record the fitted dose domain. Recover
+        # it from the calibration table instead of allowing unlimited inversion.
+        if len(dose_ranges) != 3:
+            calibration_table = os.path.join(os.path.dirname(csv_path), "calibration_data.csv")
+            try:
+                with open(calibration_table, newline="", encoding="utf-8") as handle:
+                    doses = [
+                        float(row["Dose"])
+                        for row in csv.DictReader(handle)
+                        if row.get("Dose", "") not in (None, "")
+                    ]
+                finite = np.asarray(doses, dtype=float)
+                finite = finite[np.isfinite(finite)]
+                if finite.size:
+                    recovered_range = (float(np.min(finite)), float(np.max(finite)))
+                    dose_ranges = {channel: dose_ranges.get(channel, recovered_range) for channel in CHANNELS}
+            except (OSError, ValueError, KeyError) as exc:
+                logger.error("Calibration dose range is unavailable: %s", exc)
+                return False
 
-            if img_float.ndim == 2:
-                # Single-channel image – treat as green channel
-                a, b, c = params["G"]
-                sa, sb, sc = param_sigmas.get("G", (0.0, 0.0, 0.0))
-                denom = img_float - a
-                dose = np.full_like(img_float, np.nan, dtype=np.float32)
-                
-                # Valid domain: denom != 0 AND resulting dose must be physically meaningful
-                # For inverse model dose = c + b/denom, we need denom to have same sign as b
-                # to get positive contribution, and final dose should be >= 0
-                valid = denom != 0
-                dose[valid] = c + b / denom[valid]
-                
-                # No filtering of negative values - keep all dose values as calculated
-                # Negative doses indicate pixels outside the calibration range (e.g., unirradiated film)
-
-                # std_err per-pixel
-                var = np.full_like(img_float, np.nan, dtype=np.float32)
-                valid_final = ~np.isnan(dose)
-                if np.any(valid_final):
-                    denom_valid = denom[valid_final]
-                    term_a = (-b / (denom_valid ** 2)) ** 2 * sa ** 2
-                    term_b = (1.0 / denom_valid) ** 2 * sb ** 2
-                    term_c = sc ** 2
-                    var[valid_final] = term_a + term_b + term_c
-                sigma = np.sqrt(var)
-
-                # Store helper arrays
-                self.dose_channels = np.expand_dims(dose, axis=-1)
-                self.dose_std_err_channels = np.expand_dims(sigma, axis=-1)
-                dose_for_integral = dose  # single-channel
-            else:
-                # Colour image – compute dose and variance per channel
-                h, w, _ = img_float.shape
-                doses = []
-                vars_ = []
-                
-                # DEBUG: Log calibration parameters and pixel value statistics
-                logger.info(f"=== CALIBRATION DEBUG ===")
-                logger.info(f"Image bit depth: {self.image_bit_depth}, max value: {self.image_max_value}")
-                logger.info(f"Calibration bit depth: {self.calibration_bit_depth}")
-                logger.info(f"Flat applied: {self.flat_applied}")
-                logger.info(f"img_float shape: {img_float.shape}, dtype: {img_float.dtype}")
-                logger.info(f"img_float min/max: {np.min(img_float):.2f} / {np.max(img_float):.2f}")
-                for ch_idx, ch_name in enumerate(("R", "G", "B")):
-                    ch_vals = img_float[:, :, ch_idx]
-                    logger.info(f"  {ch_name} channel: min={np.min(ch_vals):.2f}, max={np.max(ch_vals):.2f}, mean={np.mean(ch_vals):.2f}")
-                    a_param, b_param, c_param = params[ch_name]
-                    logger.info(f"  {ch_name} params: a={a_param:.4f}, b={b_param:.4f}, c={c_param:.4f}")
-                logger.info(f"=========================")
-                
-                for idx, ch in enumerate(("R", "G", "B")):
-                    a, b, c = params[ch]
-                    sa, sb, sc = param_sigmas.get(ch, (0.0, 0.0, 0.0))
-                    pix = img_float[:, :, idx]
-                    denom = pix - a
-                    
-                    # DEBUG: Log denominator statistics
-                    logger.debug(f"{ch}: denom min={np.min(denom):.2f}, max={np.max(denom):.2f}, zeros={np.sum(denom==0)}")
-                    
-                    dose_ch = np.full((h, w), np.nan, dtype=np.float32)
-                    var_ch = np.full((h, w), np.nan, dtype=np.float32)
-                    
-                    # Valid domain check
-                    valid = denom != 0
-                    dose_ch[valid] = c + b / denom[valid]
-                    
-                    # DEBUG: Log dose statistics
-                    valid_doses = dose_ch[~np.isnan(dose_ch)]
-                    if len(valid_doses) > 0:
-                        logger.info(f"{ch}: dose stats: min={np.min(valid_doses):.4f}, max={np.max(valid_doses):.4f}, mean={np.mean(valid_doses):.4f}")
-                    else:
-                        logger.warning(f"{ch}: ALL doses are NaN after initial calculation!")
-                    
-                    # No filtering of negative values - keep all dose values as calculated
-                    # Negative doses indicate pixels outside the calibration range (e.g., unirradiated film)
-                    
-                    # Variance via error propagation (only for valid pixels)
-                    valid_final = ~np.isnan(dose_ch)
-                    if np.any(valid_final):
-                        denom_valid = denom[valid_final]
-                        term_a = (-b / (denom_valid ** 2)) ** 2 * sa ** 2
-                        term_b = (1.0 / denom_valid) ** 2 * sb ** 2
-                        term_c = sc ** 2
-                        var_ch[valid_final] = term_a + term_b + term_c
-
-                    doses.append(dose_ch)
-                    vars_.append(var_ch)
-
-                dose_stack = np.stack(doses, axis=-1)  # HxWx3
-                var_stack = np.stack(vars_, axis=-1)
-
-                self.dose_channels = dose_stack
-                self.dose_std_err_channels = np.sqrt(var_stack)
-                dose_for_integral = np.nanmean(dose_stack, axis=-1)  # averaged dose for integral images
-
-            # Replace current_image with 3-channel dose to keep RGB workflow alive
-            if self.dose_channels.ndim == 2:
-                self.current_image = np.expand_dims(self.dose_channels, axis=-1)
-            else:
-                self.current_image = self.dose_channels.astype(np.float32)
-
-            # Recompute integral images on average dose to speed up statistics
-            self._compute_integral_images()
-            self.calibration_applied = True
-            self.calibration_param_sigmas = param_sigmas  # store for later use
-            self.calibration_fit_params = params  # store (a,b,c) per channel for sensitivity weighting
-            logger.info("Calibration applied successfully – dose image ready (3-channel float32)")
-            return True
-
-        except Exception as exc:
-            logger.error("Error applying calibration: %s", exc, exc_info=True)
+        if len(dose_ranges) != 3:
+            logger.error("Calibration dose range is required to reject extrapolated doses")
             return False
 
+        self.calibration_bit_depth = calibration_bit_depth or 8
+        source_img = (
+            self.flattened_image.copy()
+            if self.flat_applied and self.flattened_image is not None
+            else (self.original_image.copy() if self.original_image is not None else self.current_image.copy())
+        )
+        img_float = source_img.astype(np.float64)
+        calibration_max = (2 ** self.calibration_bit_depth) - 1
+        if self.image_max_value > 0 and self.image_max_value != calibration_max:
+            img_float *= calibration_max / self.image_max_value
 
-    
+        allow_extrapolation = bool(self.config.get("allow_calibration_extrapolation", False))
+        margin = float(self.config.get("calibration_extrapolation_margin_fraction", 0.0))
+        if img_float.ndim == 2:
+            source_channels = [img_float]
+            channel_names = ["G"]
+        else:
+            source_channels = [img_float[:, :, index] for index in range(3)]
+            channel_names = list(CHANNELS)
+
+        dose_arrays, valid_arrays, extrapolated_arrays = [], [], []
+        for pixels, channel in zip(source_channels, channel_names):
+            dose, valid, extrapolated = invert_rational_response(
+                pixels,
+                params[channel],
+                dose_ranges[channel],
+                extrapolation_margin_fraction=margin,
+                allow_extrapolation=allow_extrapolation,
+            )
+            dose_arrays.append(dose.astype(np.float32))
+            valid_arrays.append(valid)
+            extrapolated_arrays.append(extrapolated)
+
+        self.dose_channels = np.stack(dose_arrays, axis=-1)
+        self.dose_valid_mask_channels = np.stack(valid_arrays, axis=-1)
+        self.dose_extrapolated_mask_channels = np.stack(extrapolated_arrays, axis=-1)
+        self.dose_std_err_channels = None  # ROI covariance propagation is authoritative.
+        self.current_image = self.dose_channels
+        self.calibration_source_image = (
+            np.expand_dims(img_float, axis=-1) if img_float.ndim == 2 else img_float
+        )
+        self.calibration_fit_params = params
+        self.calibration_param_covariances = covariances
+        self.calibration_dose_ranges = dose_ranges
+        self.calibration_applied = True
+        self._compute_integral_images()
+        valid_fraction = float(np.mean(self.dose_valid_mask_channels))
+        logger.info("Calibration applied; valid calibrated pixels: %.2f%%", 100 * valid_fraction)
+        return True
+
     def get_image_bit_depth(self):
         """Return the bit depth of the current image (8 or 16)."""
         return self.image_bit_depth

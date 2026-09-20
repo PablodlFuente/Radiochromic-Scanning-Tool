@@ -10,6 +10,7 @@ import os
 import re
 import numpy as np
 import csv
+import tempfile
 from pathlib import Path
 from scipy.optimize import curve_fit
 from scipy.interpolate import CubicSpline
@@ -1173,12 +1174,23 @@ class CalibrationApp:
 
     def _apply_fit(self):
         """Save current entries to CSV and close window."""
-        fname = str(self.data_dir / "fit_parameters.csv")
+        fname = self.data_dir / "fit_parameters.csv"
         try:
-            with open(fname, 'w', newline='', encoding='utf-8') as f:  # Added encoding='utf-8'
+            doses, *_ = self._get_calibration_data()
+            finite_doses = doses[np.isfinite(doses)]
+            dose_min = float(np.min(finite_doses)) if finite_doses.size else np.nan
+            dose_max = float(np.max(finite_doses)) if finite_doses.size else np.nan
+            fd, temporary_name = tempfile.mkstemp(
+                prefix="fit_parameters_", suffix=".csv", dir=self.data_dir
+            )
+            os.close(fd)
+            with open(temporary_name, 'w', newline='', encoding='utf-8') as f:
                 w = csv.writer(f)
-                # Include bit_depth in header to indicate calibration bit depth
-                w.writerow(["Channel", "a", "σa", "b", "σb", "c", "σc", "R2", "bit_depth"])
+                w.writerow([
+                    "Channel", "a", "σa", "b", "σb", "c", "σc", "R2", "bit_depth",
+                    "cov_aa", "cov_ab", "cov_ac", "cov_bb", "cov_bc", "cov_cc",
+                    "dose_min", "dose_max", "n_points", "fit_method",
+                ])
                 for ch in ("R", "G", "B"):
                     a = self.param_entries[ch]['a'].get().strip()
                     σa = self.param_entries[ch]['σa'].get().strip()
@@ -1187,12 +1199,26 @@ class CalibrationApp:
                     c = self.param_entries[ch]['c'].get().strip()
                     σc = self.param_entries[ch]['σc'].get().strip()
                     r2text = self.param_entries[ch]['r2_label'].cget('text')
-                    # Include calibration bit depth so apply_calibration knows what to expect
-                    w.writerow([ch, a, σa, b, σb, c, σc, r2text, self.calibration_bit_depth])
-            messagebox.showinfo("Fit saved", f"Fit parameters saved to {os.path.abspath(fname)}\\nCalibration bit depth: {self.calibration_bit_depth}-bit")
+                    result = self.latest_fit_results.get(f"Fit {ch}", {})
+                    covariance = np.asarray(result.get("covariance", np.full((3, 3), np.nan)))
+                    if covariance.shape != (3, 3):
+                        covariance = np.full((3, 3), np.nan)
+                    cov_values = [
+                        covariance[0, 0], covariance[0, 1], covariance[0, 2],
+                        covariance[1, 1], covariance[1, 2], covariance[2, 2],
+                    ]
+                    w.writerow([
+                        ch, a, σa, b, σb, c, σc, r2text, self.calibration_bit_depth,
+                        *cov_values, dose_min, dose_max, result.get("n_points", ""),
+                        "weighted_nonlinear_least_squares",
+                    ])
+            os.replace(temporary_name, fname)
+            messagebox.showinfo("Fit saved", f"Fit parameters saved to {fname.resolve()}\\nCalibration bit depth: {self.calibration_bit_depth}-bit")
+            self.fit_window.destroy()
         except Exception as e:
+            if 'temporary_name' in locals() and os.path.exists(temporary_name):
+                os.unlink(temporary_name)
             messagebox.showerror("Save error", str(e))
-        self.fit_window.destroy()
 
     def _update_fit_plot(self):
         """Redraw scatter and chosen fit."""
@@ -1230,15 +1256,18 @@ class CalibrationApp:
                 def model(x, a, b, c):
                     return a + b/(x - c)
 
-                for ch_data, mask, color, label, ch_name in ((r, mask_r, "red", "Fit R", "R"), 
-                                                              (g, mask_g, "green", "Fit G", "G"), 
-                                                              (b, mask_b, "blue", "Fit B", "B")):
+                for ch_data, ch_errors, mask, color, label, ch_name in (
+                    (r, sr, mask_r, "red", "Fit R", "R"),
+                    (g, sg, mask_g, "green", "Fit G", "G"),
+                    (b, sb, mask_b, "blue", "Fit B", "B"),
+                ):
                     
                     current_popt = np.array([]) # Parámetros del ajuste actual
                     current_perr = np.array([]) # Errores de los parámetros del ajuste actual
+                    fit_cov_matrix = np.full((3, 3), np.nan)
 
-                    # Prepara datos para el ajuste (excluyendo puntos y dosis cero)
-                    fit_mask = mask & (doses > 0)
+                    # Dose zero is a measured calibration point and is retained.
+                    fit_mask = mask & np.isfinite(doses) & np.isfinite(ch_data)
                     
                     # Si no hay suficientes puntos después de filtrar, salta este canal
                     if np.sum(fit_mask) < 3: # Necesitas al menos 3 puntos para 3 parámetros
@@ -1254,11 +1283,20 @@ class CalibrationApp:
                         continue
 
                     # Estimaciones iniciales
-                    a0 = np.mean(ch_data[fit_mask])
-                    b0 = (np.max(ch_data[fit_mask]) - np.min(ch_data[fit_mask])) * (np.ptp(doses[fit_mask]) + 1e-6)
-                    c0 = 0.0
+                    fitted_doses = doses[fit_mask]
+                    fitted_values = ch_data[fit_mask]
+                    dose_span = max(float(np.ptp(fitted_doses)), 1.0)
+                    c0 = float(np.min(fitted_doses) - 0.1 * dose_span)
+                    a0 = float(np.min(fitted_values) * 0.95)
+                    b0 = float(max(np.median((fitted_values - a0) * (fitted_doses - c0)), 1e-9))
                     
-                    y_target_for_fit = ch_data[fit_mask] # Datos Y para el ajuste
+                    y_target_for_fit = fitted_values
+                    fit_sigma = np.asarray(ch_errors[fit_mask], dtype=float)
+                    positive_sigma = fit_sigma[np.isfinite(fit_sigma) & (fit_sigma > 0)]
+                    if positive_sigma.size:
+                        fit_sigma[~np.isfinite(fit_sigma) | (fit_sigma <= 0)] = np.median(positive_sigma)
+                    else:
+                        fit_sigma = None
                     
                     # Opción de ajustar a la spline
                     if self.fit_to_spline_var.get():
@@ -1279,14 +1317,22 @@ class CalibrationApp:
                         # current_perr se queda vacío para ajustes manuales
                     else: # Intenta el ajuste automático
                         try:
-                            fit_params, fit_cov_matrix = curve_fit(model, doses[fit_mask], y_target_for_fit, p0=(a0, b0, c0), maxfev=20000)
+                            upper_c = float(np.min(fitted_doses) - max(1e-9, dose_span * 1e-9))
+                            fit_params, fit_cov_matrix = curve_fit(
+                                model,
+                                fitted_doses,
+                                y_target_for_fit,
+                                p0=(a0, b0, c0),
+                                sigma=fit_sigma,
+                                absolute_sigma=fit_sigma is not None,
+                                bounds=([-np.inf, 0.0, -np.inf], [np.inf, np.inf, upper_c]),
+                                maxfev=50000,
+                            )
                             current_popt = fit_params
                             
                             # Calcula errores solo si la matriz de covarianza es válida
                             if fit_cov_matrix is not None and np.all(np.isfinite(fit_cov_matrix)) and fit_cov_matrix.shape == (3,3):
-                                print(f"DEBUG {label}: fit_cov_matrix IS considered valid by initial check.")
                                 diag_pcov = np.diag(fit_cov_matrix)
-                                print(f"DEBUG {label}: diag_pcov = {diag_pcov}")
                                 
                                 # Intentamos calcular la raíz cuadrada. Puede producir NaN si hay negativos en diag_pcov.
                                 diag_sqrt = np.empty_like(diag_pcov)
@@ -1295,17 +1341,12 @@ class CalibrationApp:
                                         diag_sqrt[i_err] = np.sqrt(val_err)
                                     else:
                                         diag_sqrt[i_err] = np.nan
-                                        print(f"DEBUG {label}: Negative value encountered in diag_pcov at index {i_err}: {val_err}")
-
-                                print(f"DEBUG {label}: diag_sqrt (after np.sqrt attempt) = {diag_sqrt}")
                                 
                                 # ASIGNACIÓN CORRECTA A current_perr:
                                 if np.all(np.isfinite(diag_sqrt)):
                                     current_perr = diag_sqrt
-                                    print(f"DEBUG {label}: current_perr (all finite) = {current_perr}") 
                                 else:
                                     current_perr = np.array([np.nan, np.nan, np.nan])
-                                    print(f"DEBUG {label}: current_perr (some non-finite, set to nan) = {current_perr}")
                             else: 
                                 # Este 'else' es para el 'if fit_cov_matrix is not None...'
                                 current_perr = np.array([np.nan, np.nan, np.nan])
@@ -1332,8 +1373,8 @@ class CalibrationApp:
                     
                     # Para R^2 y la línea de ajuste, usa los puntos apropiados
                     # Si es manual, usa todos los puntos (doses). Si es auto, usa fit_mask.
-                    points_for_eval = doses if ch_name in self._manual_override else doses[fit_mask]
-                    actual_y_for_r2 = ch_data if ch_name in self._manual_override else ch_data[fit_mask] # Y reales correspondientes
+                    points_for_eval = doses[fit_mask]
+                    actual_y_for_r2 = ch_data[fit_mask]
                     
                     # Asegúrate de que haya datos para evaluar
                     if points_for_eval.size == 0:
@@ -1352,7 +1393,19 @@ class CalibrationApp:
                         else:
                             r2 = np.nan if ss_res > 1e-9 else 1.0 # Perfecto ajuste si ambos son cero
 
-                    self.latest_fit_results[label] = {"params": current_popt, "errors": current_perr, "r2": r2}
+                    covariance = (
+                        fit_cov_matrix
+                        if ch_name not in self._manual_override
+                        and np.asarray(fit_cov_matrix).shape == (3, 3)
+                        else np.full((3, 3), np.nan)
+                    )
+                    self.latest_fit_results[label] = {
+                        "params": current_popt,
+                        "errors": current_perr,
+                        "covariance": covariance,
+                        "r2": r2,
+                        "n_points": int(np.sum(fit_mask)),
+                    }
 
                     # Dibuja la línea de ajuste
                     line_style = "-." if ch_name in self._manual_override else "--"
