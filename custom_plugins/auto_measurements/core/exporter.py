@@ -248,6 +248,7 @@ class CSVExporter:
             and self.file_manager.file_data[path].get("measured")
         ]
         if current_results and (not self.file_manager.file_list or
+                self.file_manager.current_file_index < 0 or
                 self.file_manager.current_file_index >= len(self.file_manager.file_list)):
             datasets.append((getattr(self.image_processor, "current_file", "") or "", current_results))
         if not any(results for _, results in datasets):

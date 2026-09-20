@@ -48,6 +48,8 @@ class TkWorkflowTests(unittest.TestCase):
                     root.after(100, root.quit)
 
                 def next_image(_):
+                    tab.file_manager.file_list = [first]
+                    tab.file_manager.current_file_index = 0
                     tab.results = [{"film": "previous"}]
                     tab.tree.insert("", "end", text="previous")
                     root.after(10, lambda: window.load_image(second, on_complete=finish))
@@ -59,6 +61,7 @@ class TkWorkflowTests(unittest.TestCase):
                 self.assertEqual(failures, [])
                 self.assertEqual(completed, [True], "Image workflow timed out")
                 self.assertEqual(tab.results, [])
+                self.assertEqual(tab.file_manager.current_file_index, -1)
                 self.assertEqual(tab.tree.get_children(), ())
                 self.assertEqual(window.image_processor.current_image.dtype, np.uint16)
                 self.assertTrue(np.all(window.image_processor.current_image == 2000))

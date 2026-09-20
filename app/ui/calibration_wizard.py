@@ -717,14 +717,15 @@ To update this data, go back and load new blank scans."""
             save_path = os.path.join(self._data_dir, "field_flattening.npz")
             from app.utils.atomic_file import atomic_open
             with atomic_open(save_path, "wb") as handle:
-                np.savez(handle,
-                flat_field=flat_field,
-                mean_per_channel=mean_per_channel,
-                std_per_channel=self.flat_field_data["std_per_channel"],
-                date_created=self.flat_field_data["date_created"],
-                num_images_averaged=self.flat_field_data["num_images_averaged"],
-                image_shape=self.flat_field_data["image_shape"]
-            )
+                np.savez(
+                    handle,
+                    flat_field=flat_field,
+                    mean_per_channel=mean_per_channel,
+                    std_per_channel=self.flat_field_data["std_per_channel"],
+                    date_created=self.flat_field_data["date_created"],
+                    num_images_averaged=self.flat_field_data["num_images_averaged"],
+                    image_shape=self.flat_field_data["image_shape"],
+                )
 
             blank_sources = getattr(self, "blank_source_paths", [])
             update_calibration_manifest(
