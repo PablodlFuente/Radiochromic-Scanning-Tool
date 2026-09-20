@@ -473,7 +473,6 @@ class CalibrationApp:
             
             # Store the original numpy array for measurements (preserves original bit depth)
             self.original_image_array = cv_img.copy()
-            self.original_image_array = cv_img.copy()
             
             # Detect bit depth from numpy dtype and actual values
             self.calibration_bit_depth, self.calibration_max_value = self._detect_bit_depth(cv_img)
@@ -580,12 +579,6 @@ class CalibrationApp:
 
         # Schedule a high-quality render after a short delay (e.g., 50ms)
         self.zoom_timer = self.root.after(50, lambda: self.display_image_on_canvas(filter=Image.LANCZOS))
-
-    def start_pan(self, event):
-        self.image_canvas.scan_mark(event.x, event.y)
-
-    def pan_image(self, event):
-        self.image_canvas.scan_dragto(event.x, event.y, gain=1)
 
     def on_canvas_press_router(self, event):
         # Check for Ctrl key (state mask 0x0004 for Ctrl)
