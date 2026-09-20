@@ -1064,7 +1064,8 @@ class MainWindow:
             self.parent.after(0, lambda: self._finish_applying_settings())
         except Exception as e:
             logger.error(f"Error applying settings: {str(e)}", exc_info=True)
-            self.parent.after(0, lambda: messagebox.showerror("Error", f"Error applying settings: {str(e)}"))
+            message = str(e)
+            self.parent.after(0, lambda: messagebox.showerror("Error", f"Error applying settings: {message}"))
             self.parent.after(0, lambda: self.update_status("Error applying settings"))
     
     def _finish_applying_settings(self):
@@ -1581,7 +1582,8 @@ class MainWindow:
                     self.parent.after(0, enable_update)
                     
             except Exception as e:
-                self.parent.after(0, lambda: append_status(f"❌ Error: {str(e)}"))
+                message = str(e)
+                self.parent.after(0, lambda: append_status(f"❌ Error: {message}"))
         
         def do_update():
             """Perform the update."""
@@ -1621,7 +1623,8 @@ class MainWindow:
                     self.parent.after(0, lambda: append_status(f"❌ Error during update:\n{result['error']}"))
                     
             except Exception as e:
-                self.parent.after(0, lambda: append_status(f"❌ Error: {str(e)}"))
+                message = str(e)
+                self.parent.after(0, lambda: append_status(f"❌ Error: {message}"))
         
         # Start checking in background
         threading.Thread(target=check_updates_thread, daemon=True).start()
@@ -1780,7 +1783,8 @@ class MainWindow:
                         f"❌ Error during downgrade:\n{result['error']}"
                     ))
             except Exception as exc:
-                self.parent.after(0, lambda: append_status(f"❌ Error: {exc}"))
+                message = str(exc)
+                self.parent.after(0, lambda: append_status(f"❌ Error: {message}"))
             finally:
                 self.parent.after(0, on_version_select)
 

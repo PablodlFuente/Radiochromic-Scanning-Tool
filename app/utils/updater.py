@@ -296,17 +296,56 @@ class UpdateChecker:
                 'error': str(e),
             }
     
-    def stash_changes(self) -> bool:
-        """Stash any local changes."""
+    def _stash_local_changes(self):
+        """Stash tracked and untracked files and return the exact stash ref/hash."""
         try:
             result = subprocess.run(
-                ["git", "stash"],
+                ["git", "stash", "push", "--include-untracked", "-m", "radiochromic-auto-update"],
                 capture_output=True, text=True, cwd=self.app_dir
             )
-            return result.returncode == 0
+            if result.returncode != 0:
+                return None, result.stderr or "Could not stash local changes"
+            ref = "stash@{0}"
+            revision = subprocess.run(
+                ["git", "rev-parse", ref], capture_output=True, text=True, cwd=self.app_dir
+            )
+            if revision.returncode != 0:
+                return None, revision.stderr or "Could not identify the created stash"
+            return (ref, revision.stdout.strip()), None
         except Exception as e:
             logger.error(f"Error stashing changes: {e}")
-            return False
+            return None, str(e)
+
+    def stash_changes(self) -> bool:
+        """Backward-compatible wrapper for explicitly stashing local changes."""
+        stash, error = self._stash_local_changes()
+        return stash is not None and error is None
+
+    def _restore_stash(self, stash):
+        """Restore only the stash created by this operation; retain it on conflict."""
+        if stash is None:
+            return None
+        ref, expected_revision = stash
+        current = subprocess.run(
+            ["git", "rev-parse", ref], capture_output=True, text=True, cwd=self.app_dir
+        )
+        if current.returncode != 0 or current.stdout.strip() != expected_revision:
+            return "The update stash changed unexpectedly and was not applied"
+        applied = subprocess.run(
+            ["git", "stash", "apply", "--index", ref],
+            capture_output=True, text=True, cwd=self.app_dir, timeout=60,
+        )
+        if applied.returncode != 0:
+            return (
+                "Local changes could not be restored automatically. "
+                f"They remain saved in {ref}. {applied.stderr.strip()}"
+            )
+        dropped = subprocess.run(
+            ["git", "stash", "drop", ref], capture_output=True, text=True, cwd=self.app_dir
+        )
+        if dropped.returncode != 0:
+            return f"Local changes were restored, but {ref} could not be removed"
+        return None
     
     def pull_updates(self, branch="master") -> dict:
         """Pull the latest updates from remote.
@@ -322,17 +361,17 @@ class UpdateChecker:
                 'error': str or None
             }
         """
-        stashed = False
-        
+        stash = None
+        original_branch = self.get_current_branch()
+        updated = False
+        operation_error = None
         try:
-            # Stash local changes if any
             if self.has_local_changes():
-                if self.stash_changes():
-                    stashed = True
-                    logger.info("Stashed local changes before update")
+                stash, operation_error = self._stash_local_changes()
+                if operation_error:
+                    return {'success': False, 'stashed': False, 'error': operation_error}
 
-            current_branch = self.get_current_branch()
-            if current_branch != branch:
+            if original_branch != branch:
                 branch_result = subprocess.run(
                     ["git", "checkout", branch],
                     capture_output=True, text=True, cwd=self.app_dir, timeout=30
@@ -340,103 +379,86 @@ class UpdateChecker:
                 if branch_result.returncode != 0:
                     error = branch_result.stderr or f"Could not switch to branch '{branch}'"
                     logger.error(error)
-                    return {
-                        'success': False,
-                        'stashed': stashed,
-                        'error': error
-                    }
-            
-            # Pull the latest changes
-            result = subprocess.run(
-                ["git", "pull", "origin", branch],
-                capture_output=True, text=True, cwd=self.app_dir, timeout=60
-            )
-            
-            if result.returncode == 0:
-                logger.info("Update pulled successfully")
-                return {
-                    'success': True,
-                    'stashed': stashed,
-                    'error': None
-                }
-            else:
-                error = result.stderr or "Unknown error during pull"
-                logger.error(f"Pull failed: {error}")
-                return {
-                    'success': False,
-                    'stashed': stashed,
-                    'error': error
-                }
-                
+                    operation_error = error
+
+            if operation_error is None:
+                result = subprocess.run(
+                    ["git", "pull", "--ff-only", "origin", branch],
+                    capture_output=True, text=True, cwd=self.app_dir, timeout=60
+                )
+                if result.returncode == 0:
+                    updated = True
+                    logger.info("Update pulled successfully")
+                else:
+                    operation_error = result.stderr or "Unknown error during fast-forward pull"
         except subprocess.TimeoutExpired:
-            return {
-                'success': False,
-                'stashed': stashed,
-                'error': "Update timed out"
-            }
+            operation_error = "Update timed out"
         except Exception as e:
             logger.error(f"Error pulling updates: {e}")
-            return {
-                'success': False,
-                'stashed': stashed,
-                'error': str(e)
-            }
+            operation_error = str(e)
+        finally:
+            if operation_error and original_branch and self.get_current_branch() != original_branch:
+                subprocess.run(
+                    ["git", "checkout", original_branch],
+                    capture_output=True, text=True, cwd=self.app_dir, timeout=30,
+                )
+            restore_error = self._restore_stash(stash)
+            if restore_error:
+                operation_error = f"{operation_error + '. ' if operation_error else ''}{restore_error}"
+
+        return {
+            'success': updated and operation_error is None,
+            'updated': updated,
+            'stashed': stash is not None,
+            'error': operation_error,
+        }
 
     def checkout_version(self, commit_hash: str) -> dict:
         """Checkout a specific commit in detached HEAD mode."""
-        stashed = False
+        stash = None
+        operation_error = None
+        checked_out = False
 
         try:
             if self.has_local_changes():
-                if self.stash_changes():
-                    stashed = True
-                    logger.info("Stashed local changes before version change")
+                stash, operation_error = self._stash_local_changes()
+                if operation_error:
+                    return {'success': False, 'stashed': False, 'error': operation_error}
 
             verify_result = subprocess.run(
                 ["git", "rev-parse", "--verify", commit_hash],
                 capture_output=True, text=True, cwd=self.app_dir, timeout=15
             )
             if verify_result.returncode != 0:
-                error = verify_result.stderr or f"Commit '{commit_hash}' not found"
-                logger.error(error)
-                return {
-                    'success': False,
-                    'stashed': stashed,
-                    'error': error,
-                }
+                operation_error = verify_result.stderr or f"Commit '{commit_hash}' not found"
+                logger.error(operation_error)
 
-            checkout_result = subprocess.run(
-                ["git", "checkout", "--detach", commit_hash],
-                capture_output=True, text=True, cwd=self.app_dir, timeout=60
-            )
-            if checkout_result.returncode != 0:
-                error = checkout_result.stderr or f"Could not checkout commit '{commit_hash}'"
-                logger.error(error)
-                return {
-                    'success': False,
-                    'stashed': stashed,
-                    'error': error,
-                }
-
-            logger.info("Checked out version %s", commit_hash)
-            return {
-                'success': True,
-                'stashed': stashed,
-                'error': None,
-            }
+            if operation_error is None:
+                checkout_result = subprocess.run(
+                    ["git", "checkout", "--detach", commit_hash],
+                    capture_output=True, text=True, cwd=self.app_dir, timeout=60
+                )
+                if checkout_result.returncode != 0:
+                    operation_error = checkout_result.stderr or f"Could not checkout commit '{commit_hash}'"
+                    logger.error(operation_error)
+                else:
+                    checked_out = True
+                    logger.info("Checked out version %s", commit_hash)
         except subprocess.TimeoutExpired:
-            return {
-                'success': False,
-                'stashed': stashed,
-                'error': "Version change timed out",
-            }
+            operation_error = "Version change timed out"
         except Exception as e:
             logger.error(f"Error checking out version {commit_hash}: {e}")
-            return {
-                'success': False,
-                'stashed': stashed,
-                'error': str(e),
-            }
+            operation_error = str(e)
+        finally:
+            restore_error = self._restore_stash(stash)
+            if restore_error:
+                operation_error = f"{operation_error + '. ' if operation_error else ''}{restore_error}"
+
+        return {
+            'success': checked_out and operation_error is None,
+            'stashed': stash is not None,
+            'error': operation_error,
+        }
     
     @staticmethod
     def restart_application():
