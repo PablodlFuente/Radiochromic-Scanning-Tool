@@ -9,10 +9,13 @@ from typing import Optional, List
 import os
 import csv
 import logging
+import json
+import math
 from datetime import datetime
 
 from ..models import MeasurementResult
 from .formatter import MeasurementFormatter
+from app.core.calibration_manifest import MANIFEST_NAME, verify_calibration_manifest
 
 
 class CSVExporter:
@@ -59,8 +62,8 @@ class CSVExporter:
                 try:
                     num = float(v)
                     formatted_parts.append(f"{num}")
-                except (ValueError, TypeError):
-                    formatted_parts.append(str(v))
+                except (ValueError, TypeError) as exc:
+                    raise ValueError(f"Non-numeric export value: {v!r}") from exc
             return ", ".join(formatted_parts)
         
         # If it's a string, try to parse it
@@ -77,16 +80,59 @@ class CSVExporter:
                     try:
                         num = float(part)
                         formatted_parts.append(f"{num}")
-                    except (ValueError, TypeError):
-                        formatted_parts.append(part)
+                    except (ValueError, TypeError) as exc:
+                        raise ValueError(f"Non-numeric export value: {part!r}") from exc
                 return ", ".join(formatted_parts)
         
         # Single numeric value
         try:
             num = float(value)
             return f"{num}"
-        except (ValueError, TypeError):
-            return str(value)
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f"Non-numeric export value: {value!r}") from exc
+
+    @staticmethod
+    def _parse_numeric(value, field_name, *, sequence=False):
+        if value is None or value == "":
+            raise ValueError(f"Missing numeric field '{field_name}'")
+        if isinstance(value, str):
+            cleaned = value.replace('±', '').strip()
+            if sequence or ',' in cleaned:
+                try:
+                    return tuple(float(part.strip()) for part in cleaned.split(','))
+                except ValueError as exc:
+                    raise ValueError(f"Invalid numeric field '{field_name}': {value!r}") from exc
+            try:
+                return float(cleaned)
+            except ValueError as exc:
+                raise ValueError(f"Invalid numeric field '{field_name}': {value!r}") from exc
+        if isinstance(value, (tuple, list)):
+            try:
+                return tuple(float(part) for part in value)
+            except (ValueError, TypeError) as exc:
+                raise ValueError(f"Invalid numeric field '{field_name}': {value!r}") from exc
+        try:
+            return float(value)
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f"Invalid numeric field '{field_name}': {value!r}") from exc
+
+    def _calibration_export_metadata(self):
+        csv_path = self.image_processor._find_fit_parameters_file()
+        if csv_path is None:
+            return "", "unavailable"
+        directory = os.path.dirname(csv_path)
+        integrity = verify_calibration_manifest(directory)
+        if integrity is None:
+            return "", "legacy-unverified"
+        manifest_path = os.path.join(directory, MANIFEST_NAME)
+        try:
+            with open(manifest_path, encoding="utf-8") as handle:
+                calibration_id = json.load(handle).get("calibration_id", "")
+        except (OSError, json.JSONDecodeError):
+            calibration_id = ""
+        artifact_results = [value for key, value in integrity.items() if key.endswith((".csv", ".npz"))]
+        status = "verified" if integrity.get("manifest") and artifact_results and all(artifact_results) else "failed"
+        return calibration_id, status
     
     def get_export_values_for_result(self, result):
         """Get numeric values from result for export.
@@ -100,41 +146,19 @@ class CSVExporter:
             dict: Dictionary with 'dose', 'std', 'avg', 'avg_unc' numeric values
         """
         # Get numeric values from result - prefer _numeric keys for consistency
-        dose_numeric = result.get('dose_numeric', result.get('dose', 0.0))
-        std_numeric = result.get('std_numeric', result.get('std_per_channel', 0.0))
+        dose_numeric = result.get('dose_numeric', result.get('dose'))
+        std_numeric = result.get('std_numeric', result.get('std_per_channel'))
         
         # Use avg_numeric which contains:
         #   - When NO CTR: Original calculated average (full precision)
         #   - When CTR active: CTR-corrected value (full precision)
-        avg_numeric = result.get('avg_numeric', result.get('avg', 0.0))
-        avg_unc_numeric = result.get('avg_unc_numeric', result.get('avg_unc', 0.0))
-        
-        # Defensive parsing: handle edge case where values might still be strings
-        if isinstance(dose_numeric, str) and dose_numeric.strip():
-            try:
-                dose_numeric = tuple(float(x.strip()) for x in dose_numeric.split(',')) if ',' in dose_numeric else float(dose_numeric)
-            except (ValueError, AttributeError):
-                dose_numeric = 0.0
-        
-        if isinstance(std_numeric, str) and std_numeric.strip():
-            try:
-                std_clean = std_numeric.replace('±', '').strip()
-                std_numeric = tuple(float(x.strip()) for x in std_clean.split(',')) if ',' in std_clean else float(std_clean)
-            except (ValueError, AttributeError):
-                std_numeric = 0.0
-        
-        # Convert to float if strings (defensive programming)
-        if isinstance(avg_numeric, str):
-            try:
-                avg_numeric = float(avg_numeric.replace('±', '').strip())
-            except (ValueError, AttributeError):
-                avg_numeric = 0.0
-        
-        if isinstance(avg_unc_numeric, str):
-            try:
-                avg_unc_numeric = float(avg_unc_numeric.replace('±', '').strip())
-            except (ValueError, AttributeError):
-                avg_unc_numeric = 0.0
+        avg_numeric = result.get('avg_numeric', result.get('avg'))
+        avg_unc_numeric = result.get('avg_unc_numeric', result.get('avg_unc'))
+
+        dose_numeric = self._parse_numeric(dose_numeric, "dose")
+        std_numeric = self._parse_numeric(std_numeric, "std")
+        avg_numeric = self._parse_numeric(avg_numeric, "average")
+        avg_unc_numeric = self._parse_numeric(avg_unc_numeric, "average_uncertainty")
         
         return {
             'dose': dose_numeric,
@@ -223,10 +247,11 @@ class CSVExporter:
             with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
                 # Define CSV columns
                 cols = [
-                    "Filename", "Date", "Film", "Circle", 
+                    "schema_version", "Filename", "Date", "Film", "Circle",
                     "doses_per_channel", "STD_doses_per_channel",
-                    "average", "SE_average", "95%confident_interval(SE)",
-                    "pixel_count", "uncertaty_calculation_method", "channel_weights"
+                    "average", "standard_uncertainty_average", "expanded_uncertainty_k1.96",
+                    "pixel_count", "uncertainty_calculation_method", "channel_weights",
+                    "calibration_id", "calibration_integrity",
                 ]
                 
                 writer = csv.writer(csvfile)
@@ -234,6 +259,7 @@ class CSVExporter:
                 
                 # Get uncertainty calculation method
                 uncertainty_method = self.image_processor.config.get("uncertainty_estimation_method", "weighted_average")
+                calibration_id, calibration_integrity = self._calibration_export_metadata()
                 
                 # Export data from all files
                 total_rows = 0
@@ -280,7 +306,7 @@ class CSVExporter:
                             se_numeric = export_values['avg_unc']
                             if isinstance(se_numeric, str):
                                 se_numeric = float(se_numeric.replace('±', '').strip())
-                            if se_numeric and se_numeric > 0:
+                            if math.isfinite(float(se_numeric)) and se_numeric >= 0:
                                 ci95_val = se_numeric * 1.96
                                 ci95_formatted = self.format_for_csv(ci95_val)
                         except (ValueError, TypeError):
@@ -294,10 +320,10 @@ class CSVExporter:
                         
                         # Create row
                         row_data = [
-                            file_name, date_to_use, film_name, circle_name,
+                            2, file_name, date_to_use, film_name, circle_name,
                             doses_formatted, std_formatted, avg_formatted, se_average_formatted,
                             ci95_formatted, result.get('pixel_count', ''), uncertainty_method,
-                            weights_str
+                            weights_str, calibration_id, calibration_integrity,
                         ]
                         
                         writer.writerow(row_data)
@@ -342,7 +368,7 @@ class CSVExporter:
                             se_numeric = export_values['avg_unc']
                             if isinstance(se_numeric, str):
                                 se_numeric = float(se_numeric.replace('±', '').strip())
-                            if se_numeric and se_numeric > 0:
+                            if math.isfinite(float(se_numeric)) and se_numeric >= 0:
                                 ci95_val = se_numeric * 1.96
                                 ci95_formatted = self.format_for_csv(ci95_val)
                         except (ValueError, TypeError):
@@ -355,10 +381,10 @@ class CSVExporter:
                             weights_str = f"R:{weights.get('R',0)*100:.0f}% G:{weights.get('G',0)*100:.0f}% B:{weights.get('B',0)*100:.0f}%"
                         
                         row_data = [
-                            current_file_name, date_to_use, film_name, circle_name,
+                            2, current_file_name, date_to_use, film_name, circle_name,
                             doses_formatted, std_formatted, avg_formatted, se_average_formatted,
                             ci95_formatted, result.get('pixel_count', ''), uncertainty_method,
-                            weights_str
+                            weights_str, calibration_id, calibration_integrity,
                         ]
                         
                         writer.writerow(row_data)

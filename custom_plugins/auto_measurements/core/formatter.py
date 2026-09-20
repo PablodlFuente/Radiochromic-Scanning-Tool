@@ -79,34 +79,34 @@ class MeasurementFormatter:
         Formatting rules (TreeView only, CSV uses full precision):
         - doses_per_channel: Always 3 decimals
         - STD_doses_per_channel: Always 3 decimals
-        - SE_average: 2 significant figures
-        - average: Same decimal places as SE_average
-        - 95%confident_interval(SE): Same decimal places as SE_average
+        - Standard uncertainty: 2 significant figures
+        - Average: same decimal places as its standard uncertainty
+        - Expanded uncertainty: k=1.96 normal approximation
         
         Args:
             dose_values: List of dose values or single value or formatted string
             sigma_values: List of sigma values or single value or formatted string  
             avg_value: Average value (float)
-            avg_unc_value: Average uncertainty/SE value (float)
-            sig: Number of significant figures for SE (default 2)
+            avg_unc_value: Standard uncertainty of the average (float)
+            sig: Number of significant figures for uncertainty (default 2)
             
         Returns:
             Tuple of (dose_str, sigma_str, avg_str, avg_unc_str, ci95_str)
         """
-        # Format SE with 2 significant figures
+        # Format standard uncertainty with 2 significant figures
         unc_fmt = MeasurementFormatter.format_significant(avg_unc_value, sig)
         
-        # Count decimals in SE to match for avg and CI95
+        # Count decimals in uncertainty to align value and expanded uncertainty
         if "." in unc_fmt:
             decimals = len(unc_fmt.split(".")[1])
         else:
             decimals = 0
         
-        # Format avg with same decimals as SE
+        # Format average with the same decimals
         avg_str = f"{avg_value:.{decimals}f}"
         avg_unc_str = f"±{unc_fmt}"
         
-        # Calculate and format 95% CI with same decimals as SE
+        # Expanded uncertainty using a k=1.96 normal approximation
         ci95_value = avg_unc_value * 1.96
         ci95_str = f"±{ci95_value:.{decimals}f}"
         

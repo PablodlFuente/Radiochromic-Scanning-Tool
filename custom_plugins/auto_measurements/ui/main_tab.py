@@ -491,8 +491,8 @@ class AutoMeasurementsTab(ttk.Frame):
         self.tree.heading("dose", text="Dose")
         self.tree.heading("sigma", text="STD")
         self.tree.heading("avg", text="Average")
-        self.tree.heading("avg_unc", text="SE of Avg")
-        self.tree.heading("ci95", text="95% CI")
+        self.tree.heading("avg_unc", text="Std. uncertainty")
+        self.tree.heading("ci95", text="Expanded U (k=1.96)")
         
         # Column widths
         self.tree.column("#0", width=120, anchor=tk.W)
