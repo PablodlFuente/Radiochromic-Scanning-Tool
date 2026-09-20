@@ -23,6 +23,7 @@ import cv2
 from PIL import Image
 import logging
 from app.utils.image_io import read_image_unchanged, write_tiff_unchanged
+from app.paths import CALIBRATION_ROOT, CONFIG_FILE
 
 # For matplotlib plots
 import matplotlib.pyplot as plt
@@ -75,7 +76,7 @@ class ScannerCalibrationWizard(tk.Toplevel):
 
         # Data directory for calibration outputs - use configured folder from settings
         calibration_folder = self._get_calibration_folder()
-        base_dir = os.path.join(os.getcwd(), "calibration_data")
+        base_dir = os.fspath(CALIBRATION_ROOT)
         if calibration_folder != "default":
             self._data_dir = os.path.join(base_dir, calibration_folder)
         else:
@@ -109,7 +110,7 @@ class ScannerCalibrationWizard(tk.Toplevel):
         
         # Fallback: read from disk
         import json
-        config_file = os.path.join(os.getcwd(), "rc_config.json")
+        config_file = os.fspath(CONFIG_FILE)
         try:
             if os.path.exists(config_file):
                 with open(config_file, "r") as f:

@@ -71,6 +71,15 @@ def setup(main_window, notebook, image_processor):
     return _INSTANCE.frame
 
 
+def teardown():
+    """Clear overlays and references when the plugin is disabled."""
+    global _INSTANCE, _CENTROID_MARKERS, _ISOBAR_CONTOURS, _SHOW_ISOBARS
+    _INSTANCE = None
+    _CENTROID_MARKERS = []
+    _ISOBAR_CONTOURS = []
+    _SHOW_ISOBARS = False
+
+
 def process(image):
     """Draw centroid markers and optional isobars on the image overlay."""
     global _CENTROID_MARKERS, _ISOBAR_CONTOURS, _SHOW_ISOBARS

@@ -8,9 +8,33 @@ application configuration.
 import json
 import os
 import logging
+from copy import deepcopy
 from typing import Dict, Any, Optional, Union
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_CONFIG: Dict[str, Any] = {
+    "remove_background": False,
+    "negative_mode": False,
+    "recent_files": [],
+    "colormap": "viridis",
+    "use_gpu": False,
+    "gpu_force_enabled": False,
+    "use_multithreading": True,
+    "num_threads": os.cpu_count() or 4,
+    "auto_measure": False,
+    "max_memory_percent": 75,
+    "max_cache_mb": 512,
+    "log_level": "INFO",
+    "detailed_logging": False,
+    "uncertainty_estimation_method": "dersimonian_laird",
+    "calibration_folder": "default",
+    "check_updates_on_startup": True,
+    "notebook_tab_order": [],
+    "allow_calibration_extrapolation": False,
+    "calibration_extrapolation_margin_fraction": 0.0,
+    "allow_flat_field_resize": False,
+}
 
 class ConfigModel:
     """Configuration model for the Radiochromic Film Analyzer."""
@@ -30,26 +54,9 @@ class ConfigModel:
     
     def _set_defaults(self) -> None:
         """Set default values for missing configuration items."""
-        defaults: Dict[str, Any] = {
-            "remove_background": False,
-            "negative_mode": False,
-            "recent_files": [],
-            "colormap": "viridis",
-            "use_gpu": False,
-            "gpu_force_enabled": False,
-            "use_multithreading": True,
-            "num_threads": os.cpu_count() or 4,
-            "auto_measure": False,
-            "max_memory_percent": 75,
-            "max_cache_mb": 512,
-            "log_level": "INFO",
-            "detailed_logging": False,
-            "uncertainty_estimation_method": "dersimonian_laird"
-        }
-        
-        for key, value in defaults.items():
+        for key, value in DEFAULT_CONFIG.items():
             if key not in self.data:
-                self.data[key] = value
+                self.data[key] = deepcopy(value)
     
     def get(self, key: str, default: Any = None) -> Any:
         """Get a configuration value.

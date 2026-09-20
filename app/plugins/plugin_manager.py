@@ -54,6 +54,7 @@ class PluginManager:
     # ------------------------------------------------------------------
     def scan_plugins(self) -> None:
         """Discover and import all .py files and packages in *plugins_dir*."""
+        self.shutdown()
         self._plugins.clear()
         self._active.clear()
 
@@ -152,11 +153,24 @@ class PluginManager:
         if name not in self._tabs or self._notebook is None:
             return
         frame = self._tabs.pop(name)
+        mod = self._plugins.get(name)
+        if mod is not None:
+            hook = getattr(mod, "teardown", None) or getattr(mod, "cleanup", None)
+            if hook:
+                try:
+                    hook()
+                except Exception as exc:
+                    logger.error("Plugin '%s' teardown failed: %s", name, exc, exc_info=True)
         try:
             index = self._notebook.index(frame)
             self._notebook.forget(index)
         except Exception:
             pass
+
+    def shutdown(self):
+        """Disable every plugin UI and release its runtime resources."""
+        for name in list(self._tabs):
+            self._disable_plugin_ui(name)
 
     def set_active(self, name: str, active: bool) -> None:
         if name in self._active:

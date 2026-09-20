@@ -8,6 +8,7 @@ such as loading, saving, and managing recent files.
 import os
 import json
 import logging
+from app.paths import RECENT_FILES_FILE
 from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -18,7 +19,7 @@ class FileManager:
     def __init__(self, config):
         """Initialize the file manager."""
         self.config = config
-        self.recent_files_path = "recent_files.json"
+        self.recent_files_path = os.fspath(RECENT_FILES_FILE)
         self.max_recent_files = 5  # Changed from 10 to 5 as requested
         
         # Load recent files

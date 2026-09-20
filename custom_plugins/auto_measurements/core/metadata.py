@@ -127,19 +127,21 @@ class MetadataExtractor:
             import json
             
             if platform.system() == "Windows":
-                ps_command = f'''
-                $file = Get-Item "{img_path}"
-                $props = @{{}}
-                $file.PSObject.Properties | ForEach-Object {{
-                    if ($_.Value -ne $null) {{
+                ps_command = '''
+                $file = Get-Item -LiteralPath $env:RADIOCHROMIC_METADATA_PATH
+                $props = @{}
+                $file.PSObject.Properties | ForEach-Object {
+                    if ($_.Value -ne $null) {
                         $props[$_.Name] = $_.Value.ToString()
-                    }}
-                }}
+                    }
+                }
                 $props | ConvertTo-Json
                 '''
-                
+                command_environment = os.environ.copy()
+                command_environment["RADIOCHROMIC_METADATA_PATH"] = os.path.abspath(img_path)
                 result = subprocess.run(['powershell', '-Command', ps_command], 
-                                      capture_output=True, text=True, timeout=10)
+                                      capture_output=True, text=True, timeout=10,
+                                      env=command_environment)
                 if result.returncode == 0 and result.stdout.strip():
                     try:
                         windows_props = json.loads(result.stdout)

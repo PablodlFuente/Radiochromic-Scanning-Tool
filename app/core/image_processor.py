@@ -27,6 +27,7 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 from typing import Optional
 from app.utils.image_io import read_image_unchanged, storage_bit_depth
+from app.paths import CALIBRATION_ROOT
 from app.core.dosimetry import (
     CHANNELS,
     combine_channel_estimates,
@@ -1893,18 +1894,10 @@ class ImageProcessor:
         """
         calibration_folder = self.config.get("calibration_folder", "default")
         
-        if calibration_folder != "default":
-            # Strict search: only in the selected subfolder
-            candidate_dirs = [
-                os.path.join(os.getcwd(), "calibration_data", calibration_folder),
-                os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "calibration_data", calibration_folder),
-            ]
-        else:
-            # Default: search in root calibration_data folder
-            candidate_dirs = [
-                os.path.join(os.getcwd(), "calibration_data"),
-                os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "calibration_data"),
-            ]
+        candidate_dirs = [os.fspath(
+            CALIBRATION_ROOT / calibration_folder
+            if calibration_folder != "default" else CALIBRATION_ROOT
+        )]
 
         for d in candidate_dirs:
             path = os.path.join(d, "fit_parameters.csv")
@@ -1926,18 +1919,10 @@ class ImageProcessor:
         """
         calibration_folder = self.config.get("calibration_folder", "default")
         
-        if calibration_folder != "default":
-            # Strict search: only in the selected subfolder
-            candidate_dirs = [
-                os.path.join(os.getcwd(), "calibration_data", calibration_folder),
-                os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "calibration_data", calibration_folder),
-            ]
-        else:
-            # Default: search in root calibration_data folder
-            candidate_dirs = [
-                os.path.join(os.getcwd(), "calibration_data"),
-                os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "calibration_data"),
-            ]
+        candidate_dirs = [os.fspath(
+            CALIBRATION_ROOT / calibration_folder
+            if calibration_folder != "default" else CALIBRATION_ROOT
+        )]
 
         for d in candidate_dirs:
             path = os.path.join(d, "field_flattening.npz")

@@ -1946,13 +1946,10 @@ class MainWindow:
         else:
             messagebox.showerror("Plugin error", "Failed to load plugin. Check logs for details.")
 
-    def get_config(self):
-        """Get the current configuration."""
-        # Update config with any UI changes
-        return self.app_config
-
     def cleanup(self):
         """Clean up resources."""
         # Clean up image panel resources
         if hasattr(self, 'image_panel'):
             self.image_panel.cleanup()
+        from app.plugins.plugin_manager import plugin_manager
+        plugin_manager.shutdown()

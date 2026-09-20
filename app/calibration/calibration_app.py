@@ -15,6 +15,7 @@ from pathlib import Path
 from scipy.optimize import curve_fit
 from scipy.interpolate import CubicSpline
 from app.utils.image_io import read_image_unchanged, storage_bit_depth
+from app.paths import CALIBRATION_ROOT
 
 class CalibrationApp:
     def __init__(self, root, data_dir=None):
@@ -71,7 +72,7 @@ class CalibrationApp:
         self.is_panning = False # Flag to indicate if panning is active
         # self.canvas_mode_var = tk.StringVar(value="pan") # Removed, ROI drawing is always active
         self.measured_data_labels = {} # To hold labels for displaying ROI stats
-        self.data_dir = Path(data_dir or os.getcwd()).resolve()
+        self.data_dir = Path(data_dir or CALIBRATION_ROOT).resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.csv_filename = str(self.data_dir / "calibration_data.csv")
         self._initialize_csv_file()

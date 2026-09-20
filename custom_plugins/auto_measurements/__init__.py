@@ -25,6 +25,13 @@ def setup(main_window, notebook, image_processor):
     return _AUTO_MEASUREMENTS_INSTANCE.frame
 
 
+def teardown():
+    """Release module-level state when the plugin is disabled or reloaded."""
+    global _AUTO_MEASUREMENTS_INSTANCE, _OVERLAY
+    _AUTO_MEASUREMENTS_INSTANCE = None
+    _OVERLAY = None
+
+
 _OVERLAY: dict | None = None  # Holds last detection for drawing
 
 # Keys used in _OVERLAY:
@@ -259,4 +266,4 @@ def on_config_change(config, image_processor):
         logging.error(f"Error refreshing auto-measurements after config change: {e}", exc_info=True)
 
 
-__all__ = ['TAB_TITLE', 'setup', 'process', 'on_config_change']
+__all__ = ['TAB_TITLE', 'setup', 'teardown', 'process', 'on_config_change']
