@@ -1387,9 +1387,10 @@ class AutoMeasurementsTab(ttk.Frame):
         
         # Parse values from TreeView: (dose, sigma, avg, avg_unc, ci95)
         try:
-            avg_value = float(tree_values[2]) if tree_values[2] else 0.0
+            avg_value = float(tree_values[2])
         except (ValueError, IndexError):
-            avg_value = 0.0
+            messagebox.showwarning("Global CTR", "The selected circle has no valid numeric measurement.")
+            return
         
         # Build circle_data from TreeView values
         circle_data = {
@@ -1550,13 +1551,21 @@ class AutoMeasurementsTab(ttk.Frame):
         global_ctr_item_id = self.global_ctr.get("item_id")
         
         # Get CTR average value and uncertainty
-        ctr_avg = float(global_ctr_data.get("avg_original", global_ctr_data.get("avg_numeric", 0)))
+        try:
+            ctr_avg = float(global_ctr_data.get("avg_original", global_ctr_data.get("avg_numeric")))
+        except (ValueError, TypeError):
+            logging.warning("Global CTR subtraction skipped: invalid control value")
+            return
         # Parse uncertainty from string if needed
         ctr_unc_str = global_ctr_data.get("avg_unc_numeric", global_ctr_data.get("avg_unc", "nan"))
         try:
             ctr_unc = float(str(ctr_unc_str).replace("±", "").strip())
         except (ValueError, TypeError):
-            ctr_unc = 0.0
+            logging.warning("Global CTR subtraction skipped: invalid control uncertainty")
+            return
+        if not (np.isfinite(ctr_avg) and np.isfinite(ctr_unc) and ctr_unc >= 0):
+            logging.warning("Global CTR subtraction skipped: non-finite control measurement")
+            return
         
         # Don't skip if ctr_avg is 0 - we still want to apply the subtraction
         # (user may have a zero-dose control)
@@ -3297,6 +3306,7 @@ class AutoMeasurementsTab(ttk.Frame):
                 # For single channel, use combined uncertainty values
                 avg_val = float(rgb_mean)
                 avg_unc = float(rgb_mean_std)
+                avg_std = float(std)
             
             # Format for TreeView display using formatter
             dose_str, std_str, avg_str, avg_unc_str, ci95_str = self.formatter.format_for_treeview(
@@ -3307,10 +3317,12 @@ class AutoMeasurementsTab(ttk.Frame):
                 sig=2
             )
         else:
-            dose_str = unc_str = avg_str = avg_unc_str = ci95_str = ""
-            pixel_count = 0
-            avg_val = avg_unc = 0.0
-            channel_weights = None
+            logging.warning("[_insert_circle] Circle at (%s, %s) rejected: measurement failed", cx, cy)
+            messagebox.showwarning(
+                "Add Circle",
+                "No se pudo obtener una medida válida para esta región. El círculo no se ha guardado.",
+            )
+            return
 
         circ_id = self.tree.insert(parent_id, "end", text=circ_name, 
                                  values=(dose_str, std_str, avg_str, avg_unc_str, ci95_str))
@@ -3349,21 +3361,21 @@ class AutoMeasurementsTab(ttk.Frame):
         self.results.append({
             "film": film_name,
             "circle": circ_name,
-            "dose": dose if res else 0.0,               # Raw numeric dose (NOT formatted string)
-            "std_per_channel": std if res else 0.0,     # Raw numeric STD per channel (NOT formatted string)
-            "unc": unc if res else 0.0,                 # Raw numeric SE/Uncertainty per channel
+            "dose": dose,                              # Raw numeric dose (NOT formatted string)
+            "std_per_channel": std,                    # Raw numeric STD per channel (NOT formatted string)
+            "unc": unc,                                # Raw numeric SE/Uncertainty per channel
             "avg": avg_val,                             # Store numeric value (not formatted string)
             "avg_unc": avg_unc,                         # Store numeric value directly
-            "std": avg_std if res else 0.0,             # Raw numeric average std
+            "std": avg_std,                            # Raw numeric average std
             "pixel_count": pixel_count,
             "x": cx,
             "y": cy,
             # Store raw numeric values for CSV export (redundant but kept for compatibility)
-            "dose_numeric": dose if res else 0.0,
-            "std_numeric": std if res else 0.0,
-            "unc_numeric": unc if res else 0.0,
+            "dose_numeric": dose,
+            "std_numeric": std,
+            "unc_numeric": unc,
             "avg_numeric": avg_val,
-            "std_avg_numeric": avg_std if res else 0.0,
+            "std_avg_numeric": avg_std,
             "avg_unc_numeric": avg_unc,                 # Raw SE/uncertainty value (float)
             "channel_weights": channel_weights,          # Sensitivity weights {'R': w, 'G': w, 'B': w} or None
         })
@@ -3425,10 +3437,16 @@ class AutoMeasurementsTab(ttk.Frame):
             circle_data = []
             for circle_id in circles:
                 value_str = self.tree.set(circle_id, col)
-                value = self._clean_numeric_string(value_str) if value_str else 0.0
+                try:
+                    value = self._clean_numeric_string(value_str) if value_str else float("nan")
+                except ValueError:
+                    value = float("nan")
                 circle_data.append((circle_id, value))
             
-            circle_data.sort(key=lambda item: item[1], reverse=reverse)
+            valid_data = [item for item in circle_data if np.isfinite(item[1])]
+            invalid_data = [item for item in circle_data if not np.isfinite(item[1])]
+            valid_data.sort(key=lambda item: item[1], reverse=reverse)
+            circle_data = valid_data + invalid_data
             
             for index, (circle_id, _) in enumerate(circle_data):
                 self.tree.move(circle_id, film_id, index)

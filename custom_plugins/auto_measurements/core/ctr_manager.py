@@ -211,18 +211,28 @@ class CTRManager:
             ctr_result = results_lookup.get((film_name, ctr_circle_name))
             
             if ctr_result:
-                ctr_avg = ctr_result.get('avg_original', ctr_result.get('avg_numeric', ctr_result.get('avg', 0)))
-                ctr_unc = ctr_result.get('avg_unc_original', ctr_result.get('avg_unc_numeric', ctr_result.get('avg_unc', 0)))
+                ctr_avg = ctr_result.get('avg_original', ctr_result.get('avg_numeric', ctr_result.get('avg')))
+                ctr_unc = ctr_result.get('avg_unc_original', ctr_result.get('avg_unc_numeric', ctr_result.get('avg_unc')))
             else:
-                ctr_avg = self.formatter.clean_numeric_string(ctr_orig_data["avg"])
-                ctr_unc = self.formatter.clean_numeric_string(ctr_orig_data["avg_unc"])
+                try:
+                    ctr_avg = self.formatter.clean_numeric_string(ctr_orig_data["avg"])
+                    ctr_unc = self.formatter.clean_numeric_string(ctr_orig_data["avg_unc"])
+                except ValueError:
+                    logging.warning("Ignoring CTR %s with invalid numeric data", ctr_circle_name)
+                    continue
             
-            if ctr_avg is not None:
-                ctr_values.append(float(ctr_avg))
-                ctr_uncertainties.append(float(ctr_unc) if ctr_unc else 0.0)
+            try:
+                ctr_avg = float(ctr_avg)
+                ctr_unc = float(ctr_unc)
+            except (TypeError, ValueError):
+                logging.warning("Ignoring CTR %s with missing numeric data", ctr_circle_name)
+                continue
+            if np.isfinite(ctr_avg) and np.isfinite(ctr_unc) and ctr_unc >= 0:
+                ctr_values.append(ctr_avg)
+                ctr_uncertainties.append(ctr_unc)
         
         if not ctr_values:
-            return 0.0, 0.0
+            return float("nan"), float("nan")
         
         if len(ctr_values) == 1:
             return ctr_values[0], ctr_uncertainties[0]
@@ -257,7 +267,7 @@ class CTRManager:
             # Compute averaged CTR value from all CTR circles in this film
             ctr_avg, ctr_unc = self._compute_averaged_ctr(film_name, ctr_ids, results_lookup)
             
-            if ctr_avg == 0.0 and ctr_unc == 0.0:
+            if not (np.isfinite(ctr_avg) and np.isfinite(ctr_unc)):
                 continue
             
             # Find parent film from first valid CTR
@@ -288,10 +298,21 @@ class CTRManager:
                     orig_avg = result.get('avg_original', result.get('avg_numeric', result.get('avg')))
                     orig_unc = result.get('avg_unc_original', result.get('avg_unc_numeric', result.get('avg_unc')))
                 else:
-                    orig_avg = self.formatter.clean_numeric_string(orig_data["avg"])
-                    orig_unc = self.formatter.clean_numeric_string(orig_data["avg_unc"])
+                    try:
+                        orig_avg = self.formatter.clean_numeric_string(orig_data["avg"])
+                        orig_unc = self.formatter.clean_numeric_string(orig_data["avg_unc"])
+                    except ValueError:
+                        logging.warning("Skipping CTR subtraction for %s: invalid measurement", circle_name)
+                        continue
                 
-                if orig_avg == 0.0 and orig_unc == 0.0:
+                try:
+                    orig_avg = float(orig_avg)
+                    orig_unc = float(orig_unc)
+                except (TypeError, ValueError):
+                    logging.warning("Skipping CTR subtraction for %s: invalid measurement", circle_name)
+                    continue
+                if not (np.isfinite(orig_avg) and np.isfinite(orig_unc) and orig_unc >= 0):
+                    logging.warning("Skipping CTR subtraction for %s: non-finite measurement", circle_name)
                     continue
                 
                 # All circles (including CTRs) subtract the averaged CTR value
@@ -365,8 +386,8 @@ class CTRManager:
                     avg_str = orig_data["avg"]
                     avg_unc_str = orig_data["avg_unc"]
                     ci95_str = ""
-                    avg_val = 0.0
-                    avg_unc_val = 0.0
+                    avg_val = float("nan")
+                    avg_unc_val = float("nan")
                 
                 # Update TreeView
                 self.tree.item(item_id, values=(

@@ -6,6 +6,7 @@ from custom_plugins.auto_measurements.core.ctr_manager import (
     subtract_control,
     summarize_controls,
 )
+from custom_plugins.auto_measurements.core.formatter import MeasurementFormatter
 
 
 class ControlSubtractionTests(unittest.TestCase):
@@ -37,6 +38,13 @@ class ControlSubtractionTests(unittest.TestCase):
         propagated = np.sqrt(0.2**2 + 0.2**2) / 2
         observed = np.std([0.1, 0.3], ddof=1) / np.sqrt(2)
         self.assertAlmostEqual(uncertainty, max(propagated, observed))
+
+    def test_invalid_display_value_is_not_converted_to_zero(self):
+        with self.assertRaises(ValueError):
+            MeasurementFormatter.clean_numeric_string("not measured")
+
+    def test_nonfinite_display_value_remains_explicit(self):
+        self.assertEqual(MeasurementFormatter.format_significant(float("nan")), "nan")
 
 
 if __name__ == "__main__":

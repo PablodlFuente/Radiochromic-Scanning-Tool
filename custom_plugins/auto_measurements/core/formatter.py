@@ -15,7 +15,9 @@ class MeasurementFormatter:
     @staticmethod
     def format_significant(value: float, sig: int = 2) -> str:
         """Format number with the given significant figures."""
-        if value == 0 or not np.isfinite(value):
+        if not np.isfinite(value):
+            return "nan"
+        if value == 0:
             return "0"
         return f"{value:.{sig}g}"
     
@@ -35,8 +37,8 @@ class MeasurementFormatter:
                 clean_str = clean_str.split(",")[0].strip()
             
             return float(clean_str)
-        except (ValueError, TypeError, AttributeError):
-            return 0.0
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise ValueError(f"Invalid numeric measurement: {value_str!r}") from exc
     
     @staticmethod
     def format_value_uncertainty(value: float, unc: float, sig: int = 2, 
