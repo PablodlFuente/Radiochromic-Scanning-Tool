@@ -1,4 +1,8 @@
+import csv
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
@@ -87,6 +91,44 @@ class CalibrationMathTests(unittest.TestCase):
         self.assertEqual(means[0], 2.0)
         self.assertEqual(deviations[0], 1.0)
         self.assertAlmostEqual(uncertainties[0], 1.0 / np.sqrt(2))
+
+    def test_missing_fit_uncertainty_remains_unknown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fit_path = Path(directory) / "fit_parameters.csv"
+            with fit_path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=["Channel", "a", "b", "c", "dose_min", "dose_max", "bit_depth"],
+                )
+                writer.writeheader()
+                for channel in ("R", "G", "B"):
+                    writer.writerow({
+                        "Channel": channel, "a": 0, "b": 100, "c": -1,
+                        "dose_min": 0, "dose_max": 10, "bit_depth": 8,
+                    })
+
+            processor = ImageProcessor.__new__(ImageProcessor)
+            processor.current_image = np.full((2, 2, 3), 50, dtype=np.uint8)
+            processor.original_image = processor.current_image.copy()
+            processor.flattened_image = None
+            processor.flat_applied = False
+            processor.image_max_value = 255
+            processor.config = {
+                "allow_calibration_extrapolation": False,
+                "calibration_extrapolation_margin_fraction": 0.0,
+            }
+            processor._find_fit_parameters_file = lambda: str(fit_path)
+            processor._compute_integral_images = lambda: None
+
+            with patch("app.core.image_processor.verify_calibration_manifest", return_value=None):
+                self.assertTrue(processor.apply_calibration())
+
+        self.assertTrue(np.isnan(processor.calibration_param_covariances["R"]).all())
+        _, _, uncertainties = processor._summarize_roi_pixels(
+            processor.current_image.reshape(-1, 3),
+            processor.calibration_source_image.reshape(-1, 3),
+        )
+        self.assertTrue(np.isnan(uncertainties).all())
 
 
 if __name__ == "__main__":

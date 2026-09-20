@@ -1435,11 +1435,15 @@ class ImageProcessor:
                     ])
                     if not np.all(np.isfinite(covariance)):
                         sigmas = np.array([
-                            parse_float(row, "σa", parse_float(row, "sigma_a", 0.0)),
-                            parse_float(row, "σb", parse_float(row, "sigma_b", 0.0)),
-                            parse_float(row, "σc", parse_float(row, "sigma_c", 0.0)),
+                            parse_float(row, "σa", parse_float(row, "sigma_a")),
+                            parse_float(row, "σb", parse_float(row, "sigma_b")),
+                            parse_float(row, "σc", parse_float(row, "sigma_c")),
                         ])
-                        covariance = np.diag(np.square(sigmas))
+                        covariance = (
+                            np.diag(np.square(sigmas))
+                            if np.all(np.isfinite(sigmas)) and np.all(sigmas >= 0)
+                            else np.full((3, 3), np.nan)
+                        )
                     covariances[channel] = covariance
                     low, high = parse_float(row, "dose_min"), parse_float(row, "dose_max")
                     if np.isfinite(low) and np.isfinite(high):
