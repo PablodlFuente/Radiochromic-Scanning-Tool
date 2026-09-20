@@ -35,6 +35,7 @@ class ImagePanel:
         self.current_image_tk = None
         self.is_adjustment = False  # Flag to indicate if this is an adjustment or initial load
         self._display_request_id = 0
+        self._ui_queue = queue.Queue()
         
         # Measurement display
         self.measurement_visible = False
@@ -76,6 +77,7 @@ class ImagePanel:
         
         # Create UI
         self._create_ui()
+        self._ui_poll_id = self.canvas.after(30, self._drain_ui_queue)
         
         # Set progress callback
         self.image_processor.set_progress_callback(self._on_progress_update)
@@ -85,6 +87,19 @@ class ImagePanel:
         
         logger.info("Image panel initialized")
     
+    def _drain_ui_queue(self):
+        """Only this Tk-thread callback executes work submitted by workers."""
+        try:
+            for _ in range(100):
+                callback = self._ui_queue.get_nowait()
+                callback()
+        except queue.Empty:
+            pass
+        except Exception:
+            logger.exception("UI callback failed")
+        if self.canvas.winfo_exists():
+            self._ui_poll_id = self.canvas.after(30, self._drain_ui_queue)
+
     def _start_measurement_thread(self):
         """Start the measurement worker thread."""
         self.measurement_active = True
@@ -124,13 +139,18 @@ class ImagePanel:
                 self.current_task_id = task_id
                 
                 # Perform the measurement
-                results = self.image_processor.measure_area(x, y)
+                with self.image_processor.processing_lock:
+                    results = self.image_processor.measure_area(x, y)
+                    revision = self.image_processor.state_revision
                 
                 # Update the UI on the main thread
                 if results:
                     # Crear un hilo separado para el procesamiento del histograma
                     if self.measurement_callback:
-                        self.canvas.after(0, lambda r=results: self._update_measurement_results(r))
+                        self._ui_queue.put(lambda r=results, rev=revision, tid=task_id:
+                            self._update_measurement_results(r)
+                            if rev == self.image_processor.state_revision and tid == self.current_task_id
+                            else None)
                         
                         # Procesar el histograma en un hilo separado si tenemos datos crudos
                         if hasattr(self.image_processor, 'last_measurement_raw_data') and self.image_processor.last_measurement_raw_data is not None:
@@ -166,7 +186,7 @@ class ImagePanel:
         try:
             # Aquí se realizaría cualquier procesamiento pesado relacionado con el histograma
             # Cuando termine, programamos la actualización del histograma en el hilo principal
-            self.canvas.after(0, lambda: self._update_histogram_from_data(raw_data))
+            self._ui_queue.put(lambda: self._update_histogram_from_data(raw_data))
         except Exception as e:
             logger.error(f"Error processing histogram data: {str(e)}", exc_info=True)
 
@@ -219,7 +239,7 @@ class ImagePanel:
         self.zoom_percentage.pack(side=tk.LEFT, padx=5)
         
         # Binning control
-        ttk.Label(self.controls_frame, text="Binning:").pack(side=tk.LEFT, padx=(20, 5))
+        ttk.Label(self.controls_frame, text="Preview binning:").pack(side=tk.LEFT, padx=(20, 5))
         
         # Binning dropdown
         self.binning_var = tk.StringVar(value="1x1")
@@ -407,7 +427,7 @@ class ImagePanel:
     def _on_progress_update(self, operation, progress, status=None):
         """Handle progress updates from the image processor."""
         # Schedule UI update on the main thread
-        self.canvas.after(0, lambda: self._update_progress_ui(operation, progress, status))
+        self._ui_queue.put(lambda: self._update_progress_ui(operation, progress, status))
     
     def _update_progress_ui(self, operation, progress, status=None):
         """Update the progress UI on the main thread."""
@@ -493,11 +513,11 @@ class ImagePanel:
             self.image_processor.set_binning(binning)
             
             # Schedule UI update on the main thread
-            self.canvas.after(0, lambda: self._after_binning_applied())
+            self._ui_queue.put(self._after_binning_applied)
         except Exception as e:
             logger.error(f"Error applying binning: {str(e)}", exc_info=True)
             # Hide binning status on error
-            self.canvas.after(0, self._hide_status_frame)
+            self._ui_queue.put(self._hide_status_frame)
     
     def _after_binning_applied(self):
         """Handle UI updates after binning is applied."""
@@ -541,7 +561,9 @@ class ImagePanel:
         try:
             # Get the processed image
             logger.debug("Getting display image from image processor")
-            pil_image, width, height = self.image_processor.get_display_image()
+            with self.image_processor.processing_lock:
+                pil_image, width, height = self.image_processor.get_display_image()
+                revision = self.image_processor.state_revision
             
             if pil_image is None:
                 logger.error("Image processor returned None for display image")
@@ -549,14 +571,12 @@ class ImagePanel:
                 logger.debug(f"Got display image with dimensions: {width}x{height}")
             
             # Schedule UI update on the main thread
-            self.canvas.after(
-                0,
-                lambda: self._update_canvas(pil_image, width, height, request_id),
-            )
+            self._ui_queue.put(lambda: self._update_canvas(pil_image, width, height, request_id)
+                               if revision == self.image_processor.state_revision else None)
         except Exception as e:
             logger.error(f"Error processing image: {str(e)}", exc_info=True)
             # Hide loading indicator on error
-            self.canvas.after(0, self._hide_loading)
+            self._ui_queue.put(self._hide_loading)
     
     def _update_canvas(self, pil_image, width, height, request_id):
         """Update the canvas with the processed image."""
@@ -1070,6 +1090,7 @@ class ImagePanel:
 
     def cleanup(self):
         """Clean up resources."""
+        self.canvas.after_cancel(self._ui_poll_id)
         self._stop_measurement_thread()
     
     def _clear_measurement(self):

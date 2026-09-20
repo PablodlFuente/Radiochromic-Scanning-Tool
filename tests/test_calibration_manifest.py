@@ -11,6 +11,25 @@ from app.core.calibration_manifest import (
 
 
 class CalibrationManifestTests(unittest.TestCase):
+    def test_changing_flat_requires_a_matching_dose_refit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "fit_parameters.csv").write_text("fit", encoding="utf-8")
+            flat = root / "field_flattening.npz"
+            flat.write_bytes(b"first flat")
+            update_calibration_manifest(root, "dose_calibration", {})
+            flat.write_bytes(b"different flat")
+            update_calibration_manifest(root, "field_flattening", {})
+            verification = verify_calibration_manifest(root)
+            self.assertTrue(verification["field_flattening.npz"])
+            self.assertFalse(verification["dose_flat_consistent"])
+
+    def test_invalid_manifest_shape_is_reported_instead_of_crashing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "calibration_manifest.json"
+            path.write_text("[]", encoding="utf-8")
+            self.assertFalse(verify_calibration_manifest(directory)["manifest"])
+
     def test_manifest_records_artifacts_sources_and_stable_identity(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

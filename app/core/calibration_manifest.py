@@ -68,6 +68,8 @@ def update_calibration_manifest(data_dir, section: str, details: dict, source_pa
             }
 
     manifest[section] = {**details, "sources": sources}
+    if section == "dose_calibration":
+        manifest[section]["flat_sha256"] = artifacts.get("field_flattening.npz", {}).get("sha256")
     manifest["artifacts"] = artifacts
     manifest["software"] = {
         "git_commit": _git_commit(),
@@ -104,10 +106,21 @@ def verify_calibration_manifest(data_dir):
         manifest = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return {"manifest": False, "error": str(exc)}
-    results = {"manifest": True, "calibration_id": manifest.get("calibration_id")}
-    for name, record in manifest.get("artifacts", {}).items():
-        artifact = directory / name
-        results[name] = bool(
-            artifact.is_file() and sha256_file(artifact) == record.get("sha256")
-        )
-    return results
+    try:
+        artifacts = manifest["artifacts"]
+        if not isinstance(artifacts, dict) or not artifacts or any(name not in ARTIFACT_NAMES for name in artifacts):
+            raise ValueError("Invalid artifact inventory")
+        identity = hashlib.sha256(json.dumps(artifacts, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        if identity != manifest.get("calibration_id"):
+            raise ValueError("Calibration identity does not match artifact inventory")
+        results = {"manifest": True, "calibration_id": identity}
+        for name, record in artifacts.items():
+            artifact = directory / name
+            results[name] = bool(artifact.is_file() and sha256_file(artifact) == record["sha256"])
+        dose = manifest.get("dose_calibration", {})
+        if "flat_sha256" in dose:
+            results["requires_flat"] = dose["flat_sha256"] is not None
+            results["dose_flat_consistent"] = dose["flat_sha256"] == artifacts.get("field_flattening.npz", {}).get("sha256")
+        return results
+    except (KeyError, TypeError, AttributeError, ValueError, OSError) as exc:
+        return {"manifest": False, "error": str(exc)}

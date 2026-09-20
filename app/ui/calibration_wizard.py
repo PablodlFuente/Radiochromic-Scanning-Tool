@@ -414,7 +414,7 @@ Click "Next" to begin the calibration process."""
                     img_array = np.stack([img_array] * 3, axis=-1)
                 elif len(img_array.shape) == 3 and img_array.shape[2] == 4:
                     # RGBA - drop alpha
-                    img_array = img_array[:, :, :3]
+                    img_array = cv2.cvtColor(img_array, cv2.COLOR_BGRA2RGB)
                 elif len(img_array.shape) != 3 or img_array.shape[2] != 3:
                     messagebox.showwarning("Load Error", 
                         f"Image format not supported: {os.path.basename(filepath)}")
@@ -422,6 +422,8 @@ Click "Next" to begin the calibration process."""
 
                 # Validate: all images must have same shape
                 if self.blank_images:
+                    if img_array.dtype != self.blank_images[0].dtype:
+                        raise ValueError("All blank scans must have the same storage bit depth.")
                     if img_array.shape != self.blank_images[0].shape:
                         messagebox.showwarning("Load Error",
                             f"Image '{os.path.basename(filepath)}' has different dimensions.\n"
@@ -431,6 +433,9 @@ Click "Next" to begin the calibration process."""
 
                 self.blank_images.append(img_array)
                 self.blank_filenames.append(os.path.basename(filepath))
+                if not hasattr(self, "blank_source_paths"):
+                    self.blank_source_paths = []
+                self.blank_source_paths.append(filepath)
                 self.blank_listbox.insert(tk.END, os.path.basename(filepath))
 
             except Exception as e:
@@ -443,6 +448,7 @@ Click "Next" to begin the calibration process."""
         """Clear all loaded blank scans."""
         self.blank_images.clear()
         self.blank_filenames.clear()
+        self.blank_source_paths = []
         self.blank_source_dir = None
         self.blank_listbox.delete(0, tk.END)
         self._update_blank_scan_ui()
@@ -485,7 +491,7 @@ Click "Next" to begin the calibration process."""
         
         try:
             # Determine the output path
-            output_path = os.path.join(self.blank_source_dir, "master_flat.tif")
+            output_path = os.path.join(self._data_dir, "master_flat.tif")
             
             # Convert to appropriate dtype for saving
             # Preserve the original bit depth from input images
@@ -690,6 +696,8 @@ To update this data, go back and load new blank scans."""
             # Compute normalized flat field
             img = self.averaged_blank
             mean_per_channel = np.mean(img, axis=(0, 1))
+            if not np.all(np.isfinite(img)) or np.any(img <= 0):
+                raise ValueError("Blank scans must contain finite positive intensities in every channel.")
 
             # Normalize: flat_field where mean = 1.0 per channel
             flat_field = img / mean_per_channel
@@ -707,7 +715,9 @@ To update this data, go back and load new blank scans."""
 
             # Save to file
             save_path = os.path.join(self._data_dir, "field_flattening.npz")
-            np.savez(save_path,
+            from app.utils.atomic_file import atomic_open
+            with atomic_open(save_path, "wb") as handle:
+                np.savez(handle,
                 flat_field=flat_field,
                 mean_per_channel=mean_per_channel,
                 std_per_channel=self.flat_field_data["std_per_channel"],
@@ -716,12 +726,7 @@ To update this data, go back and load new blank scans."""
                 image_shape=self.flat_field_data["image_shape"]
             )
 
-            blank_sources = []
-            if self.blank_source_dir:
-                blank_sources = [
-                    os.path.join(self.blank_source_dir, filename)
-                    for filename in self.blank_filenames
-                ]
+            blank_sources = getattr(self, "blank_source_paths", [])
             update_calibration_manifest(
                 self._data_dir,
                 "field_flattening",

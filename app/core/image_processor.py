@@ -29,6 +29,7 @@ from typing import Optional
 from app.utils.image_io import read_image_unchanged, storage_bit_depth
 from app.paths import CALIBRATION_ROOT
 from app.core.calibration_manifest import verify_calibration_manifest
+from app.core.synchronization import synchronized
 from app.core.dosimetry import (
     CHANNELS,
     combine_channel_estimates,
@@ -43,7 +44,7 @@ class ImageProcessor:
     
     def __init__(self, config):
         """Initialize the image processor."""
-        self.config = config
+        self.config = dict(config)
         
         # Image data
         self.current_image = None
@@ -60,6 +61,7 @@ class ImageProcessor:
         self.dose_valid_mask_channels = None
         self.dose_extrapolated_mask_channels = None
         self.last_channel_weights = None  # last sensitivity weights {'R': w, 'G': w, 'B': w}
+        self.last_valid_pixel_counts = []
         # Track whether field flattening is currently applied
         self.flat_applied = False
         
@@ -102,7 +104,9 @@ class ImageProcessor:
         self.flat_field_info = None  # Metadata about the flat field
         
         # Processing flags
-        self.processing_lock = threading.Lock()
+        self.processing_lock = threading.RLock()
+        self.state_revision = 0
+        self.calibration_provenance = {}
         self.max_display_size = 4096
         
         # Progress tracking
@@ -187,7 +191,7 @@ class ImageProcessor:
             os.makedirs(temp_dir)
             logger.info(f"Created temporary directory: {temp_dir}")
         
-        return temp_dir
+        return tempfile.mkdtemp(prefix="session_", dir=temp_dir)
     
     def _init_gpu(self):
         """Initialize GPU acceleration if available."""
@@ -343,6 +347,7 @@ class ImageProcessor:
         
         return True
 
+    @synchronized
     def load_image(self, file_path):
         """Load an image from the specified path."""
         try:
@@ -351,6 +356,11 @@ class ImageProcessor:
             
             # Calibration state resets when loading a new image
             self.calibration_applied = False
+            self.flat_applied = False
+            self.flattened_image = None
+            self.calibration_source_image = None
+            self.calibration_provenance = {}
+            self.state_revision += 1
             
             file_path = os.path.abspath(file_path)
             self._renamed_file_info = None
@@ -631,8 +641,9 @@ class ImageProcessor:
             
             return means, stds
     
+    @synchronized
     def apply_binning(self):
-        """Apply binning to the original image and save the result."""
+        """Build a signal preview; scientific arrays and coordinates are unchanged."""
         if self.original_image is None or self.binning <= 1:
             self.binned_image = None
             return
@@ -676,18 +687,11 @@ class ImageProcessor:
         
             # Store the binned image and standard deviation
             self.binned_image = {
-                'data': binned.astype(np.uint8),
+                'data': binned,
                 'std_dev': std_dev
             }
         
-            # Update current image to use binned image
-            self.current_image = binned.astype(np.uint8)
-        
-            # Save the binned image to a temporary file
-            self._save_binned_image()
-            
-            # Recompute integral images for the binned image
-            self._compute_integral_images()
+            # The preview never replaces current_image or calibration state.
         
         # Report completion
             logger.info(f"Binning complete: {self.binning}x{self.binning} on {width}x{height} image")
@@ -847,10 +851,13 @@ class ImageProcessor:
         """Get the coordinates from the last measurement."""
         return self.last_measurement_coordinates
     
+    @synchronized
     def set_binning(self, binning):
         """Set the binning factor."""
         if binning == self.binning:
             return False
+        if binning not in (1, 2, 4, 6):
+            raise ValueError("Preview binning must be 1, 2, 4 or 6.")
         
         self.binning = binning
         logger.info(f"Binning set to {binning}x{binning}")
@@ -861,10 +868,7 @@ class ImageProcessor:
                 self.apply_binning()
             else:
                 # For 1x1 binning, just use the original image
-                self.current_image = self.original_image.copy()
                 self.binned_image = None
-                # Recompute integral images
-                self._compute_integral_images()
                 # Report completion
                 logger.info("Restored original image (1x1 binning)")
                 self._report_progress("binning", 100, "Restored original image (1x1 binning)")
@@ -1253,7 +1257,7 @@ class ImageProcessor:
                     source = source[:, None]
                 channel = "G" if values.shape[1] == 1 else CHANNELS[index]
                 parameter = parameter_uncertainty_for_mean_dose(
-                    source[:, index],
+                    source[np.isfinite(channel_values), index],
                     self.calibration_fit_params[channel],
                     self.calibration_param_covariances[channel],
                 )
@@ -1267,6 +1271,17 @@ class ImageProcessor:
             uncertainties.append(total)
         return np.asarray(means), np.asarray(standard_deviations), np.asarray(uncertainties)
 
+    @synchronized
+    def measure_circle(self, x, y, radius):
+        """Measure an image-coordinate circle independently of the manual tool."""
+        shape, size = self.measurement_shape, self.measurement_size
+        try:
+            self.measurement_shape, self.measurement_size = "circular", radius
+            return self.measure_area(x * self.zoom, y * self.zoom)
+        finally:
+            self.measurement_shape, self.measurement_size = shape, size
+
+    @synchronized
     def measure_area(self, canvas_x, canvas_y):
         """Measure a ROI without treating invalid calibrated pixels as data."""
         if self.current_image is None:
@@ -1278,9 +1293,15 @@ class ImageProcessor:
                 return None
 
             if self.measurement_shape == "circular":
-                yy, xx = np.ogrid[:height, :width]
+                radius = int(self.measurement_size)
+                if radius < 1:
+                    return None
+                x0, x1 = max(0, image_x - radius), min(width, image_x + radius + 1)
+                y0, y1 = max(0, image_y - radius), min(height, image_y + radius + 1)
+                yy, xx = np.ogrid[y0:y1, x0:x1]
                 selected = (xx - image_x) ** 2 + (yy - image_y) ** 2 <= self.measurement_size ** 2
                 rows, columns = np.where(selected)
+                rows, columns = rows + y0, columns + x0
             elif self.measurement_shape == "rectangular":
                 roi_width, roi_height = self.measurement_size_rect
                 x1, x2 = max(0, image_x - roi_width // 2), min(width - 1, image_x + roi_width // 2)
@@ -1315,6 +1336,10 @@ class ImageProcessor:
             )
             means, deviations, uncertainties = self._summarize_roi_pixels(pixels, source_pixels)
             pixel_count = int(len(rows))
+            if not np.any(np.isfinite(means)):
+                return None
+            counts = np.sum(np.isfinite(pixels), axis=0)
+            self.last_valid_pixel_counts = np.atleast_1d(counts).astype(int).tolist()
 
             sample_indices = np.arange(pixel_count)
             if pixel_count > 1000:
@@ -1328,6 +1353,7 @@ class ImageProcessor:
             self.last_auto_measure_time = time.time()
 
             if means.size == 1:
+                self.last_channel_weights = None
                 return (
                     float(means[0]), float(deviations[0]), float(uncertainties[0]),
                     float(means[0]), float(uncertainties[0]), pixel_count,
@@ -1378,6 +1404,7 @@ class ImageProcessor:
     
         return True
     
+    @synchronized
     def apply_calibration(self):
         """Apply the nonlinear calibration with domain and covariance checks."""
         if self.current_image is None:
@@ -1397,6 +1424,10 @@ class ImageProcessor:
             return False
         elif "calibration_data.csv" in integrity and not integrity["calibration_data.csv"]:
             logger.error("Calibration table differs from its recorded manifest")
+            return False
+        if integrity and (not integrity.get("dose_flat_consistent", True) or (
+                "requires_flat" in integrity and integrity["requires_flat"] != self.flat_applied)):
+            logger.error("Dose fit and active flat-field preprocessing do not match. Refit with this flat or use the matching preprocessing.")
             return False
 
         import csv
@@ -1423,6 +1454,8 @@ class ImageProcessor:
                     if not np.all(np.isfinite(values)):
                         continue
                     params[channel] = values
+                    if values[1] <= 0:
+                        raise ValueError(f"Non-positive calibration response for {channel}")
                     if calibration_bit_depth is None:
                         depth = parse_float(row, "bit_depth")
                         if np.isfinite(depth):
@@ -1447,6 +1480,8 @@ class ImageProcessor:
                     covariances[channel] = covariance
                     low, high = parse_float(row, "dose_min"), parse_float(row, "dose_max")
                     if np.isfinite(low) and np.isfinite(high):
+                        if high <= low or values[2] >= low:
+                            raise ValueError(f"Invalid dose domain for channel {channel}")
                         dose_ranges[channel] = (low, high)
         except Exception as exc:
             logger.error("Failed to read calibration parameters: %s", exc, exc_info=True)
@@ -1479,6 +1514,9 @@ class ImageProcessor:
         if len(dose_ranges) != 3:
             logger.error("Calibration dose range is required to reject extrapolated doses")
             return False
+        if any(high <= low or params[ch][2] >= low for ch, (low, high) in dose_ranges.items()):
+            logger.error("Invalid calibration branch or dose interval")
+            return False
 
         self.calibration_bit_depth = calibration_bit_depth or 8
         source_img = (
@@ -1509,7 +1547,7 @@ class ImageProcessor:
                 extrapolation_margin_fraction=margin,
                 allow_extrapolation=allow_extrapolation,
             )
-            dose_arrays.append(dose.astype(np.float32))
+            dose_arrays.append(dose)
             valid_arrays.append(valid)
             extrapolated_arrays.append(extrapolated)
 
@@ -1525,6 +1563,12 @@ class ImageProcessor:
         self.calibration_param_covariances = covariances
         self.calibration_dose_ranges = dose_ranges
         self.calibration_applied = True
+        self.calibration_provenance = {
+            "calibration_id": integrity.get("calibration_id", "") if integrity else "",
+            "calibration_integrity": "verified" if integrity else "unverified",
+            "units": "Gy", "flat_applied": bool(self.flat_applied),
+        }
+        self.state_revision = getattr(self, "state_revision", 0) + 1
         self._compute_integral_images()
         valid_fraction = float(np.mean(self.dose_valid_mask_channels))
         logger.info("Calibration applied; valid calibrated pixels: %.2f%%", 100 * valid_fraction)
@@ -1590,6 +1634,7 @@ class ImageProcessor:
         """Return the maximum possible pixel value for the current image bit depth."""
         return self.image_max_value
     
+    @synchronized
     def rescale_to_bit_depth(self, target_bit_depth):
         """Rescale the image to a target bit depth.
         
@@ -1650,6 +1695,7 @@ class ImageProcessor:
         """Rescale image to 16-bit. Convenience wrapper for rescale_to_bit_depth."""
         return self.rescale_to_bit_depth(16)
     
+    @synchronized
     def update_settings(self, config):
         """Update settings from config."""
         # Check if calibration folder changed
@@ -1657,7 +1703,7 @@ class ImageProcessor:
         new_cal_folder = config.get("calibration_folder", "")
         cal_folder_changed = old_cal_folder != new_cal_folder
         
-        self.config = config
+        self.config = dict(config)
     
         # Update settings
         self.negative_mode = config.get("negative_mode", False)
@@ -1691,6 +1737,27 @@ class ImageProcessor:
         logger.info("Settings updated")
         return True
     
+    @synchronized
+    def process_corrections(self, *, flat=False, calibration=False):
+        """Commit a complete signal-to-dose pipeline, or return to raw signal."""
+        self.last_processing_error = None
+        try:
+            if not self.reprocess_current_image(skip_integral_compute=True):
+                raise ValueError("No image is loaded.")
+            if flat and not self.apply_flat(skip_integral_compute=True):
+                raise ValueError("Flat-field correction failed. Check geometry and calibration integrity.")
+            if calibration and not self.apply_calibration():
+                raise ValueError("Dose conversion failed. Check fit parameters, domain and integrity.")
+            if not calibration:
+                self._compute_integral_images()
+            return True
+        except Exception as exc:
+            self.reprocess_current_image()
+            self.last_processing_error = str(exc)
+            logger.error("Processing aborted: %s", exc)
+            return False
+
+    @synchronized
     def reprocess_current_image(self, skip_integral_compute: bool = False):
         """Reprocess the current image with updated settings.
         
@@ -1708,16 +1775,20 @@ class ImageProcessor:
         self.calibration_applied = False
         self.flat_applied = False
         self.flattened_image = None
+        self.calibration_source_image = None
+        self.calibration_provenance = {}
+        self.state_revision = getattr(self, "state_revision", 0) + 1
     
         # Apply binning if needed
         if self.binning > 1:
             self.apply_binning()
-        elif not skip_integral_compute:
+        if not skip_integral_compute:
             # Recompute integral images
             self._compute_integral_images()
     
         return True
     
+    @synchronized
     def get_display_image(self):
         """Get the image for display with current settings applied."""
         if self.current_image is None:
@@ -1737,6 +1808,13 @@ class ImageProcessor:
             else:
                 image = self.current_image.copy()
         
+            # Preview averaging retains the original coordinate system.
+            if self.binning > 1:
+                h, w = image.shape[:2]
+                preview = cv2.resize(image, (max(1, w // self.binning), max(1, h // self.binning)),
+                                     interpolation=cv2.INTER_AREA)
+                image = cv2.resize(preview, (w, h), interpolation=cv2.INTER_NEAREST)
+
             # Apply negative mode
             if self.negative_mode:
                 image = self.image_max_value - image
@@ -1826,16 +1904,11 @@ class ImageProcessor:
         # Clear the list
         self._temp_files = []
     
-        # Clean up any other temporary files
+        # Only remove an empty directory owned by this processor instance.
         try:
-            for file in glob.glob(os.path.join(self.temp_dir, "tile_*.npy")):
-                try:
-                    os.remove(file)
-                    logger.debug(f"Removed temporary tile file: {file}")
-                except Exception as e:
-                    logger.warning(f"Could not remove temporary tile file: {str(e)}")
-        except Exception as e:
-            logger.warning(f"Error cleaning up temporary files: {str(e)}")
+            os.rmdir(self.temp_dir)
+        except OSError:
+            pass
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -1947,6 +2020,7 @@ class ImageProcessor:
 
         return None
 
+    @synchronized
     def load_field_flattening(self):
         """Load field flattening data from disk if available.
         
@@ -1970,7 +2044,7 @@ class ImageProcessor:
             return False
 
         try:
-            data = np.load(ff_path, allow_pickle=True)
+            data = np.load(ff_path, allow_pickle=False)
             self.flat_field = data['flat_field']
             self.flat_field_info = {
                 'mean_per_channel': data['mean_per_channel'].tolist() if 'mean_per_channel' in data else None,
@@ -2038,6 +2112,8 @@ class ImageProcessor:
                                        = image / normalized_flat
         """
         flat = self.flat_field
+        if flat.ndim != 3 or flat.shape[2] != 3 or not np.all(np.isfinite(flat)) or np.any(flat <= 0):
+            raise ValueError("Flat field must contain finite, strictly positive RGB values.")
         
         # Check if flat field needs to be resized to match image
         if flat.shape[:2] != image.shape[:2]:
@@ -2088,6 +2164,7 @@ class ImageProcessor:
         
         return corrected.astype(orig_dtype)
 
+    @synchronized
     def apply_flat(self, skip_integral_compute: bool = False) -> bool:
         """Apply field flattening correction (independent of dose conversion).
         

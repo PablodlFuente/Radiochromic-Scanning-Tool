@@ -6,6 +6,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+from app.utils.atomic_file import atomic_open
 
 
 def read_image_unchanged(file_path: str | Path) -> np.ndarray:
@@ -54,4 +55,5 @@ def write_tiff_unchanged(file_path: str | Path, rgb_image: np.ndarray) -> None:
     ok, encoded = cv2.imencode(".tif", image)
     if not ok:
         raise OSError(f"Could not encode TIFF: {path}")
-    encoded.tofile(path)
+    with atomic_open(path, "wb") as handle:
+        handle.write(encoded.tobytes())

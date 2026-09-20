@@ -455,10 +455,12 @@ class MainWindow:
                     self.calibration_var.set(True)
                 
                 # Apply corrections (flat first, then dose conversion)
-                self._reapply_corrections()
+                corrections_ok = self._reapply_corrections()
                 
                 # Update status
-                if has_flat and has_cal:
+                if not corrections_ok:
+                    self.update_status("Loaded raw image; requested corrections failed")
+                elif has_flat and has_cal:
                     self.update_status(f"Loaded: {os.path.basename(file_path)} (Flat + Dose applied)")
                 elif has_flat:
                     self.update_status(f"Loaded: {os.path.basename(file_path)} (Flat applied)")
@@ -1043,14 +1045,11 @@ class MainWindow:
         # Update image processor settings
         self.image_processor.update_settings(self.app_config)
         
-        # Notify plugins about configuration change
-        from app.plugins.plugin_manager import plugin_manager
-        plugin_manager.notify_config_change(self.app_config)
-        
         # Reload current image if available
         if self.image_processor.has_image():
             self.update_status("Applying settings...")
-            threading.Thread(target=self._apply_settings_thread, daemon=True).start()
+            if self._reapply_corrections():
+                self._finish_applying_settings()
     
     def _apply_settings_thread(self):
         """Apply settings in a background thread."""
@@ -1133,31 +1132,26 @@ class MainWindow:
         Optimized to compute integral images only once at the end of the pipeline,
         rather than after each individual operation.
         """
-        has_flat = self.flat_var.get() and self.image_processor.has_field_flattening()
-        has_cal = self.calibration_var.get() and self.image_processor.has_calibration()
+        has_flat = bool(self.flat_var.get())
+        has_cal = bool(self.calibration_var.get())
         
         # Start from original image
         # Skip integral compute if we have more operations to apply
-        self.image_processor.reprocess_current_image(skip_integral_compute=(has_flat or has_cal))
-        
-        # Apply flat if enabled (skip integral compute if calibration follows)
-        if has_flat:
-            self.image_processor.apply_flat(skip_integral_compute=has_cal)
-        
-        # Apply dose conversion if enabled (this always computes integrals at the end)
-        if has_cal:
-            self.image_processor.apply_calibration()
-        elif not has_flat:
-            # Neither flat nor cal applied, but we skipped integral compute above
-            # Need to compute now (actually we didn't skip in this case, so this is safe)
-            pass
+        success = self.image_processor.process_corrections(flat=has_flat, calibration=has_cal)
+        self.flat_var.set(self.image_processor.flat_applied)
+        self.calibration_var.set(self.image_processor.calibration_applied)
+        if not success:
+            self.update_status("Processing failed; raw image restored")
+            messagebox.showerror("Processing failed", self.image_processor.last_processing_error)
         
         # Update display
         self.image_panel.display_image(is_adjustment=True)
         
         # Notify plugins
         from app.plugins.plugin_manager import plugin_manager
-        plugin_manager.notify_config_change(self.app_config)
+        if not self.loading_image:
+            plugin_manager.notify_config_change(self.app_config)
+        return success
     
     def apply_calibration(self):
         """Toggle dose conversion on/off (independent of flat)."""
@@ -1203,7 +1197,8 @@ class MainWindow:
                     return
         
         # Reapply all corrections based on current states
-        self._reapply_corrections()
+        if not self._reapply_corrections():
+            return
         
         # Update status
         flat_on = self.flat_var.get()
@@ -1233,7 +1228,8 @@ class MainWindow:
                 return
         
         # Reapply all corrections based on current states
-        self._reapply_corrections()
+        if not self._reapply_corrections():
+            return
         
         # Update status
         flat_on = self.flat_var.get()

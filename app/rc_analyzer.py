@@ -93,29 +93,8 @@ class RCAnalyzer(tk.Tk):
                     except Exception as e:
                         logger.warning(f"Could not remove log file {old_log}: {str(e)}")
             
-            # Clean up local temp directory
-            local_temp_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "temp")
-            if os.path.exists(local_temp_dir):
-                try:
-                    # Remove all files in the temp directory
-                    for file in os.listdir(local_temp_dir):
-                        file_path = os.path.join(local_temp_dir, file)
-                        try:
-                            if os.path.isfile(file_path):
-                                os.remove(file_path)
-                            elif os.path.isdir(file_path):
-                                shutil.rmtree(file_path)
-                        except Exception as e:
-                            logger.warning(f"Could not remove {file_path}: {str(e)}")
-                    
-                    logger.info(f"Cleaned up local temp directory: {local_temp_dir}")
-                except Exception as e:
-                    logger.error(f"Error cleaning up local temp directory: {str(e)}", exc_info=True)
-            else:
-                # Create the temp directory if it doesn't exist
-                os.makedirs(local_temp_dir)
-                logger.info(f"Created local temp directory: {local_temp_dir}")
-            
+            # Temporary data is owned and cleaned by each ImageProcessor session.
+            # Other running instances may still be using their directories.
             logger.info("Cleaned up log and temporary files")
         except Exception as e:
             logger.error(f"Error cleaning up files: {str(e)}", exc_info=True)

@@ -45,10 +45,19 @@ class CalibrationMathTests(unittest.TestCase):
         self.assertAlmostEqual(one, many, places=12)
 
     def test_sensitivity_mode_is_invariant_to_intensity_units(self):
-        means = np.array([1.0, 1.2, 0.9])
-        errors = np.array([0.1, 0.2, 0.3])
-        result = combine_channel_estimates(means, errors, "sensitivity_weighted")
-        scaled_representation = combine_channel_estimates(means, errors, "sensitivity_weighted")
+        params = (1000., 5000., -.5)
+        covariance = np.diag([4., 9., .01])
+        intensities = np.array([2000., 2100., 2200.])
+        doses, _, _ = invert_rational_response(intensities, params)
+        error = parameter_uncertainty_for_mean_dose(intensities, params, covariance)
+        scale = 1. / 65535
+        transform = np.diag([scale, scale, 1.])
+        scaled_params = (params[0] * scale, params[1] * scale, params[2])
+        scaled_doses, _, _ = invert_rational_response(intensities * scale, scaled_params)
+        scaled_error = parameter_uncertainty_for_mean_dose(
+            intensities * scale, scaled_params, transform @ covariance @ transform.T)
+        result = combine_channel_estimates(doses, [error] * 3, "sensitivity_weighted")
+        scaled_representation = combine_channel_estimates(scaled_doses, [scaled_error] * 3, "sensitivity_weighted")
         self.assertAlmostEqual(result.value, scaled_representation.value)
         self.assertAlmostEqual(result.uncertainty, scaled_representation.uncertainty)
 

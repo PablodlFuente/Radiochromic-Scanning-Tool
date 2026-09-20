@@ -1171,10 +1171,16 @@ class CalibrationApp:
         """Save current entries to CSV and close window."""
         fname = self.data_dir / "fit_parameters.csv"
         try:
-            doses, *_ = self._get_calibration_data()
-            finite_doses = doses[np.isfinite(doses)]
-            dose_min = float(np.min(finite_doses)) if finite_doses.size else np.nan
-            dose_max = float(np.max(finite_doses)) if finite_doses.size else np.nan
+            if self.fit_type_var.get() != "standard":
+                raise ValueError("Select a rational fit before saving dose parameters.")
+            for channel in ("R", "G", "B"):
+                fit = self.latest_fit_results.get(f"Fit {channel}", {})
+                if len(fit.get("params", [])) != 3 or "dose_range" not in fit:
+                    raise ValueError(f"No valid fit for channel {channel}.")
+                a, b, c = fit["params"]
+                low, high = fit["dose_range"]
+                if not np.all(np.isfinite([a, b, c, low, high])) or b <= 0 or c >= low or high <= low:
+                    raise ValueError(f"Invalid response or dose domain for channel {channel}.")
             fd, temporary_name = tempfile.mkstemp(
                 prefix="fit_parameters_", suffix=".csv", dir=self.data_dir
             )
@@ -1187,14 +1193,12 @@ class CalibrationApp:
                     "dose_min", "dose_max", "n_points", "fit_method",
                 ])
                 for ch in ("R", "G", "B"):
-                    a = self.param_entries[ch]['a'].get().strip()
-                    σa = self.param_entries[ch]['σa'].get().strip()
-                    b = self.param_entries[ch]['b'].get().strip()
-                    σb = self.param_entries[ch]['σb'].get().strip()
-                    c = self.param_entries[ch]['c'].get().strip()
-                    σc = self.param_entries[ch]['σc'].get().strip()
-                    r2text = self.param_entries[ch]['r2_label'].cget('text')
-                    result = self.latest_fit_results.get(f"Fit {ch}", {})
+                    result = self.latest_fit_results[f"Fit {ch}"]
+                    a, b, c = result["params"]
+                    errors = np.asarray(result.get("errors", []))
+                    σa, σb, σc = errors if errors.size == 3 else [np.nan] * 3
+                    r2text = result["r2"]
+                    dose_min, dose_max = result["dose_range"]
                     covariance = np.asarray(result.get("covariance", np.full((3, 3), np.nan)))
                     if covariance.shape != (3, 3):
                         covariance = np.full((3, 3), np.nan)
@@ -1205,7 +1209,7 @@ class CalibrationApp:
                     w.writerow([
                         ch, a, σa, b, σb, c, σc, r2text, self.calibration_bit_depth,
                         *cov_values, dose_min, dose_max, result.get("n_points", ""),
-                        "weighted_nonlinear_least_squares",
+                        result["fit_method"],
                     ])
             os.replace(temporary_name, fname)
             update_calibration_manifest(
@@ -1216,7 +1220,10 @@ class CalibrationApp:
                     "fit_method": "weighted_nonlinear_least_squares",
                     "weight_source": "roi_spatial_standard_deviation",
                     "bit_depth": int(self.calibration_bit_depth),
-                    "dose_range": [dose_min, dose_max],
+                    "dose_ranges": {
+                        ch: self.latest_fit_results[f"Fit {ch}"]["dose_range"]
+                        for ch in ("R", "G", "B")
+                    },
                     "fit_to_spline": bool(self.fit_to_spline_var.get()),
                     "excluded_points": [
                         {"channel": channel, "index": int(index)}
@@ -1417,6 +1424,11 @@ class CalibrationApp:
                         "covariance": covariance,
                         "r2": r2,
                         "n_points": int(np.sum(fit_mask)),
+                        "dose_range": [float(np.min(fitted_doses)), float(np.max(fitted_doses))],
+                        "fit_method": "manual" if ch_name in self._manual_override else (
+                            "weighted_nonlinear_least_squares" if fit_sigma is not None
+                            else "unweighted_nonlinear_least_squares"
+                        ),
                     }
 
                     # Dibuja la línea de ajuste

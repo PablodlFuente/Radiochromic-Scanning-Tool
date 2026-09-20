@@ -89,6 +89,12 @@ def parameter_uncertainty_for_mean_dose(
     covariance = np.asarray(covariance, dtype=np.float64)
     if covariance.shape != (3, 3) or not np.all(np.isfinite(covariance)):
         return float("nan")
+    if not np.allclose(covariance, covariance.T) or np.any(np.diag(covariance) < 0):
+        return float("nan")
+    scales = np.sqrt(np.maximum(np.diag(covariance), np.finfo(float).tiny))
+    correlation = covariance / scales[:, None] / scales[None, :]
+    if not np.all(np.isfinite(correlation)) or np.min(np.linalg.eigvalsh(correlation)) < -1e-8:
+        return float("nan")
     variance = float(mean_jacobian @ covariance @ mean_jacobian.T)
     return float(np.sqrt(max(variance, 0.0)))
 
