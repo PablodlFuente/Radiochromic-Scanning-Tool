@@ -102,11 +102,13 @@ $$
 u_k=\sqrt{u_{k,\mathrm{stat}}^2+u_{k,\mathrm{cal}}^2}.
 $$
 
-The parameter contribution is shared by all pixels and is not divided by $N_k$. If covariance is missing or invalid, it is reported as unavailable (`NaN`). Because a mixed `Auto` ROI can contain both spline and rational values, parameter covariance is conservatively reported as unavailable for both `Spline` and `Auto`; `Fit` uses rational-model covariance propagation.
+The parameter contribution is shared by all pixels and is not divided by $N_k$. If covariance is missing or invalid, the reported quantity is $u_{k,\mathrm{stat}}$ and its scope is explicitly recorded as `roi_repeatability_only`. Because a mixed `Auto` ROI can contain both spline and rational values, rational covariance is not assigned to `Spline` or `Auto` results. `Fit` reports the quadratic combination above only when its covariance matrix is valid.
+
+Circular, rectangular and free-form measurements are rasterized as boolean masks in source-image coordinates. Every pixel whose center belongs to that mask enters the same finite-pixel statistics above. Moving an area translates its geometry and causes the mask and statistics to be evaluated again.
 
 ## Channel combination
 
-Only channels with finite dose and positive finite uncertainty participate.
+Only channels with finite dose and non-negative finite uncertainty participate. If any channel has exactly zero repeatability uncertainty, inverse-variance weighting is singular. The implementation then uses equal channel weights and reports the larger of the propagated channel term and the standard error of the channel estimates. Identical constant channels therefore yield zero repeatability uncertainty, while disagreeing constant channels retain a finite disagreement term.
 
 ### Inverse-variance mean
 

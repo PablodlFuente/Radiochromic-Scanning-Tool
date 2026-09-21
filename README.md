@@ -12,10 +12,10 @@ Desktop software for radiochromic-film image analysis, scanner flat-field correc
 - Scanner-coordinate flat-field correction.
 - Independent R, G and B dose-response calibration.
 - Shape-preserving cubic interpolation and rational-model conversion.
-- Circular, rectangular and line measurements.
+- Circular, rectangular, free-form and line measurements.
 - Full rational-fit parameter covariance propagation.
 - RGB combination using inverse variance, Birge factor or DerSimonian-Laird.
-- Automatic film and region detection.
+- Automatic film, circular-area and square-area detection.
 - Local or global CTR subtraction with membership covariance.
 - Centroid, isodose and weighted linear-regression analysis.
 - Multi-file processing and versioned CSV export.

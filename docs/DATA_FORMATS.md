@@ -9,7 +9,6 @@ Each calibration is stored under `calibration_data/<name>/`.
 | `calibration_data.csv` | Dose, intensity statistics and calibration-point provenance. |
 | `fit_parameters.csv` | Rational parameters, uncertainties, covariance, dose interval and fit method for each channel. |
 | `spline_calibration.npz` | Exact dose/intensity knots and bit depth used to reconstruct the cubic models. |
-| `spline_points.csv` | Optional sampled curves for external inspection; not used for conversion. |
 | `field_flattening.npz` | Normalized flat, statistics, date, number of blanks and geometry. |
 | `master_flat.tif` | Averaged blank image in the calibration directory. |
 | `calibration_manifest.json` | SHA-256 identity, artifact hashes, sources and software environment. |
@@ -18,9 +17,9 @@ Spline knots are sorted by dose. Replicates at the same dose are averaged before
 
 `calibration_id` is the SHA-256 digest of the ordered artifact inventory. Changing a recorded artifact changes the identity or causes verification to fail. The manifest and numerical artifacts are written through atomic file replacement.
 
-## Result CSV, schema 3
+## Result CSV, schema 4
 
-Every row has `schema_version = 3`. Provenance is captured when the measurement is made and belongs to that result. The complete export is validated before the destination is atomically replaced.
+Every row has `schema_version = 4`. Provenance is captured when the measurement is made and belongs to that result. The complete export is validated before the destination is atomically replaced.
 
 | Column | Meaning |
 |---|---|
@@ -40,8 +39,10 @@ Every row has `schema_version = 3`. Provenance is captured when the measurement 
 | `calibration_integrity` | `verified`, `unverified` or `unknown`. |
 | `units` | `Gy` or `scanner_intensity`. |
 | `conversion_method` | `auto`, `spline`, `fit` or `not_applied` captured at measurement time. |
+| `uncertainty_scope` | Components included in the reported standard uncertainty. |
 | `measurement_status` | `valid`, `partial_pixels`, `partial_channels`, `uncertainty_unavailable` or `invalid`. |
-| `x`, `y`, `radius` | ROI geometry in source-image pixels. |
+| `geometry_type`, `geometry_json` | Circle, rectangle or polygon and its complete source-pixel geometry. |
+| `x`, `y`, `radius` | Compatibility fields for ROI centre and circular radius. |
 | `dose_correction_factor` | Multiplicative factor applied to the measurement. |
 | `flat_applied` | Whether scanner flat-field correction was active. |
 | `ctr_context` | JSON description of the applied control. |

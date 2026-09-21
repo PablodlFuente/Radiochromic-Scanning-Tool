@@ -34,9 +34,7 @@ All blanks must have the same geometry and dtype and contain finite positive val
 
 Saving writes the rational parameters and the exact spline knots. Input rows may be in any order. Repeated doses are averaged for the spline. A non-monotonic channel is rejected with an in-window diagnostic; review or exclude the responsible calibration points rather than silently forcing monotonicity.
 
-`Export Spline CSV` is optional and exists for inspection in other software. Dose conversion reconstructs the curve from `spline_calibration.npz`, not from sampled CSV points.
-
-Use `Calibration → Modify Calibration` to reopen the selected calibration. The editor restores measured points, saved per-channel exclusions and the recorded bit depth. Click a point marker to exclude it or restore a hollow marker; clicks outside the fixed screen-space selection radius do not alter calibration data. `Restore All Excluded Points` re-includes every point before recalculating and saving both models.
+Use `Calibration → Modify Calibration` to open the fit editor directly. It restores measured points, saved per-channel exclusions and the recorded bit depth. Click a point marker to exclude it or restore a hollow marker; clicks outside the fixed screen-space selection radius do not alter calibration data. `Restore All Excluded Points` re-includes every point before recalculating. Closing after any edit asks whether both models should be saved.
 
 ## Apply dose conversion
 
@@ -55,7 +53,7 @@ Use `Calibration → Modify Calibration` to reopen the selected calibration. The
 
 The application verifies manifest hashes before using recorded artifacts. A dose model also records the flat-field used to create it. Replacing the flat requires a compatible dose calibration.
 
-Spline interpolation does not currently provide a parameter covariance model. Measurements made in `Spline` or `Auto` therefore report calibration uncertainty as unavailable instead of borrowing the rational-fit covariance for a potentially mixed ROI. This does not prevent dose calculation, but it prevents an unsupported uncertainty claim. Select `Fit` when rational-model covariance propagation is required.
+Spline interpolation does not have a compact parameter covariance model. Measurements made in `Spline` or `Auto` report the finite within-ROI standard uncertainty and mark the uncertainty scope as `roi_repeatability_only`; they do not borrow rational-fit covariance for a potentially mixed ROI. `Fit` adds rational-model covariance when a valid covariance matrix is available. The scope is captured with each result and exported.
 
 ## Manual measurements
 
@@ -66,11 +64,11 @@ Histogram display uses at most 1000 deterministic samples; ROI statistics use al
 ## AutoMeasurements
 
 1. Add one or more TIFF files.
-2. Adjust film and circle detection thresholds if required.
+2. Adjust film and measurement-area detection thresholds if required.
 3. Run detection.
 4. Inspect contours and measurements before export.
 
-Detected circles are grouped into rows by Y coordinate and ordered by X. `C{row}{column}` expresses that position; manually added circles use suffix `M`. Completely invalid regions are not stored as zero-dose measurements.
+Automatic detection recognizes circular and square measurement areas. Detected circles are grouped into rows by Y coordinate and ordered by X; `C{row}{column}` expresses that position. `Add RC` and `Add Measurement Area` open a compact geometry picker below the pressed button; choose `Circle`, `Rectangle` or `Custom Area` and draw directly on the image. Circles and rectangles are defined by dragging. A custom polygon is defined by successive clicks and completed with Space or right-click. Every measurement area must be completely contained by its assigned RC. Drag an RC or measurement area to move it individually; an invalid placement is reverted when released. Names must be unique among RCs and among measurement areas in the same RC. Completely invalid regions are not stored as zero-dose measurements.
 
 Right-click a measured circle to open its Tk-owned 3D dose or intensity window. Image-specific results and overlays are cleared before another image is displayed; batch navigation then restores the snapshot belonging to the requested file.
 
@@ -82,7 +80,7 @@ Invalid controls are excluded. When a measured circle belongs to the control mea
 
 ## Analysis Tools
 
-The plugin provides geometric-versus-dose centroid comparison, four centroid methods, isodose contours, introduced-value association and weighted linear regression. `Plot Dose vs Value` opens an application-owned Tk figure rather than relying on Matplotlib's global show loop.
+The plugin provides geometric-versus-dose centroid comparison, four centroid methods, isodose contours, introduced-value association and weighted linear regression. Isodose overlays use radius-scaled Gaussian smoothing and retain one dominant contour per level, suppressing scanner-grain microcontours while preserving non-circular field structure. `Plot Dose vs Value` opens an application-owned Tk figure rather than relying on Matplotlib's global show loop.
 
 ## Export
 
