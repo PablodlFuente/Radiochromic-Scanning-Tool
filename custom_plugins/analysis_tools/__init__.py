@@ -595,7 +595,11 @@ class AnalysisTab:
             return []
         roi, xx, yy, mask, x_min, y_min = extraction
 
-        valid_vals = roi[~np.isnan(roi)]
+        # Contours should represent the large-scale dose field, not scanner grain
+        # or isolated invalid pixels.  The smoothing scale follows the measured
+        # area's radius so it behaves consistently at different resolutions.
+        roi = self._smooth_dose_map(roi, sigma=max(1.5, float(radius) * 0.035))
+        valid_vals = roi[np.isfinite(roi) & mask]
         if len(valid_vals) < 10:
             return []
 
@@ -603,11 +607,8 @@ class AnalysisTab:
         if v_max - v_min < 1e-9:
             return []
 
-        # Replace NaN with v_min for smooth contouring
-        roi_filled = np.where(np.isnan(roi), v_min, roi)
-
         percentile_count = max(1, min(int(n_levels), 5))
-        percentile_levels = np.linspace(15.0, 85.0, percentile_count)
+        percentile_levels = np.linspace(20.0, 80.0, percentile_count)
         levels = np.unique(np.percentile(valid_vals, percentile_levels))
         if len(levels) == 0:
             return []
@@ -619,25 +620,33 @@ class AnalysisTab:
 
         # Use matplotlib to get smooth contour paths
         fig, ax = plt.subplots(1, 1, figsize=(1, 1))
-        cs = ax.contour(xx, yy, roi_filled, levels=levels)
+        contour_data = np.ma.array(roi, mask=(~mask) | ~np.isfinite(roi))
+        cs = ax.contour(xx, yy, contour_data, levels=levels)
         plt.close(fig)
 
         contours_out = []
-        # Use allsegs (works on matplotlib >= 3.8, avoids deprecated collections)
+        minimum_area = np.pi * float(radius) ** 2 * 0.015
+        # Keep one dominant contour per dose level.  Tiny satellite contours are
+        # noise and were the cause of the saturated, stippled overlay.
         for level_segs in cs.allsegs:
+            candidates = []
             for seg in level_segs:
-                # seg is Nx2 array of (x, y) in absolute image coords
-                if len(seg) < 3:
+                if len(seg) < 8:
                     continue
-                # Clip to circle boundary
                 dx = seg[:, 0] - cx
                 dy = seg[:, 1] - cy
                 inside = (dx**2 + dy**2) <= (radius * 1.02)**2
-                if np.sum(inside) < 3:
+                if np.sum(inside) < 8:
                     continue
                 pts = seg[inside]
-                cnt = pts.reshape(-1, 1, 2).astype(np.int32)
-                contours_out.append(cnt)
+                area = abs(float(cv2.contourArea(pts.astype(np.float32))))
+                if area >= minimum_area:
+                    candidates.append((area, pts))
+            if candidates:
+                _, dominant = max(candidates, key=lambda item: item[0])
+                contours_out.append(
+                    np.rint(dominant).reshape(-1, 1, 2).astype(np.int32)
+                )
 
         return contours_out
 

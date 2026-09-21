@@ -103,7 +103,7 @@ def combine_channel_estimates(means, uncertainties, method: str) -> CombinedEsti
     """Combine channel estimates with statistically interpretable weights."""
     means = np.asarray(means, dtype=np.float64)
     uncertainties = np.asarray(uncertainties, dtype=np.float64)
-    valid = np.isfinite(means) & np.isfinite(uncertainties) & (uncertainties > 0)
+    valid = np.isfinite(means) & np.isfinite(uncertainties) & (uncertainties >= 0)
 
     if not np.any(valid):
         finite_means = means[np.isfinite(means)]
@@ -112,6 +112,22 @@ def combine_channel_estimates(means, uncertainties, method: str) -> CombinedEsti
 
     values = means[valid]
     errors = uncertainties[valid]
+    if np.any(errors == 0):
+        # A constant ROI legitimately has zero repeatability uncertainty.  Exact
+        # inverse-variance weights are singular, so use equal channel weights and
+        # retain any observed inter-channel disagreement as a finite standard
+        # uncertainty instead of emitting NaN.
+        value = float(np.mean(values))
+        propagated = float(np.sqrt(np.sum(errors**2)) / values.size)
+        disagreement = (
+            float(np.std(values, ddof=1) / np.sqrt(values.size))
+            if values.size > 1 else 0.0
+        )
+        full_weights = np.zeros(means.shape, dtype=np.float64)
+        full_weights[valid] = 1.0 / values.size
+        return CombinedEstimate(
+            value, max(propagated, disagreement), full_weights, method
+        )
     base_weights = 1.0 / errors**2
     weights = base_weights.copy()
     effective_method = method

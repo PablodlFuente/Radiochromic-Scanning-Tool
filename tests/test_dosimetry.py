@@ -66,9 +66,14 @@ class CalibrationMathTests(unittest.TestCase):
         inconsistent = combine_channel_estimates([1.0, 2.0, 3.0], [0.1] * 3, "birge_factor")
         self.assertGreater(inconsistent.uncertainty, consistent.uncertainty)
 
-    def test_unknown_uncertainty_is_not_reported_as_zero(self):
+    def test_zero_repeatability_uses_interchannel_disagreement(self):
         result = combine_channel_estimates([1.0, 2.0, 3.0], [0.0, 0.0, 0.0], "weighted_average")
-        self.assertTrue(np.isnan(result.uncertainty))
+        self.assertAlmostEqual(result.value, 2.0)
+        self.assertAlmostEqual(result.uncertainty, 1.0 / np.sqrt(3))
+
+    def test_identical_constant_channels_have_zero_repeatability_uncertainty(self):
+        result = combine_channel_estimates([2.0, 2.0, 2.0], [0.0, 0.0, 0.0], "weighted_average")
+        self.assertEqual(result.uncertainty, 0.0)
 
     def test_roi_uncertainty_combines_sampling_and_parameter_covariance(self):
         processor = ImageProcessor.__new__(ImageProcessor)
@@ -101,7 +106,7 @@ class CalibrationMathTests(unittest.TestCase):
         self.assertEqual(deviations[0], 1.0)
         self.assertAlmostEqual(uncertainties[0], 1.0 / np.sqrt(2))
 
-    def test_missing_fit_uncertainty_remains_unknown(self):
+    def test_missing_fit_covariance_falls_back_to_roi_repeatability(self):
         with tempfile.TemporaryDirectory() as directory:
             fit_path = Path(directory) / "fit_parameters.csv"
             with fit_path.open("w", newline="", encoding="utf-8") as handle:
@@ -137,7 +142,37 @@ class CalibrationMathTests(unittest.TestCase):
             processor.current_image.reshape(-1, 3),
             processor.calibration_source_image.reshape(-1, 3),
         )
-        self.assertTrue(np.isnan(uncertainties).all())
+        np.testing.assert_allclose(uncertainties, 0.0)
+        self.assertEqual(
+            processor.calibration_provenance["uncertainty_scope"],
+            "roi_repeatability_only",
+        )
+
+    def test_spline_uncertainty_reports_finite_roi_repeatability(self):
+        processor = ImageProcessor.__new__(ImageProcessor)
+        processor.calibration_applied = True
+        processor.calibration_fit_params = {"G": (1.0, 2.0, -1.0)}
+        processor.calibration_param_covariances = {"G": np.full((3, 3), np.nan)}
+
+        _, deviations, uncertainties = processor._summarize_roi_pixels(
+            np.array([[1.0], [1.2], [0.8]]),
+            np.array([[10.0], [11.0], [12.0]]),
+        )
+
+        self.assertAlmostEqual(uncertainties[0], deviations[0] / np.sqrt(3))
+
+    def test_arbitrary_mask_measurement_uses_only_selected_pixels(self):
+        processor = ImageProcessor.__new__(ImageProcessor)
+        processor.current_image = np.arange(16, dtype=float).reshape(4, 4, 1)
+        processor.calibration_applied = False
+        processor.config = {"uncertainty_estimation_method": "weighted_average"}
+        mask = np.zeros((4, 4), dtype=bool)
+        mask[1:3, 1:3] = True
+
+        result = processor.measure_mask(mask)
+
+        self.assertEqual(result[-1], 4)
+        self.assertAlmostEqual(result[0], 7.5)
 
 
 if __name__ == "__main__":

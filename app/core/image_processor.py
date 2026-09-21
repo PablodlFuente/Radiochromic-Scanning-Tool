@@ -1243,7 +1243,7 @@ class ImageProcessor:
         return result.value, result.uncertainty
 
     def _summarize_roi_pixels(self, pixels, source_pixels=None):
-        """Return channel statistics, including shared calibration uncertainty."""
+        """Return channel statistics and the uncertainty that can be supported."""
         values = np.asarray(pixels)
         if values.ndim == 1:
             values = values[:, None]
@@ -1270,10 +1270,15 @@ class ImageProcessor:
                     self.calibration_fit_params[channel],
                     self.calibration_param_covariances[channel],
                 )
+            # Spline calibration does not have a compact parameter covariance.
+            # In that case, report the measurable within-ROI standard uncertainty
+            # instead of discarding it as NaN.  The provenance record states which
+            # components are included so this is not presented as a full calibration
+            # uncertainty budget.
             total = (
                 float(np.hypot(statistical, parameter))
                 if np.isfinite(parameter)
-                else float("nan")
+                else float(statistical)
             )
             means.append(mean)
             standard_deviations.append(standard_deviation)
@@ -1289,6 +1294,56 @@ class ImageProcessor:
             return self.measure_area(x * self.zoom, y * self.zoom)
         finally:
             self.measurement_shape, self.measurement_size = shape, size
+
+    @synchronized
+    def measure_mask(self, mask):
+        """Measure an arbitrary boolean mask in source-image coordinates."""
+        if self.current_image is None:
+            return None
+        mask = np.asarray(mask, dtype=bool)
+        if mask.shape != self.current_image.shape[:2] or not np.any(mask):
+            return None
+        rows, columns = np.where(mask)
+        origin = (float(np.mean(columns)), float(np.mean(rows)))
+        return self._measure_selected_pixels(rows, columns, origin)
+
+    def _measure_selected_pixels(self, rows, columns, origin):
+        """Summarize pixels selected by source-coordinate row/column arrays."""
+        pixels = self.current_image[rows, columns]
+        source_pixels = (
+            self.calibration_source_image[rows, columns]
+            if self.calibration_applied and self.calibration_source_image is not None
+            else None
+        )
+        means, deviations, uncertainties = self._summarize_roi_pixels(pixels, source_pixels)
+        pixel_count = int(len(rows))
+        if not np.any(np.isfinite(means)):
+            return None
+        counts = np.sum(np.isfinite(pixels), axis=0)
+        self.last_valid_pixel_counts = np.atleast_1d(counts).astype(int).tolist()
+
+        sample_indices = np.arange(pixel_count)
+        if pixel_count > 1000:
+            sample_indices = np.linspace(0, pixel_count - 1, 1000, dtype=int)
+        self.last_measurement_raw_data = np.asarray(pixels)[sample_indices]
+        origin_x, origin_y = origin
+        self.last_measurement_coordinates = np.column_stack((
+            columns[sample_indices] - origin_x,
+            rows[sample_indices] - origin_y,
+        ))
+        self.last_auto_measure_time = time.time()
+
+        if means.size == 1:
+            self.last_channel_weights = None
+            return (
+                float(means[0]), float(deviations[0]), float(uncertainties[0]),
+                float(means[0]), float(uncertainties[0]), pixel_count,
+            )
+        combined_mean, combined_uncertainty = self._calculate_combined_uncertainty(means, uncertainties)
+        return (
+            tuple(means), tuple(deviations), tuple(uncertainties),
+            combined_mean, combined_uncertainty, pixel_count,
+        )
 
     @synchronized
     def measure_area(self, canvas_x, canvas_y):
@@ -1338,40 +1393,8 @@ class ImageProcessor:
                 logger.warning("Unknown measurement shape: %s", self.measurement_shape)
                 return None
 
-            pixels = self.current_image[rows, columns]
-            source_pixels = (
-                self.calibration_source_image[rows, columns]
-                if self.calibration_applied and self.calibration_source_image is not None
-                else None
-            )
-            means, deviations, uncertainties = self._summarize_roi_pixels(pixels, source_pixels)
-            pixel_count = int(len(rows))
-            if not np.any(np.isfinite(means)):
-                return None
-            counts = np.sum(np.isfinite(pixels), axis=0)
-            self.last_valid_pixel_counts = np.atleast_1d(counts).astype(int).tolist()
-
-            sample_indices = np.arange(pixel_count)
-            if pixel_count > 1000:
-                # Deterministic sampling makes repeated measurements reproducible.
-                sample_indices = np.linspace(0, pixel_count - 1, 1000, dtype=int)
-            self.last_measurement_raw_data = np.asarray(pixels)[sample_indices]
-            self.last_measurement_coordinates = np.column_stack((
-                columns[sample_indices] - image_x,
-                rows[sample_indices] - image_y,
-            ))
-            self.last_auto_measure_time = time.time()
-
-            if means.size == 1:
-                self.last_channel_weights = None
-                return (
-                    float(means[0]), float(deviations[0]), float(uncertainties[0]),
-                    float(means[0]), float(uncertainties[0]), pixel_count,
-                )
-            combined_mean, combined_uncertainty = self._calculate_combined_uncertainty(means, uncertainties)
-            return (
-                tuple(means), tuple(deviations), tuple(uncertainties),
-                combined_mean, combined_uncertainty, pixel_count,
+            return self._measure_selected_pixels(
+                rows, columns, (image_x, image_y)
             )
         except Exception as exc:
             logger.error("Error measuring area: %s", exc, exc_info=True)
@@ -1634,6 +1657,16 @@ class ImageProcessor:
             "calibration_integrity": "verified" if integrity else "unverified",
             "units": "Gy", "flat_applied": bool(self.flat_applied),
             "conversion_method": self.calibration_conversion_method,
+            "uncertainty_scope": (
+                "roi_repeatability_plus_rational_fit_covariance"
+                if (requested_method == "fit" or spline_models is None)
+                and all(
+                    np.asarray(covariances[channel]).shape == (3, 3)
+                    and np.all(np.isfinite(covariances[channel]))
+                    for channel in CHANNELS
+                )
+                else "roi_repeatability_only"
+            ),
         }
         self.state_revision = getattr(self, "state_revision", 0) + 1
         self._compute_integral_images()

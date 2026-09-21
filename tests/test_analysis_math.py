@@ -45,6 +45,20 @@ class AnalysisMathTests(unittest.TestCase):
         self.assertAlmostEqual(measured[0], center_x, delta=0.15)
         self.assertAlmostEqual(measured[1], center_y, delta=0.15)
 
+    def test_isobars_keep_only_dominant_smooth_contours(self):
+        analysis = AnalysisTab.__new__(AnalysisTab)
+        size, radius = 181, 70
+        yy, xx = np.mgrid[:size, :size]
+        rng = np.random.default_rng(7)
+        dose = np.exp(-(((xx - 92) / 42) ** 2 + ((yy - 87) / 34) ** 2))
+        dose += rng.normal(0.0, 0.08, dose.shape)
+
+        contours = analysis._extract_isobars(dose, 90, 90, radius)
+
+        self.assertGreaterEqual(len(contours), 3)
+        self.assertLessEqual(len(contours), 5)
+        self.assertTrue(all(len(contour) >= 8 for contour in contours))
+
     def test_dose_plot_is_opened_in_application_owned_window(self):
         analysis = AnalysisTab.__new__(AnalysisTab)
         analysis._collect_film_data = lambda: {
@@ -75,6 +89,14 @@ class AnalysisMathTests(unittest.TestCase):
             panel._show_interactive_graph()
         show.assert_called_once()
         plt.close("all")
+
+    def test_measurement_limit_tracks_largest_image_side(self):
+        panel = MeasurementPanel.__new__(MeasurementPanel)
+        panel.image_processor = SimpleNamespace(
+            original_image=np.zeros((877, 2111, 3), dtype=np.uint8),
+            current_image=None,
+        )
+        self.assertEqual(panel._maximum_measurement_size(), 2111)
 
 
 if __name__ == "__main__":
