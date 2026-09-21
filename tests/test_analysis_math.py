@@ -6,6 +6,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from custom_plugins.analysis_tools import AnalysisTab, fit_weighted_line
+from app.ui.measurement_panel import MeasurementPanel
 
 
 class AnalysisMathTests(unittest.TestCase):
@@ -57,6 +58,21 @@ class AnalysisMathTests(unittest.TestCase):
         analysis.frame = object()
         with patch("app.ui.plot_window.show_figure") as show:
             analysis._plot_dose_vs_value()
+        show.assert_called_once()
+        plt.close("all")
+
+    def test_line_profile_is_opened_in_application_owned_window(self):
+        panel = MeasurementPanel.__new__(MeasurementPanel)
+        panel.has_valid_measurement = True
+        panel.current_measurement_data = object()
+        panel.frame = object()
+        panel.image_processor = SimpleNamespace(
+            calibration_applied=False,
+            get_last_measurement_raw_data=lambda: np.array([[1., 2., 3.], [2., 3., 4.]]),
+            get_last_measurement_coordinates=lambda: np.array([[0., 0.], [0., 1.]]),
+        )
+        with patch("app.ui.plot_window.show_figure") as show:
+            panel._show_interactive_graph()
         show.assert_called_once()
         plt.close("all")
 

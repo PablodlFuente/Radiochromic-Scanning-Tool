@@ -1693,9 +1693,6 @@ class MeasurementPanel:
         if raw_data is None or coordinates is None or len(raw_data) == 0:
             return
         
-        # Import matplotlib.pyplot for interactive window
-        import matplotlib.pyplot as plt
-        
         # Create new figure
         fig, ax = plt.subplots(figsize=(10, 6))
         
@@ -1727,9 +1724,10 @@ class MeasurementPanel:
         ax.legend(fontsize=10)
         ax.grid(True, alpha=0.3)
         
-        # Enable toolbar for zoom, pan, save
-        plt.tight_layout()
-        plt.show()
+        # Open a Tk-owned window with zoom, pan and save controls.
+        fig.tight_layout()
+        from app.ui.plot_window import show_figure
+        show_figure(self.frame, fig, "Line Profile")
     
     def is_auto_measure_enabled(self):
         """Check if auto-measurement is enabled."""
