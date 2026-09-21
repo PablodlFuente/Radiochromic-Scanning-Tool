@@ -15,6 +15,7 @@ AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
 DefaultDirName={localappdata}\Programs\{#AppName}
+DisableDirPage=no
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest

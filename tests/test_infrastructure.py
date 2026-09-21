@@ -107,6 +107,7 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("DefaultDirName={localappdata}\\Programs", installer)
         self.assertIn("PrivilegesRequired=lowest", installer)
         self.assertIn("RadiochromicFilmAnalyzer-Setup", installer)
+        self.assertIn("DisableDirPage=no", installer)
         for directory in ("logs", "temp", "custom_plugins", "calibration_data"):
             self.assertIn(f'Name: "{{app}}\\{directory}"; Flags: uninsneveruninstall', installer)
 
