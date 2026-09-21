@@ -1558,6 +1558,8 @@ class AutoMeasurementsTab(ttk.Frame):
         has_per_film_ctr = len(self.ctr_manager.ctr_map) > 0
         has_global_ctr = self.global_ctr is not None
         has_any_ctr = has_per_film_ctr or has_global_ctr
+        correction_active = has_any_ctr and self.subtract_ctr_var.get()
+        self._update_ctr_column_headings(correction_active)
         
         # ALWAYS restore original values first to prevent cumulative errors
         # This ensures we always start from clean original data before applying any correction
@@ -1572,6 +1574,15 @@ class AutoMeasurementsTab(ttk.Frame):
         else:
             # Apply per-film CTR (starting from clean originals)
             self.ctr_manager.apply_ctr_subtraction(self.results)
+
+    def _update_ctr_column_headings(self, correction_active):
+        """Make the scope of raw and CTR-corrected values explicit."""
+        if correction_active:
+            self.tree.heading("dose", text="Channel dose (raw)")
+            self.tree.heading("avg", text="Average - CTR")
+        else:
+            self.tree.heading("dose", text="Dose")
+            self.tree.heading("avg", text="Average")
 
     def _apply_global_ctr_subtraction(self):
         """Apply Global CTR subtraction to ALL circles across ALL films with proper uncertainty propagation."""

@@ -63,6 +63,12 @@ class TkWorkflowTests(unittest.TestCase):
                 }
                 self.assertIn("Add Measurement Area", button_labels)
                 self.assertNotIn("Add Circle", button_labels)
+                tab.global_ctr = {"item_id": "missing"}
+                tab._update_ctr_column_headings(True)
+                self.assertEqual(tab.tree.heading("dose", "text"), "Channel dose (raw)")
+                self.assertEqual(tab.tree.heading("avg", "text"), "Average - CTR")
+                tab.global_ctr = None
+                tab._update_ctr_column_headings(False)
                 tab.add_area_button.invoke()
                 root.update()
                 popup = tab._shape_picker_window
