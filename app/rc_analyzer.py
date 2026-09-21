@@ -76,6 +76,19 @@ class RCAnalyzer(tk.Tk):
         """Show update notification dialog."""
         msg = f"A new version is available!\n\n{commits_behind} update(s) available.\n\nGo to Help → Check for Updates to update."
         messagebox.showinfo("Update Available", msg, parent=self)
+
+    def report_callback_exception(self, exception_type, exception, traceback):
+        """Make uncaught Tk callback failures visible while preserving full logs."""
+        logger.error(
+            "Unhandled UI callback exception",
+            exc_info=(exception_type, exception, traceback),
+        )
+        messagebox.showerror(
+            "Unexpected application error",
+            f"{exception_type.__name__}: {exception}\n\n"
+            "The operation did not complete. Full diagnostic details were written to the logs folder.",
+            parent=self,
+        )
     
     def _cleanup_files(self):
         """Clean up log and temporary files."""

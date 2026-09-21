@@ -1,6 +1,9 @@
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
+import matplotlib.pyplot as plt
 
 from custom_plugins.analysis_tools import AnalysisTab, fit_weighted_line
 
@@ -40,6 +43,22 @@ class AnalysisMathTests(unittest.TestCase):
         self.assertIsNotNone(measured)
         self.assertAlmostEqual(measured[0], center_x, delta=0.15)
         self.assertAlmostEqual(measured[1], center_y, delta=0.15)
+
+    def test_dose_plot_is_opened_in_application_owned_window(self):
+        analysis = AnalysisTab.__new__(AnalysisTab)
+        analysis._collect_film_data = lambda: {
+            "F": [("C1", 1.0, 2.0, 0.1), ("C2", 2.0, 4.0, 0.1)]
+        }
+        analysis._force_origin_var = SimpleNamespace(get=lambda: True)
+        analysis._separate_rc_var = SimpleNamespace(get=lambda: False)
+        analysis._show_analysis_data_var = SimpleNamespace(get=lambda: False)
+        analysis._recompute_analysis_results = lambda: None
+        analysis._fit_line = fit_weighted_line
+        analysis.frame = object()
+        with patch("app.ui.plot_window.show_figure") as show:
+            analysis._plot_dose_vs_value()
+        show.assert_called_once()
+        plt.close("all")
 
 
 if __name__ == "__main__":

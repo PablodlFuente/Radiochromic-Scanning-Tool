@@ -1236,7 +1236,7 @@ class AnalysisTab:
                               for idx, (film_name, data) in enumerate(sorted_films)]
         else:
             fig, ax = plt.subplots(1, 1, figsize=(7, 5))
-            palette = plt.cm.get_cmap('tab10', max(len(sorted_films), 1))
+            palette = plt.colormaps.get_cmap('tab10').resampled(max(len(sorted_films), 1))
             axes_list = [ax]
             grouped_series = [
                 (film_name, data, ax, palette(idx))
@@ -1306,4 +1306,5 @@ class AnalysisTab:
             self._refresh_dose_tree()
 
         fig.tight_layout()
-        plt.show()
+        from app.ui.plot_window import show_figure
+        show_figure(self.frame, fig, "Dose vs Introduced Value")

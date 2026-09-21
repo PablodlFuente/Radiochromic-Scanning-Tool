@@ -18,7 +18,7 @@ class ImageIOIntegrityTests(unittest.TestCase):
             dtype=np.uint16,
         )
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "película_ñ.tif"
+            path = Path(directory) / "unicode_ñ.tif"
             write_tiff_unchanged(path, image)
             decoded_bgr = read_image_unchanged(path)
 

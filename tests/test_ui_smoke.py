@@ -7,13 +7,29 @@ from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
+import matplotlib.pyplot as plt
 
 from app.models.config_model import DEFAULT_CONFIG
 from app.ui.main_window import MainWindow
 from app.utils.image_io import write_tiff_unchanged
+from app.ui.plot_window import show_figure
 
 
 class TkWorkflowTests(unittest.TestCase):
+    def test_plot_window_is_owned_by_tk_and_can_close_cleanly(self):
+        try:
+            root = tk.Tk()
+        except tk.TclError as exc:
+            self.skipTest(f"Tk display unavailable: {exc}")
+        root.withdraw()
+        figure = plt.figure()
+        window = show_figure(root, figure, "Test plot")
+        root.update_idletasks()
+        self.assertTrue(window.winfo_exists())
+        window.close_figure()
+        root.update_idletasks()
+        root.destroy()
+
     def test_loading_another_image_clears_results_and_keeps_native_precision(self):
         try:
             root = tk.Tk()
@@ -30,7 +46,8 @@ class TkWorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, patch(
             "app.utils.config_manager.ConfigManager.save_config", return_value=True
         ), patch("app.utils.file_manager.FileManager.add_recent_file"), patch(
-            "app.ui.main_window.messagebox.showerror", side_effect=lambda *args: failures.append(str(args))
+            "app.ui.main_window.messagebox.showerror",
+            side_effect=lambda *args, **kwargs: failures.append(str(args)),
         ):
             try:
                 window = MainWindow(root, config)

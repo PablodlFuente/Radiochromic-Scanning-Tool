@@ -839,17 +839,17 @@ class AutoMeasurementsTab(ttk.Frame):
     
     def _manual_dpi_input(self):
         """Allow manual DPI input when metadata is not available."""
-        # Crear diálogo personalizado para mantenerlo enfocado
+        # Create a custom dialog and keep it focused.
         dialog = tk.Toplevel(self.frame)
         dialog.title("Enter DPI Manually")
         dialog.transient(self.frame)  # Mantener sobre la ventana principal
         dialog.grab_set()  # Hacer modal
         
-        # Centrar diálogo
+        # Center the dialog.
         dialog.geometry("400x300")
         dialog.resizable(False, False)
         
-        # Título
+        # Title.
         ttk.Label(dialog, text="Enter the image DPI (dots per inch):", 
                  font=('Arial', 10, 'bold')).pack(pady=(10, 5))
         
@@ -895,7 +895,7 @@ class AutoMeasurementsTab(ttk.Frame):
                 self._apply_conversion(conversion_factor)
                 self._convert_parameters_to_mm(conversion_factor)
                 
-                # Actualizar etiquetas de resolución y conversión
+                # Update resolution and conversion labels.
                 if hasattr(self, 'resolution_label'):
                     self.resolution_label.config(text=f"Resolution: {dpi_input:.3f} DPI")
                     self.conversion_label.config(text=f"({conversion_factor:.6f} mm/px)")
@@ -910,7 +910,7 @@ class AutoMeasurementsTab(ttk.Frame):
                 )
                 
             except ValueError as e:
-                messagebox.showerror("Error", f"Valor de DPI no válido: {e}")
+                messagebox.showerror("Error", f"Invalid DPI value: {e}")
                 dpi_entry.focus_set()
         
         ttk.Button(btn_frame, text="OK", command=on_ok).pack(side=tk.LEFT, padx=5)
@@ -922,7 +922,7 @@ class AutoMeasurementsTab(ttk.Frame):
         
         dpi_entry.bind('<Return>', on_enter)
         
-        # Centrar diálogo
+        # Center the dialog.
         dialog.update_idletasks()
         width = dialog.winfo_width()
         height = dialog.winfo_height()
@@ -1021,7 +1021,7 @@ class AutoMeasurementsTab(ttk.Frame):
     def _show_metadata_selection_dialog(self, metadata):
         """Show dialog for selecting metadata key for DPI/resolution."""
         dialog = tk.Toplevel(self.frame)
-        dialog.title("Seleccionar Metadato de Resolución")
+        dialog.title("Select Resolution Metadata")
         dialog.geometry("600x400")
         dialog.resizable(True, True)
         dialog.grab_set()  # Make dialog modal
@@ -1032,7 +1032,7 @@ class AutoMeasurementsTab(ttk.Frame):
         # Instructions
         instruction_label = ttk.Label(
             dialog, 
-            text="Selecciona el metadato que contiene la información de resolución (DPI):",
+            text="Select the metadata field containing the resolution (DPI):",
             font=("Arial", 10, "bold")
         )
         instruction_label.pack(pady=10, padx=10, anchor=tk.W)
@@ -1113,7 +1113,7 @@ class AutoMeasurementsTab(ttk.Frame):
         # Add info items at the end
         info_items = [(k, v) for k, v in metadata.items() if k.startswith('_info')]
         if info_items:
-            separator_id = metadata_tree.insert("", "end", text="─── Información adicional ───", values=("",))
+            separator_id = metadata_tree.insert("", "end", text="─── Additional information ───", values=("",))
             for key, value in info_items:
                 display_value = str(value)
                 if len(display_value) > 100:
@@ -1141,7 +1141,7 @@ class AutoMeasurementsTab(ttk.Frame):
         
         def on_accept():
             if selected_key is None:
-                messagebox.showwarning("Selección", "Por favor selecciona un metadato.")
+                messagebox.showwarning("Selection", "Select a metadata field.")
                 return
             
             # Try to extract resolution from selected metadata
@@ -1150,8 +1150,8 @@ class AutoMeasurementsTab(ttk.Frame):
             if resolution is None or resolution <= 0:
                 messagebox.showerror(
                     "Error", 
-                    f"No se pudo extraer un valor de resolución válido del metadato '{selected_key}'.\n"
-                    f"Valor: {selected_value}"
+                    f"A valid resolution could not be extracted from metadata field '{selected_key}'.\n"
+                    f"Value: {selected_value}"
                 )
                 return
             
@@ -1288,6 +1288,7 @@ class AutoMeasurementsTab(ttk.Frame):
 
         circle_coords = self._get_circle_coords_from_item(item_id)
         if circle_coords is None:
+            messagebox.showinfo("3D View", "Right-click a measured circle to open its 3D view.")
             return
 
         cx, cy, r = circle_coords
@@ -2081,7 +2082,7 @@ class AutoMeasurementsTab(ttk.Frame):
     def start_detection(self):
         """Start automatic detection of films and circles."""
         if not self.image_processor.has_image():
-            messagebox.showwarning("AutoMeasurements", "Carga una imagen primero.")
+            messagebox.showwarning("AutoMeasurements", "Load an image first.")
             return
         
         # Get parent module reference for _OVERLAY access
@@ -2154,7 +2155,7 @@ class AutoMeasurementsTab(ttk.Frame):
             # Get resolution
             resolution = self._get_resolution_from_metadata()
             if resolution is None or resolution <= 0:
-                messagebox.showerror("Error", "Resolución no disponible para conversión de unidades.")
+                messagebox.showerror("Error", "Resolution is unavailable for unit conversion.")
                 return
             
             conversion_factor = 25.4 / resolution
@@ -2199,7 +2200,7 @@ class AutoMeasurementsTab(ttk.Frame):
         # Detect films using DetectionEngine
         films = self.detector.detect_films(gray, params)
         if not films:
-            messagebox.showinfo("AutoMeasurements", "No se detectaron radiocromías.")
+            messagebox.showinfo("AutoMeasurements", "No radiochromic films were detected.")
             if restore_params:
                 self._restore_detection_params()
             return
@@ -2423,7 +2424,7 @@ class AutoMeasurementsTab(ttk.Frame):
                 resolution = self._get_resolution_from_metadata()
                 if resolution is None or resolution <= 0:
                     logging.error(f"Invalid resolution detected: {resolution}")
-                    messagebox.showerror("Error", "Resolución no disponible para conversión de unidades.")
+                    messagebox.showerror("Error", "Resolution is unavailable for unit conversion.")
                     self.use_metadata_var.set(False)
                     return
                 self.stored_resolution = resolution
@@ -3015,7 +3016,8 @@ class AutoMeasurementsTab(ttk.Frame):
         ax.set_ylabel("Y")
         ax.set_zlabel(z_label)
 
-        plt.show()
+        from app.ui.plot_window import show_figure
+        show_figure(self.frame, fig, plot_title)
 
     def _autosize_columns(self):
         """Adjust column widths to fit content."""
@@ -3302,9 +3304,8 @@ class AutoMeasurementsTab(ttk.Frame):
         if not parent_id:
             messagebox.showwarning(
                 "Add Circle",
-                "El círculo debe estar dentro de una radiocrómica (RC).\n\n"
-                "Por favor, primero añade un RC (Add RC) y luego\n"
-                "dibuja el círculo dentro de sus límites."
+                "The circle must be inside a radiochromic film (RC).\n\n"
+                "Add an RC first, then draw the circle within its boundaries."
             )
             logging.warning(f"[_insert_circle] Circle at ({cx}, {cy}) rejected: no parent film found")
             return
@@ -3361,7 +3362,7 @@ class AutoMeasurementsTab(ttk.Frame):
             logging.warning("[_insert_circle] Circle at (%s, %s) rejected: measurement failed", cx, cy)
             messagebox.showwarning(
                 "Add Circle",
-                "No se pudo obtener una medida válida para esta región. El círculo no se ha guardado.",
+                "No valid measurement could be obtained for this region. The circle was not saved.",
             )
             return
 

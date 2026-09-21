@@ -6,7 +6,7 @@ the image view.
 """
 
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 import logging
 import threading
 import queue
@@ -36,6 +36,8 @@ class ImagePanel:
         self.is_adjustment = False  # Flag to indicate if this is an adjustment or initial load
         self._display_request_id = 0
         self._ui_queue = queue.Queue()
+        self._pending_after_ids = set()
+        self._reported_errors = set()
         
         # Measurement display
         self.measurement_visible = False
@@ -95,10 +97,38 @@ class ImagePanel:
                 callback()
         except queue.Empty:
             pass
-        except Exception:
+        except Exception as exc:
             logger.exception("UI callback failed")
+            self._show_error_once("Interface error", str(exc))
         if self.canvas.winfo_exists():
             self._ui_poll_id = self.canvas.after(30, self._drain_ui_queue)
+
+    def _schedule_after(self, delay_ms, callback):
+        """Schedule a Tk callback and retain its identifier for clean shutdown."""
+        holder = {}
+
+        def run():
+            self._pending_after_ids.discard(holder.get("id"))
+            callback()
+
+        holder["id"] = self.canvas.after(delay_ms, run)
+        self._pending_after_ids.add(holder["id"])
+        return holder["id"]
+
+    def _show_error_once(self, title, message):
+        """Show a repeated background failure once while retaining every log entry."""
+        key = (title, message)
+        if key in self._reported_errors or not self.frame.winfo_exists():
+            return
+        self._reported_errors.add(key)
+        messagebox.showerror(
+            title,
+            f"{message}\n\nFull diagnostic details were written to the logs folder.",
+            parent=self.frame.winfo_toplevel(),
+        )
+
+    def _queue_error(self, title, message):
+        self._ui_queue.put(lambda: self._show_error_once(title, message))
 
     def _start_measurement_thread(self):
         """Start the measurement worker thread."""
@@ -145,14 +175,14 @@ class ImagePanel:
                 
                 # Update the UI on the main thread
                 if results:
-                    # Crear un hilo separado para el procesamiento del histograma
+                    # Process histogram data separately from the measurement worker.
                     if self.measurement_callback:
                         self._ui_queue.put(lambda r=results, rev=revision, tid=task_id:
                             self._update_measurement_results(r)
                             if rev == self.image_processor.state_revision and tid == self.current_task_id
                             else None)
                         
-                        # Procesar el histograma en un hilo separado si tenemos datos crudos
+                        # Start histogram processing when raw data is available.
                         if hasattr(self.image_processor, 'last_measurement_raw_data') and self.image_processor.last_measurement_raw_data is not None:
                             threading.Thread(
                                 target=self._process_histogram_data,
@@ -167,6 +197,7 @@ class ImagePanel:
                 continue
             except Exception as e:
                 logger.error(f"Error in measurement worker: {str(e)}", exc_info=True)
+                self._queue_error("Measurement error", str(e))
 
     
     def _update_measurement_results(self, results):
@@ -184,15 +215,15 @@ class ImagePanel:
     def _process_histogram_data(self, raw_data, coordinates):
         """Process histogram data in a separate thread."""
         try:
-            # Aquí se realizaría cualquier procesamiento pesado relacionado con el histograma
-            # Cuando termine, programamos la actualización del histograma en el hilo principal
+            # Schedule the histogram UI update on the Tk thread.
             self._ui_queue.put(lambda: self._update_histogram_from_data(raw_data))
         except Exception as e:
             logger.error(f"Error processing histogram data: {str(e)}", exc_info=True)
+            self._queue_error("Histogram error", str(e))
 
     def _update_histogram_from_data(self, raw_data):
         """Update the histogram UI with processed data."""
-        # Buscar el panel de medición para actualizar el histograma
+        # Locate the measurement panel and update its histogram.
         if hasattr(self.parent.winfo_toplevel(), 'main_window') and hasattr(self.parent.winfo_toplevel().main_window, 'measurement_panel'):
             measurement_panel = self.parent.winfo_toplevel().main_window.measurement_panel
             measurement_panel._update_histogram()
@@ -456,7 +487,7 @@ class ImagePanel:
             # Hide status frame when complete
             if progress >= 100:
                 # Wait a moment before hiding to show completion
-                self.canvas.after(1000, self._hide_status_frame)
+                self._schedule_after(1000, self._hide_status_frame)
         
         elif operation == "loading":
             # Show status frame if not already visible
@@ -480,7 +511,7 @@ class ImagePanel:
             # Hide status frame when complete
             if progress >= 100:
                 # Wait a moment before hiding to show completion
-                self.canvas.after(500, self._hide_status_frame)
+                self._schedule_after(500, self._hide_status_frame)
     
     def _hide_status_frame(self):
         """Hide the status frame."""
@@ -518,6 +549,7 @@ class ImagePanel:
             logger.error(f"Error applying binning: {str(e)}", exc_info=True)
             # Hide binning status on error
             self._ui_queue.put(self._hide_status_frame)
+            self._queue_error("Preview binning error", str(e))
     
     def _after_binning_applied(self):
         """Handle UI updates after binning is applied."""
@@ -540,7 +572,7 @@ class ImagePanel:
         
         if canvas_width <= 1 or canvas_height <= 1:
             # Canvas doesn't have dimensions yet, schedule update
-            self.canvas.after(100, lambda: self.display_image(is_adjustment))
+            self._schedule_after(100, lambda: self.display_image(is_adjustment))
             return
         
         # Show loading indicator only for initial loads, not adjustments
@@ -577,13 +609,14 @@ class ImagePanel:
             logger.error(f"Error processing image: {str(e)}", exc_info=True)
             # Hide loading indicator on error
             self._ui_queue.put(self._hide_loading)
+            self._queue_error("Image display error", str(e))
     
     def _update_canvas(self, pil_image, width, height, request_id):
         """Update the canvas with the processed image."""
         if request_id != self._display_request_id:
             return
         if pil_image:
-            image_tk = ImageTk.PhotoImage(pil_image)
+            image_tk = ImageTk.PhotoImage(pil_image, master=self.canvas)
             # Update canvas scrollregion
             self.canvas.config(scrollregion=(0, 0, width, height))
         
@@ -658,7 +691,7 @@ class ImagePanel:
         
         if canvas_width <= 1 or canvas_height <= 1:
             # Canvas doesn't have dimensions yet, schedule update
-            self.canvas.after(100, self.fit_to_screen)
+            self._schedule_after(100, self.fit_to_screen)
             return
         
         logger.debug(f"Fitting image to screen: canvas dimensions {canvas_width}x{canvas_height}")
@@ -707,7 +740,7 @@ class ImagePanel:
             self.canvas.after_cancel(self.pending_auto_measure)
             self.pending_auto_measure = None
     
-        # Usar un tiempo de debounce más corto para mejorar la respuesta
+        # Use a short debounce interval for responsive pointer measurements.
         debounce_time = 20  # ms
     
         # Schedule a new auto-measure
@@ -773,7 +806,7 @@ class ImagePanel:
             
                 # Check if we have binned data with standard deviation
                 if isinstance(rgb, tuple) and len(rgb) == 2:
-                    # Tenemos un tuple (valor, std_dev)
+                    # The value includes its binned preview standard deviation.
                     main_window.update_rgb(rgb[0], std_dev=rgb[1])
                 else:
                     main_window.update_rgb(rgb)
@@ -1090,7 +1123,13 @@ class ImagePanel:
 
     def cleanup(self):
         """Clean up resources."""
-        self.canvas.after_cancel(self._ui_poll_id)
+        for callback_id in [self._ui_poll_id, self.pending_auto_measure, *self._pending_after_ids]:
+            if callback_id:
+                try:
+                    self.canvas.after_cancel(callback_id)
+                except tk.TclError:
+                    pass
+        self._pending_after_ids.clear()
         self._stop_measurement_thread()
     
     def _clear_measurement(self):
