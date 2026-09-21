@@ -1,5 +1,6 @@
 import json
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -8,6 +9,7 @@ from unittest.mock import patch
 from app.models.config_model import DEFAULT_CONFIG
 from app.plugins.plugin_manager import PluginManager
 from app.utils.config_manager import ConfigManager
+from app.version import __version__
 from custom_plugins.auto_measurements.core.metadata import MetadataExtractor
 
 
@@ -59,6 +61,20 @@ class PluginLifecycleTests(unittest.TestCase):
             manager._notebook = SimpleNamespace(index=lambda frame: 0, forget=lambda index: None)
             manager.set_active("test", False)
         self.assertEqual(called, [True])
+
+    def test_frozen_application_imports_bundled_plugins(self):
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "sys.frozen", True, create=True
+        ):
+            manager = PluginManager(directory)
+        self.assertIn("analysis_tools", manager.plugin_names())
+        self.assertIn("auto_measurements", manager.plugin_names())
+
+
+class ReleaseMetadataTests(unittest.TestCase):
+    def test_wheel_and_application_versions_match(self):
+        project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+        self.assertEqual(project["project"]["version"], __version__)
 
 
 if __name__ == "__main__":

@@ -64,11 +64,11 @@ Histogram display uses at most 1000 deterministic samples; ROI statistics use al
 ## AutoMeasurements
 
 1. Add one or more TIFF files.
-2. Adjust film and measurement-area detection thresholds if required.
+2. Open the gear button and choose `Circles`, `Squares` or `Circles and squares`; adjust RC, circle and square detection parameters if required.
 3. Run detection.
 4. Inspect contours and measurements before export.
 
-Automatic detection recognizes circular and square measurement areas. Detected circles are grouped into rows by Y coordinate and ordered by X; `C{row}{column}` expresses that position, while detected squares use `S{index}`. `Add RC` and `Add Measurement Area` open a vertical popover below the pressed button with `Draw rectangle`, `Draw circle` and `Draw custom`. Circles and rectangles are defined by dragging. A custom polygon is defined by successive clicks and completed with Space or right-click. Every measurement area must be completely contained by its assigned RC. Drag an RC or measurement area to move it individually; an invalid placement is reverted when released. Names must be unique among RCs and among measurement areas in the same RC. Completely invalid regions are not stored as zero-dose measurements.
+Automatic detection recognizes circular and square measurement areas. Square detection has independent minimum and maximum side limits. Detected circles are grouped into rows by Y coordinate and ordered by X; `C{row}{column}` expresses that position, while detected squares use `S{index}`. `Add RC` and `Add Measurement Area` open a vertical popover below the pressed button with `Draw rectangle`, `Draw circle` and `Draw custom`. Circles and rectangles are defined by dragging. A custom polygon is defined by successive clicks and completed with Space or right-click. Every measurement area must be completely contained by its assigned RC. Dragging uses a lightweight cyan canvas preview and recalculates the image only after release. An invalid placement is reverted when released. Names must be unique among RCs and among measurement areas in the same RC. Completely invalid regions are not stored as zero-dose measurements.
 
 Right-click a measured circle to open its Tk-owned 3D dose or intensity window. Image-specific results and overlays are cleared before another image is displayed; batch navigation then restores the snapshot belonging to the requested file.
 
@@ -78,9 +78,11 @@ Mark one or more circles as CTR controls for their film. A global CTR applies to
 
 Invalid controls are excluded. When a measured circle belongs to the control mean, its covariance with that mean is included. A single control subtracted from itself is exactly $0\pm0$.
 
+With CTR subtraction active, `Channel dose (raw)` remains the uncorrected per-channel measurement and `Average - CTR` is the combined estimate after control subtraction. A negative corrected value is valid when the selected control is larger than the sample; it is retained rather than clipped to zero.
+
 ## Analysis Tools
 
-The plugin provides geometric-versus-dose centroid comparison, four centroid methods, isodose contours, introduced-value association and weighted linear regression. Isodose overlays use radius-scaled Gaussian smoothing and retain one dominant contour per level, suppressing scanner-grain microcontours while preserving non-circular field structure. `Plot Dose vs Value` opens an application-owned Tk figure rather than relying on Matplotlib's global show loop.
+The plugin provides geometric-versus-dose centroid comparison, four centroid methods, radial isodose contours, introduced-value association and weighted linear regression. The isodose overlay strongly smooths the dose region, forms a robust azimuthal dose profile and draws up to five concentric levels around the calculated dosimetric centroid. This view intentionally represents the radial component of the field instead of scanner-grain microcontours. `Plot Dose vs Value` opens an application-owned Tk figure rather than relying on Matplotlib's global show loop.
 
 ## Export
 
@@ -88,4 +90,4 @@ Use `Export CSV` after reviewing the measurements. Numerical values are exported
 
 ## Updates and plugins
 
-Disabling a plugin runs its teardown function and removes overlays and references. The integrated updater accepts fast-forward Git updates only. Local tracked and untracked changes are temporarily stored and restored; a conflict retains the recovery material.
+Disabling a plugin runs its teardown function and removes overlays and references. The integrated updater checks only published GitHub Releases. A newer commit without a release is not offered as an update. The packaged application downloads the release executable, verifies its published size and SHA-256 digest when GitHub provides one, replaces the executable after shutdown and restarts it. Git is not required.

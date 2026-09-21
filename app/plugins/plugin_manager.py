@@ -24,6 +24,8 @@ from typing import Dict, List
 
 import logging
 
+from app.paths import PROJECT_ROOT
+
 logger = logging.getLogger(__name__)
 
 
@@ -57,6 +59,20 @@ class PluginManager:
         self.shutdown()
         self._plugins.clear()
         self._active.clear()
+
+        # PyInstaller stores bundled modules in its import archive rather than
+        # as writable source directories.  Import the built-in plugins by
+        # module name while still scanning the adjacent folder for user plugins.
+        if getattr(sys, "frozen", False):
+            for name in ("analysis_tools", "auto_measurements"):
+                try:
+                    module = importlib.import_module(f"custom_plugins.{name}")
+                    if hasattr(module, "process"):
+                        self._plugins[name] = module
+                        self._active[name] = True
+                        logger.info("Loaded plugin '%s' (bundled package)", name)
+                except Exception as exc:
+                    logger.error("Failed to load bundled plugin '%s': %s", name, exc, exc_info=True)
 
         for item in sorted(os.listdir(self.plugins_dir)):
             item_path = os.path.join(self.plugins_dir, item)
@@ -284,6 +300,5 @@ class PluginManager:
 # ----------------------------------------------------------------------
 # Singleton accessible from the rest of the application
 # ----------------------------------------------------------------------
-_project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-_plugins_root = os.path.join(_project_root, "custom_plugins")
+_plugins_root = os.path.join(PROJECT_ROOT, "custom_plugins")
 plugin_manager = PluginManager(_plugins_root)
