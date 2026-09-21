@@ -170,8 +170,8 @@ class UpdateCheckerReleaseTests(unittest.TestCase):
                 "app.utils.updater.sys.executable", str(executable)
             ), patch("app.utils.updater.subprocess.Popen") as popen:
                 result = checker.prepare_installer_update(installer)
-        self.assertTrue(result["success"], result)
-        self.assertEqual(Path(popen.call_args.kwargs["cwd"]), root)
+            self.assertTrue(result["success"], result)
+            self.assertTrue(Path(popen.call_args.kwargs["cwd"]).samefile(root))
 
 
 if __name__ == "__main__":
