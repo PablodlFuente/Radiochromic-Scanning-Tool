@@ -29,10 +29,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "detailed_logging": False,
     "uncertainty_estimation_method": "dersimonian_laird",
     "calibration_folder": "default",
+    "calibration_conversion_method": "auto",
     "check_updates_on_startup": True,
     "notebook_tab_order": [],
-    "allow_calibration_extrapolation": False,
-    "calibration_extrapolation_margin_fraction": 0.0,
     "allow_flat_field_resize": False,
 }
 
@@ -163,5 +162,11 @@ class ConfigModel:
             cache_mb = self.data["max_cache_mb"]
             if not isinstance(cache_mb, (int, float)) or cache_mb < 16:
                 errors["max_cache_mb"] = "Cache size must be at least 16 MB"
+
+        method = self.data.get("calibration_conversion_method")
+        if method not in {"auto", "spline", "fit"}:
+            errors["calibration_conversion_method"] = (
+                "Dose conversion method must be auto, spline or fit"
+            )
         
         return errors

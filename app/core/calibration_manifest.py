@@ -16,7 +16,10 @@ from app.paths import PROJECT_ROOT
 
 
 MANIFEST_NAME = "calibration_manifest.json"
-ARTIFACT_NAMES = ("calibration_data.csv", "fit_parameters.csv", "field_flattening.npz")
+ARTIFACT_NAMES = (
+    "calibration_data.csv", "fit_parameters.csv", "spline_calibration.npz",
+    "field_flattening.npz",
+)
 
 
 def sha256_file(path: Path) -> str:

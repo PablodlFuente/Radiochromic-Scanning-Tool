@@ -172,7 +172,7 @@ class CSVExporter:
         "doses_per_channel", "STD_doses_per_channel", "average",
         "standard_uncertainty_average", "expanded_uncertainty_k1.96",
         "pixel_count", "uncertainty_calculation_method", "channel_weights",
-        "calibration_id", "calibration_integrity", "units", "valid_pixel_counts",
+        "calibration_id", "calibration_integrity", "units", "conversion_method", "valid_pixel_counts",
         "measurement_status", "x", "y", "radius", "dose_correction_factor",
         "flat_applied", "ctr_context",
     ]
@@ -210,7 +210,8 @@ class CSVExporter:
             result.get("pixel_count", ""), provenance.get("uncertainty_method", "unknown"),
             json.dumps(result.get("channel_weights") or {}, sort_keys=True),
             provenance.get("calibration_id", ""), provenance.get("calibration_integrity", "unknown"),
-            provenance.get("units", "unknown"), json.dumps(counts), status,
+            provenance.get("units", "unknown"), provenance.get("conversion_method", "not_applied"),
+            json.dumps(counts), status,
             result.get("x", ""), result.get("y", ""), result.get("radius", ""),
             provenance.get("dose_correction_factor", ""), provenance.get("flat_applied", False),
             json.dumps(result.get("ctr_context", {}), sort_keys=True),

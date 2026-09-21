@@ -29,6 +29,7 @@ from typing import Optional
 from app.utils.image_io import read_image_unchanged, storage_bit_depth
 from app.paths import CALIBRATION_ROOT
 from app.core.calibration_manifest import verify_calibration_manifest
+from app.core.spline_calibration import SPLINE_NAME, invert_spline_response, load_spline_calibration
 from app.core.synchronization import synchronized
 from app.core.dosimetry import (
     CHANNELS,
@@ -57,11 +58,15 @@ class ImageProcessor:
         self.calibration_fit_params = None  # dict {'R': (a,b,c), ...} stored on apply_calibration
         self.calibration_param_covariances = None
         self.calibration_dose_ranges = None
+        self.calibration_conversion_method = None
         self.calibration_source_image = None
         self.dose_valid_mask_channels = None
         self.dose_extrapolated_mask_channels = None
         self.last_channel_weights = None  # last sensitivity weights {'R': w, 'G': w, 'B': w}
         self.last_valid_pixel_counts = []
+        self.last_processing_error = None
+        self.last_processing_warning = None
+        self.last_calibration_error = None
         # Track whether field flattening is currently applied
         self.flat_applied = False
         
@@ -713,7 +718,7 @@ class ImageProcessor:
             # Calculate mean and std_dev
             self._report_progress("binning", 50, "Calculating mean and standard deviation")
             mean = blocks.mean(axis=(1,3))
-            # Calcular correctamente la desviación estándar
+            # Calculate the standard deviation within each bin.
             std_dev = blocks.std(axis=(1,3))
         else:
             h, w, c = img.shape
@@ -723,7 +728,7 @@ class ImageProcessor:
             # Calculate mean and std_dev
             self._report_progress("binning", 50, "Calculating mean and standard deviation")
             mean = blocks.mean(axis=(1,3))
-            # Calcular correctamente la desviación estándar
+            # Calculate the standard deviation within each bin.
             std_dev = blocks.std(axis=(1,3))
         
         self._report_progress("binning", 95, "Vectorized binning complete")
@@ -1412,28 +1417,37 @@ class ImageProcessor:
     @synchronized
     def apply_calibration(self):
         """Apply the nonlinear calibration with domain and covariance checks."""
-        if self.current_image is None:
-            logger.warning("apply_calibration called with no image loaded")
+        self.last_calibration_error = None
+
+        def fail(message, *args):
+            rendered = message % args if args else message
+            self.last_calibration_error = rendered
+            logger.error(rendered)
             return False
+
+        if self.current_image is None:
+            return fail("Dose conversion requires a loaded image.")
 
         csv_path = self._find_fit_parameters_file()
         if csv_path is None:
-            logger.error("Calibration parameters file 'fit_parameters.csv' not found")
-            return False
+            return fail("Calibration parameters file 'fit_parameters.csv' was not found.")
 
         integrity = verify_calibration_manifest(os.path.dirname(csv_path))
         if integrity is None:
             logger.warning("Using a legacy calibration without an integrity manifest")
         elif not integrity.get("manifest") or not integrity.get("fit_parameters.csv", False):
-            logger.error("Calibration integrity verification failed: %s", integrity)
-            return False
+            return fail("Calibration integrity verification failed: %s", integrity)
         elif "calibration_data.csv" in integrity and not integrity["calibration_data.csv"]:
-            logger.error("Calibration table differs from its recorded manifest")
-            return False
+            return fail("Calibration table differs from its recorded manifest.")
         if integrity and (not integrity.get("dose_flat_consistent", True) or (
                 "requires_flat" in integrity and integrity["requires_flat"] != self.flat_applied)):
-            logger.error("Dose fit and active flat-field preprocessing do not match. Refit with this flat or use the matching preprocessing.")
-            return False
+            return fail("Dose fit and active flat-field preprocessing do not match. Refit with this flat or use the matching preprocessing.")
+
+        requested_method = str(
+            self.config.get("calibration_conversion_method", "auto")
+        ).strip().lower()
+        if requested_method not in {"auto", "spline", "fit"}:
+            return fail("Unknown dose conversion method: %s", requested_method)
 
         import csv
 
@@ -1490,11 +1504,11 @@ class ImageProcessor:
                         dose_ranges[channel] = (low, high)
         except Exception as exc:
             logger.error("Failed to read calibration parameters: %s", exc, exc_info=True)
+            self.last_calibration_error = f"Failed to read calibration parameters: {exc}"
             return False
 
         if not all(channel in params for channel in CHANNELS):
-            logger.error("Incomplete calibration parameters; R, G and B are required")
-            return False
+            return fail("Incomplete calibration parameters; R, G and B are required.")
 
         # Legacy parameter files did not record the fitted dose domain. Recover
         # it from the calibration table instead of allowing unlimited inversion.
@@ -1513,17 +1527,42 @@ class ImageProcessor:
                     recovered_range = (float(np.min(finite)), float(np.max(finite)))
                     dose_ranges = {channel: dose_ranges.get(channel, recovered_range) for channel in CHANNELS}
             except (OSError, ValueError, KeyError) as exc:
-                logger.error("Calibration dose range is unavailable: %s", exc)
-                return False
+                return fail("Calibration dose range is unavailable: %s", exc)
 
         if len(dose_ranges) != 3:
-            logger.error("Calibration dose range is required to reject extrapolated doses")
-            return False
+            return fail("Calibration dose range is required.")
         if any(high <= low or params[ch][2] >= low for ch, (low, high) in dose_ranges.items()):
-            logger.error("Invalid calibration branch or dose interval")
-            return False
+            return fail("Invalid calibration branch or dose interval.")
 
         self.calibration_bit_depth = calibration_bit_depth or 8
+        spline_models = None
+        spline_path = os.path.join(os.path.dirname(csv_path), SPLINE_NAME)
+        spline_recorded = integrity is None or integrity.get(SPLINE_NAME, False)
+        if requested_method in {"auto", "spline"} and os.path.isfile(spline_path) and spline_recorded:
+            try:
+                spline_models, spline_depth = load_spline_calibration(spline_path)
+                if spline_depth != self.calibration_bit_depth:
+                    raise ValueError("Spline and rational fit bit depths differ")
+            except Exception as exc:
+                logger.error("Spline calibration could not be loaded: %s", exc, exc_info=True)
+                if requested_method == "spline":
+                    self.last_calibration_error = f"Spline calibration could not be loaded: {exc}"
+                    return False
+                self.last_processing_warning = (
+                    "Auto conversion could not load the spline calibration; "
+                    "the rational fit was used for all pixels."
+                )
+                spline_models = None
+        elif requested_method == "spline":
+            return fail(
+                "Spline conversion was selected, but %s is unavailable or unverified.",
+                SPLINE_NAME,
+            )
+        elif requested_method == "auto":
+            self.last_processing_warning = (
+                "This calibration has no verified spline artifact; Auto conversion used the "
+                "rational fit for all pixels. Save the calibration again to enable in-range spline conversion."
+            )
         source_img = (
             self.flattened_image.copy()
             if self.flat_applied and self.flattened_image is not None
@@ -1534,8 +1573,6 @@ class ImageProcessor:
         if self.image_max_value > 0 and self.image_max_value != calibration_max:
             img_float *= calibration_max / self.image_max_value
 
-        allow_extrapolation = bool(self.config.get("allow_calibration_extrapolation", False))
-        margin = float(self.config.get("calibration_extrapolation_margin_fraction", 0.0))
         if img_float.ndim == 2:
             source_channels = [img_float]
             channel_names = ["G"]
@@ -1545,13 +1582,31 @@ class ImageProcessor:
 
         dose_arrays, valid_arrays, extrapolated_arrays = [], [], []
         for pixels, channel in zip(source_channels, channel_names):
-            dose, valid, extrapolated = invert_rational_response(
+            fit_dose, fit_valid, fit_extrapolated = invert_rational_response(
                 pixels,
                 params[channel],
                 dose_ranges[channel],
-                extrapolation_margin_fraction=margin,
-                allow_extrapolation=allow_extrapolation,
+                allow_extrapolation=True,
             )
+            # The physical branch of the rational model lies above c. Values on
+            # the other branch are not meaningful dose estimates.
+            fit_valid &= fit_dose > params[channel][2]
+            fit_dose[~fit_valid] = np.nan
+
+            if requested_method == "fit" or spline_models is None:
+                dose, valid, extrapolated = fit_dose, fit_valid, fit_extrapolated
+            else:
+                spline_dose, spline_valid = invert_spline_response(
+                    pixels, *spline_models[channel]
+                )
+                if requested_method == "spline":
+                    dose = spline_dose
+                    valid = spline_valid
+                    extrapolated = np.zeros(pixels.shape, dtype=bool)
+                else:
+                    dose = np.where(spline_valid, spline_dose, fit_dose)
+                    valid = spline_valid | fit_valid
+                    extrapolated = (~spline_valid) & fit_valid
             dose_arrays.append(dose)
             valid_arrays.append(valid)
             extrapolated_arrays.append(extrapolated)
@@ -1565,13 +1620,20 @@ class ImageProcessor:
             np.expand_dims(img_float, axis=-1) if img_float.ndim == 2 else img_float
         )
         self.calibration_fit_params = params
-        self.calibration_param_covariances = covariances
+        self.calibration_param_covariances = (
+            covariances if requested_method == "fit" or spline_models is None
+            else {channel: np.full((3, 3), np.nan) for channel in CHANNELS}
+        )
         self.calibration_dose_ranges = dose_ranges
+        self.calibration_conversion_method = (
+            "fit" if spline_models is None else requested_method
+        )
         self.calibration_applied = True
         self.calibration_provenance = {
             "calibration_id": integrity.get("calibration_id", "") if integrity else "",
             "calibration_integrity": "verified" if integrity else "unverified",
             "units": "Gy", "flat_applied": bool(self.flat_applied),
+            "conversion_method": self.calibration_conversion_method,
         }
         self.state_revision = getattr(self, "state_revision", 0) + 1
         self._compute_integral_images()
@@ -1746,13 +1808,17 @@ class ImageProcessor:
     def process_corrections(self, *, flat=False, calibration=False):
         """Commit a complete signal-to-dose pipeline, or return to raw signal."""
         self.last_processing_error = None
+        self.last_processing_warning = None
         try:
             if not self.reprocess_current_image(skip_integral_compute=True):
                 raise ValueError("No image is loaded.")
             if flat and not self.apply_flat(skip_integral_compute=True):
                 raise ValueError("Flat-field correction failed. Check geometry and calibration integrity.")
             if calibration and not self.apply_calibration():
-                raise ValueError("Dose conversion failed. Check fit parameters, domain and integrity.")
+                raise ValueError(
+                    self.last_calibration_error
+                    or "Dose conversion failed. Check fit parameters, domain and integrity."
+                )
             if not calibration:
                 self._compute_integral_images()
             return True

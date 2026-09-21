@@ -11,12 +11,20 @@ import re
 import numpy as np
 import csv
 import tempfile
+import logging
 from pathlib import Path
 from scipy.optimize import curve_fit
-from scipy.interpolate import CubicSpline
 from app.utils.image_io import read_image_unchanged, storage_bit_depth
 from app.paths import CALIBRATION_ROOT
 from app.core.calibration_manifest import update_calibration_manifest, verify_calibration_manifest
+from app.core.spline_calibration import (
+    SPLINE_NAME,
+    evaluate_spline,
+    prepare_spline_knots,
+    save_spline_calibration,
+)
+
+logger = logging.getLogger(__name__)
 
 class CalibrationApp:
     def __init__(self, root, data_dir=None):
@@ -174,14 +182,13 @@ class CalibrationApp:
                     if not np.all(np.isfinite(flat) & (flat > 0)):
                         raise ValueError("Flat-field values must be finite and positive")
                     self.flat_field = flat
-                    print(f"Loaded field flattening from: {ff_path}")
-                    print(f"  Flat field shape: {self.flat_field.shape}")
+                    logger.info("Loaded field flattening from %s with shape %s", ff_path, self.flat_field.shape)
                     return
                 except Exception as e:
                     self._flat_field_error = str(e)
-                    print(f"Failed to load field flattening: {e}")
+                    logger.error("Failed to load field flattening: %s", e, exc_info=True)
         
-        print("No field flattening data found - images will not be corrected")
+        logger.info("No field flattening data found; calibration images will remain uncorrected")
     
     def _apply_field_flattening(self, image: np.ndarray) -> np.ndarray:
         """Apply field flattening correction to an image.
@@ -263,7 +270,7 @@ class CalibrationApp:
                     self.gray_values.append(parsed_dose if parsed_dose is not None else "0.0")
                     newly_added_count += 1
                 else:
-                    print(f"Image {f_path} already in list. Skipping.")
+                    logger.info("Image already listed and was skipped: %s", f_path)
             
             if newly_added_count > 0: 
                 self._populate_image_list() # This will update UI and dose_entries
@@ -326,7 +333,7 @@ class CalibrationApp:
                         writer.writerows(all_data_rows)
                     # If header was empty and all_data_rows is empty, an empty file is written.
                     # If header was present but all_data_rows is empty, only header is written.
-                print(f"CSV updated after attempting to remove '{image_name_to_delete}'.")
+                logger.info("Calibration CSV updated after removing %s", image_name_to_delete)
             except Exception as e:
                 messagebox.showerror("Delete Image Error", f"Error updating CSV: {e}")
         
@@ -343,7 +350,7 @@ class CalibrationApp:
             if new_selection_idx < 0: new_selection_idx = 0 
             self.select_image(new_selection_idx)
 
-        print(f"Image '{image_name_to_delete}' deleted.")
+        logger.info("Deleted calibration image entry %s", image_name_to_delete)
 
     def _populate_image_list(self):
         # 1. Clear existing widgets from the scrollable frame
@@ -400,31 +407,28 @@ class CalibrationApp:
     def on_dose_changed(self, dose_var, img_idx):
         try:
             if not (0 <= img_idx < len(self.image_files)):
-                print(f"on_dose_changed: Invalid img_idx {img_idx}")
+                logger.error("Dose-change callback received invalid image index %s", img_idx)
                 return
 
             new_dose_value = dose_var.get()
             # Ensure image_files[img_idx] is valid before accessing
             if img_idx >= len(self.image_files):
-                 print(f"Error: img_idx {img_idx} out of range for self.image_files in on_dose_changed")
+                 logger.error("Dose-change image index %s is out of range", img_idx)
                  return
             image_name = os.path.basename(self.image_files[img_idx])
-            print(f"Dose changed for {image_name} (index {img_idx}) to: '{new_dose_value}'")
+            logger.debug("Dose changed for %s at index %s to %s", image_name, img_idx, new_dose_value)
 
             # Update the internal gray_values list
             if img_idx < len(self.gray_values):
                 self.gray_values[img_idx] = new_dose_value
             else:
-                print(f"Warning: img_idx {img_idx} out of bounds for gray_values in on_dose_changed.")
+                logger.warning("Dose index %s is outside the stored dose list", img_idx)
 
             # Update CSV with the new dose value
             self._update_dose_in_csv(image_name, new_dose_value)
-            # print(f"CSV update for {image_name} (idx {img_idx}) was called in on_dose_changed.") # Optional: keep for debugging
         except Exception as e:
             img_name_for_log = image_name if 'image_name' in locals() else f'unknown (img_idx: {img_idx})'
-            print(f"Error in on_dose_changed for image {img_name_for_log}: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error("Dose update failed for %s: %s", img_name_for_log, e, exc_info=True)
 
     def _detect_bit_depth(self, image):
         """Detect the actual bit depth of an image.
@@ -458,7 +462,7 @@ class CalibrationApp:
         
     def select_image(self, idx, set_focus_to_canvas=True):
         if not (0 <= idx < len(self.image_files)):
-            print(f"Error: Attempted to select invalid image index {idx}")
+            logger.error("Attempted to select invalid calibration image index %s", idx)
             return
 
         self.selected_idx = idx
@@ -481,15 +485,18 @@ class CalibrationApp:
             # Apply field flattening correction if available
             if self.flat_field is not None:
                 cv_img = self._apply_field_flattening(cv_img)
-                print(f"  Applied field flattening correction")
+                logger.info("Applied flat-field correction to calibration image")
             
             # Store the original numpy array for measurements (preserves original bit depth)
             self.original_image_array = cv_img.copy()
             
             # Detect bit depth from numpy dtype and actual values
             self.calibration_bit_depth, self.calibration_max_value = self._detect_bit_depth(cv_img)
-            print(f"Detected {self.calibration_bit_depth}-bit image (dtype={cv_img.dtype}): {image_path}")
-            print(f"  Value range: min={cv_img.min()}, max={cv_img.max()}, max_possible={self.calibration_max_value}")
+            logger.info(
+                "Detected %s-bit calibration image %s (dtype=%s, range=%s..%s, storage maximum=%s)",
+                self.calibration_bit_depth, image_path, cv_img.dtype,
+                cv_img.min(), cv_img.max(), self.calibration_max_value,
+            )
             
             # Convert to 8-bit for PIL display only
             if cv_img.dtype != np.uint8:
@@ -710,14 +717,14 @@ class CalibrationApp:
 
     def draw_roi_on_click(self, event):
         if self.original_pil_image is None or self.current_image_path is None:
-            print("No image selected or current_image_path is not set.")
+            messagebox.showwarning("Calibration", "Select a calibration image first.")
             return
 
         canvas_x = self.image_canvas.canvasx(event.x)
         canvas_y = self.image_canvas.canvasy(event.y)
         
         if self.zoom_factor == 0: # Avoid division by zero if zoom_factor is somehow 0
-            print("Error: Zoom factor is zero.")
+            messagebox.showerror("Calibration", "The image zoom factor is zero.")
             return
             
         x_img_orig = canvas_x / self.zoom_factor
@@ -727,7 +734,7 @@ class CalibrationApp:
         try:
             roi_size = int(self.roi_size_entry.get())
         except ValueError:
-            print("Invalid ROI size. Please enter an integer.")
+            messagebox.showerror("Calibration", "ROI size must be an integer.")
             return
 
         new_roi_data = {
@@ -759,7 +766,7 @@ class CalibrationApp:
 
     def _measure_and_save_roi_data(self, roi_data):
         if self.original_pil_image is None or self.current_image_path is None or self.selected_idx < 0:
-            print("Cannot measure ROI: No image, path, or selection index.")
+            messagebox.showwarning("Calibration", "Load and select an image before measuring an ROI.")
             return
 
         try:
@@ -771,22 +778,22 @@ class CalibrationApp:
                 if isinstance(dose_value_str, (int, float)):
                     dose_value = dose_value_str # Already a number
                 else:
-                    print(f"Invalid dose value: {dose_value_str}")
+                    messagebox.showerror("Calibration", f"Invalid dose value: {dose_value_str}")
                     dose_value = "N/A" # Or some other placeholder
         except IndexError:
-            print("Selected index for dose is out of bounds.")
+            messagebox.showerror("Calibration", "The selected dose index is out of bounds.")
             dose_value = "N/A"
 
         pil_image = self.original_pil_image
         # Use the numpy array that preserves original bit depth (16-bit if applicable)
         if hasattr(self, 'original_image_array') and self.original_image_array is not None:
             img_array = self.original_image_array
-            print(f"DEBUG ROI: Using original_image_array with dtype={img_array.dtype}, shape={img_array.shape}")
+            logger.debug("Using calibration image array with dtype=%s, shape=%s", img_array.dtype, img_array.shape)
             if img_array.dtype == np.uint16:
-                print(f"DEBUG ROI: 16-bit array, value range: min={img_array.min()}, max={img_array.max()}")
+                logger.debug("Calibration ROI source range: %s..%s", img_array.min(), img_array.max())
         else:
             img_array = np.array(pil_image)
-            print(f"DEBUG ROI: Fallback to pil_image array with dtype={img_array.dtype}")
+            logger.debug("Using PIL calibration image fallback with dtype=%s", img_array.dtype)
         img_h, img_w = img_array.shape[:2]
 
         x_center_orig = roi_data['x_img']
@@ -807,7 +814,7 @@ class CalibrationApp:
         y_max_clipped = min(img_h, y_max_orig)
 
         if x_min_clipped >= x_max_clipped or y_min_clipped >= y_max_clipped:
-            print("ROI is outside image bounds or has zero area after clipping.")
+            messagebox.showwarning("Calibration", "The ROI is outside the image or has zero area after clipping.")
             # Update roi_data with N/A and update display
             roi_data.update({'mean_r': 'N/A', 'mean_g': 'N/A', 'mean_b': 'N/A',
                              'std_r': 'N/A', 'std_g': 'N/A', 'std_b': 'N/A',
@@ -839,7 +846,7 @@ class CalibrationApp:
                 pixels_in_roi = np.empty((0, img_array.shape[-1])) # Ensure correct shape for empty array
 
         if not pixels_in_roi.any() or pixels_in_roi.shape[0] == 0:
-            print("No pixels found in ROI after shape processing.")
+            messagebox.showwarning("Calibration", "No pixels were found inside the ROI.")
             roi_data.update({'mean_r': 'N/A', 'mean_g': 'N/A', 'mean_b': 'N/A',
                              'std_r': 'N/A', 'std_g': 'N/A', 'std_b': 'N/A',
                              'num_pixels': 0})
@@ -847,7 +854,7 @@ class CalibrationApp:
             num_pixels = pixels_in_roi.shape[0]
             mean_rgb = np.mean(pixels_in_roi, axis=0)
             std_dev_rgb = np.std(pixels_in_roi, axis=0)
-            print(f"DEBUG ROI: pixels_in_roi dtype={pixels_in_roi.dtype}, mean_rgb={mean_rgb}")
+            logger.debug("Calibration ROI dtype=%s, mean RGB=%s", pixels_in_roi.dtype, mean_rgb)
             roi_data.update({
                 'mean_r': mean_rgb[0] if len(mean_rgb) > 0 else 'N/A',
                 'mean_g': mean_rgb[1] if len(mean_rgb) > 1 else 'N/A',
@@ -900,7 +907,7 @@ class CalibrationApp:
                         elif row: # Keep other rows
                             updated_rows.append(row)
             except Exception as e:
-                print(f"Error reading CSV for update: {e}")
+                logger.error("Could not read calibration CSV for update: %s", e, exc_info=True)
                 # Fallback to simple append or error out, here we'll try to ensure header is there
                 if not updated_rows: updated_rows.append(header)
         else:
@@ -913,9 +920,10 @@ class CalibrationApp:
             with open(self.csv_filename, 'w', newline='') as f_write:
                 writer = csv.writer(f_write)
                 writer.writerows(updated_rows)
-            print(f"ROI data saved/updated in {self.csv_filename}")
+            logger.info("ROI data saved in %s", self.csv_filename)
         except Exception as e:
-            print(f"Error writing updated ROI data to CSV: {e}")
+            logger.error("Could not update calibration CSV: %s", e, exc_info=True)
+            messagebox.showerror("Calibration save error", str(e))
         finally:
             self._check_calibration_readiness() # Update calibrate button state
 
@@ -927,7 +935,7 @@ class CalibrationApp:
                 self.root.after_idle(lambda idx=next_image_index: self.select_image(idx))
             elif self.selected_idx is not None: # If it was the last image or only one image
                 # Optionally, provide feedback or loop to the first image
-                print("Auto-advance: Reached end of image list or no further image to advance to.")
+                logger.info("Auto-advance reached the end of the calibration image list")
 
     def _create_roi_data_labels(self, parent_frame):
         self.measured_data_labels = {}
@@ -1067,7 +1075,7 @@ class CalibrationApp:
                 w = csv.writer(f)
                 w.writerows(rows)
         except Exception as e:
-            print(f"Error updating CSV for {image_name}: {e}")
+            logger.error("Could not update CSV for %s: %s", image_name, e, exc_info=True)
 
     # ---------------- Fit Data window ---------------- #
     def _get_calibration_data(self):
@@ -1117,12 +1125,14 @@ class CalibrationApp:
         controls_frame.pack(side=tk.TOP, fill=tk.X, pady=5)
 
         self.fit_type_var = tk.StringVar(value="standard")
-        for text,val in (("Standard", "standard"),("Cubic spline","spline")):
+        for text,val in (("Rational fit", "standard"),("Shape-preserving cubic","spline")):
             tk.Radiobutton(controls_frame, text=text, variable=self.fit_type_var, value=val, command=self._on_fit_type_changed).pack(side=tk.LEFT, padx=5)
 
-        # Checkbox to allow fitting standard model to spline instead of raw points
-        self.fit_to_spline_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(controls_frame, text="Fit std→spline", variable=self.fit_to_spline_var, command=self._auto_fit).pack(side=tk.LEFT, padx=10)
+        self.fit_status_var = tk.StringVar(value="")
+        tk.Label(
+            controls_frame, textvariable=self.fit_status_var,
+            foreground="#b00020", anchor="w",
+        ).pack(side=tk.LEFT, padx=10, fill=tk.X, expand=True)
 
         # ----- PARAMETER TABLE -----
         param_frame = tk.LabelFrame(self.fit_window, text="Fit Parameters (editable)")
@@ -1153,8 +1163,8 @@ class CalibrationApp:
         btn_frame = tk.Frame(self.fit_window)
         btn_frame.pack(fill=tk.X, pady=5)
         tk.Button(btn_frame, text="Auto Fit", command=self._auto_fit).pack(side=tk.LEFT, padx=10)
-        tk.Button(btn_frame, text="Apply Fit", command=self._apply_fit).pack(side=tk.RIGHT, padx=10)
-        tk.Button(controls_frame, text="Save Spline", command=self._save_spline_csv).pack(side=tk.RIGHT, padx=5)
+        tk.Button(btn_frame, text="Save Calibration", command=self._apply_fit).pack(side=tk.RIGHT, padx=10)
+        tk.Button(controls_frame, text="Export Spline CSV", command=self._save_spline_csv).pack(side=tk.RIGHT, padx=5)
 
         # prepare results dict before plotting
         self.latest_fit_results = {}
@@ -1175,9 +1185,32 @@ class CalibrationApp:
         self._auto_fit()
 
     def _auto_fit(self):
-       """Perform automatic fitting and update plot."""
-       self._manual_override.clear() # Limpia los overrides manuales
-       self._update_fit_plot()
+        """Perform automatic fitting and update plot."""
+        self._manual_override.clear()
+        self._update_fit_plot()
+
+    def _set_fit_status(self, message):
+        """Display fitting diagnostics in the calibration window and record details."""
+        logger.warning(message)
+        if hasattr(self, "fit_status_var"):
+            self.fit_status_var.set(message)
+
+    def _spline_knots_from_data(self):
+        """Build validated spline knots from the currently included points."""
+        doses, red, green, blue, *_ = self._get_calibration_data()
+        channel_knots = {}
+        for channel, values in zip(("R", "G", "B"), (red, green, blue)):
+            mask = np.array([
+                (channel, index) not in self.excluded_points
+                for index in range(len(doses))
+            ], dtype=bool)
+            try:
+                channel_knots[channel] = prepare_spline_knots(
+                    np.asarray(doses)[mask], np.asarray(values)[mask]
+                )
+            except ValueError as exc:
+                raise ValueError(f"Spline {channel}: {exc}") from exc
+        return channel_knots
 
     def _apply_fit(self):
         """Save current entries to CSV and close window."""
@@ -1186,7 +1219,9 @@ class CalibrationApp:
             if getattr(self, "_flat_field_error", None):
                 raise ValueError(f"Cannot save calibration: {self._flat_field_error}")
             if self.fit_type_var.get() != "standard":
-                raise ValueError("Select a rational fit before saving dose parameters.")
+                self.fit_type_var.set("standard")
+                self._update_fit_plot()
+            spline_knots = self._spline_knots_from_data()
             for channel in ("R", "G", "B"):
                 fit = self.latest_fit_results.get(f"Fit {channel}", {})
                 if len(fit.get("params", [])) != 3 or "dose_range" not in fit:
@@ -1226,6 +1261,9 @@ class CalibrationApp:
                         result["fit_method"],
                     ])
             os.replace(temporary_name, fname)
+            save_spline_calibration(
+                self.data_dir / SPLINE_NAME, spline_knots, self.calibration_bit_depth
+            )
             update_calibration_manifest(
                 self.data_dir,
                 "dose_calibration",
@@ -1241,7 +1279,7 @@ class CalibrationApp:
                         ch: self.latest_fit_results[f"Fit {ch}"]["dose_range"]
                         for ch in ("R", "G", "B")
                     },
-                    "fit_to_spline": bool(self.fit_to_spline_var.get()),
+                    "spline_model": "PCHIP shape-preserving piecewise cubic",
                     "excluded_points": [
                         {"channel": channel, "index": int(index)}
                         for channel, index in sorted(self.excluded_points)
@@ -1249,7 +1287,11 @@ class CalibrationApp:
                 },
                 source_paths=self.image_files,
             )
-            messagebox.showinfo("Fit saved", f"Fit parameters saved to {fname.resolve()}\\nCalibration bit depth: {self.calibration_bit_depth}-bit")
+            messagebox.showinfo(
+                "Calibration saved",
+                f"Rational fit and spline calibration saved in {self.data_dir.resolve()}\\n"
+                f"Calibration bit depth: {self.calibration_bit_depth}-bit",
+            )
             self.fit_window.destroy()
         except Exception as e:
             if 'temporary_name' in locals() and os.path.exists(temporary_name):
@@ -1260,6 +1302,8 @@ class CalibrationApp:
         """Redraw scatter and chosen fit."""
         doses, r, g, b, sr, sg, sb = self._get_calibration_data()
         self.fit_ax.clear()
+        if hasattr(self, "fit_status_var"):
+            self.fit_status_var.set("")
         if len(doses) == 0:
             self.fit_ax.set_title("No measured data to fit")
             self.fit_canvas.draw()
@@ -1298,17 +1342,19 @@ class CalibrationApp:
                     (b, sb, mask_b, "blue", "Fit B", "B"),
                 ):
                     
-                    current_popt = np.array([]) # Parámetros del ajuste actual
-                    current_perr = np.array([]) # Errores de los parámetros del ajuste actual
+                    current_popt = np.array([])  # Current fit parameters.
+                    current_perr = np.array([])  # Current parameter errors.
                     fit_cov_matrix = np.full((3, 3), np.nan)
 
                     # Dose zero is a measured calibration point and is retained.
                     fit_mask = mask & np.isfinite(doses) & np.isfinite(ch_data)
                     
-                    # Si no hay suficientes puntos después de filtrar, salta este canal
-                    if np.sum(fit_mask) < 3: # Necesitas al menos 3 puntos para 3 parámetros
-                        print(f"Fit warning for {label}: Not enough data points ({np.sum(fit_mask)}) after filtering for fitting.")
-                        # Limpia UI para este canal
+                    # Skip a channel when three parameters cannot be identified.
+                    if np.sum(fit_mask) < 3:
+                        self._set_fit_status(
+                            f"{label}: at least three included points are required."
+                        )
+                        # Clear the UI for this channel.
                         for pn_ui_clear, epn_ui_clear in zip(("a","b","c"), ("σa","σb","σc")):
                             self.param_entries[ch_name][pn_ui_clear].delete(0,tk.END)
                             self.param_entries[ch_name][epn_ui_clear].configure(state='normal')
@@ -1318,7 +1364,7 @@ class CalibrationApp:
                         if label in self.latest_fit_results: self.latest_fit_results.pop(label)
                         continue
 
-                    # Estimaciones iniciales
+                    # Initial estimates.
                     fitted_doses = doses[fit_mask]
                     fitted_values = ch_data[fit_mask]
                     dose_span = max(float(np.ptp(fitted_doses)), 1.0)
@@ -1334,24 +1380,11 @@ class CalibrationApp:
                     else:
                         fit_sigma = None
                     
-                    # Opción de ajustar a la spline
-                    if self.fit_to_spline_var.get():
-                        try:
-                            # Asegúrate de que hay suficientes puntos para la spline también
-                            if np.sum(fit_mask) >= 4: # CubicSpline necesita al menos 4 puntos
-                                cs_tmp = CubicSpline(doses[fit_mask], ch_data[fit_mask])
-                                y_target_for_fit = cs_tmp(doses[fit_mask])
-                            else:
-                                print(f"Fit warning for {label}: Not enough points ({np.sum(fit_mask)}) for spline, using raw data.")
-                        except Exception as e_spline:
-                            print(f"Fit warning for {label}: Spline creation failed ({e_spline}), using raw data.")
-                            pass # fallback to raw data if spline fails
-
-                    # Comprueba si hay valores manuales
+                    # Check for manually supplied values.
                     if ch_name in self._manual_override:
                         current_popt = np.array(self._manual_override[ch_name])
-                        # current_perr se queda vacío para ajustes manuales
-                    else: # Intenta el ajuste automático
+                        # Manual parameters have no estimated covariance.
+                    else:  # Attempt the automatic fit.
                         try:
                             upper_c = float(np.min(fitted_doses) - max(1e-9, dose_span * 1e-9))
                             fit_params, fit_cov_matrix = curve_fit(
@@ -1366,11 +1399,11 @@ class CalibrationApp:
                             )
                             current_popt = fit_params
                             
-                            # Calcula errores solo si la matriz de covarianza es válida
+                            # Calculate errors only from a valid covariance matrix.
                             if fit_cov_matrix is not None and np.all(np.isfinite(fit_cov_matrix)) and fit_cov_matrix.shape == (3,3):
                                 diag_pcov = np.diag(fit_cov_matrix)
                                 
-                                # Intentamos calcular la raíz cuadrada. Puede producir NaN si hay negativos en diag_pcov.
+                                # Negative diagonal values cannot define standard errors.
                                 diag_sqrt = np.empty_like(diag_pcov)
                                 for i_err, val_err in enumerate(diag_pcov):
                                     if val_err >= 0:
@@ -1378,24 +1411,23 @@ class CalibrationApp:
                                     else:
                                         diag_sqrt[i_err] = np.nan
                                 
-                                # ASIGNACIÓN CORRECTA A current_perr:
                                 if np.all(np.isfinite(diag_sqrt)):
                                     current_perr = diag_sqrt
                                 else:
                                     current_perr = np.array([np.nan, np.nan, np.nan])
                             else: 
-                                # Este 'else' es para el 'if fit_cov_matrix is not None...'
+                                # The covariance matrix failed its initial validation.
                                 current_perr = np.array([np.nan, np.nan, np.nan])
-                                print(f"Fit warning for {label}: Covariance matrix unusable (failed initial check).")
+                                self._set_fit_status(f"{label}: parameter covariance is unavailable.")
                         except (RuntimeError, ValueError) as fit_err:
-                            print(f"Fit warning for {label}: {fit_err}")
+                            self._set_fit_status(f"{label}: {fit_err}")
                             # current_popt y current_perr se quedan como np.array([])
 
-                    # Comprueba si el ajuste fue exitoso o si hay valores manuales válidos
+                    # Verify automatic or manually supplied parameters.
                     if current_popt.size != 3:
-                        # El ajuste falló o los valores manuales no eran válidos
-                        print(f"Fit info for {label}: No valid parameters obtained.")
-                        # Limpia UI
+                        # The fit failed or manual values were invalid.
+                        self._set_fit_status(f"{label}: no valid parameters were obtained.")
+                        # Clear invalid fit values from the UI.
                         for pn_ui_clear, epn_ui_clear in zip(("a","b","c"), ("σa","σb","σc")):
                             self.param_entries[ch_name][pn_ui_clear].delete(0,tk.END)
                             self.param_entries[ch_name][epn_ui_clear].configure(state='normal')
@@ -1403,31 +1435,29 @@ class CalibrationApp:
                             self.param_entries[ch_name][epn_ui_clear].configure(state='readonly')
                         self.param_entries[ch_name]['r2_label'].config(text="N/A")
                         if label in self.latest_fit_results: self.latest_fit_results.pop(label)
-                        continue # Al siguiente canal
+                        continue  # Continue with the next channel.
 
-                    # Si llegamos aquí, current_popt es válido. Procedemos.
-                    
-                    # Para R^2 y la línea de ajuste, usa los puntos apropiados
-                    # Si es manual, usa todos los puntos (doses). Si es auto, usa fit_mask.
+                    # Evaluate the model on the included points.
+                    # Manual and automatic fits are evaluated on the included points.
                     points_for_eval = doses[fit_mask]
                     actual_y_for_r2 = ch_data[fit_mask]
                     
-                    # Asegúrate de que haya datos para evaluar
+                    # Ensure that evaluation data remain.
                     if points_for_eval.size == 0:
-                        print(f"Fit info for {label}: No points to evaluate model.")
+                        self._set_fit_status(f"{label}: no points are available to evaluate the model.")
                         r2 = np.nan
                     else:
                         fitted_y_values = model(points_for_eval, *current_popt)
                         
-                        # Cálculo de R^2
+                        # Coefficient of determination.
                         mean_actual_y = np.mean(actual_y_for_r2)
                         ss_tot = np.sum((actual_y_for_r2 - mean_actual_y)**2)
                         ss_res = np.sum((actual_y_for_r2 - fitted_y_values)**2)
                         
-                        if ss_tot > 1e-9: # Evita división por cero
+                        if ss_tot > 1e-9:
                             r2 = 1 - (ss_res / ss_tot)
                         else:
-                            r2 = np.nan if ss_res > 1e-9 else 1.0 # Perfecto ajuste si ambos son cero
+                            r2 = np.nan if ss_res > 1e-9 else 1.0
 
                     covariance = (
                         fit_cov_matrix
@@ -1448,12 +1478,12 @@ class CalibrationApp:
                         ),
                     }
 
-                    # Dibuja la línea de ajuste
+                    # Draw the fitted response.
                     line_style = "-." if ch_name in self._manual_override else "--"
                     plot_label_text = f"Manual {ch_name}" if ch_name in self._manual_override else label
                     self.fit_ax.plot(x_line, model(x_line, *current_popt), color=color, linestyle=line_style, label=plot_label_text)
 
-                    # Actualiza los campos de la UI
+                    # Update the editable parameter fields.
                     for i, param_name_short_ui in enumerate(("a","b","c")):
                         param_entry_ui = self.param_entries[ch_name][param_name_short_ui]
                         error_entry_ui = self.param_entries[ch_name][f"σ{param_name_short_ui}"]
@@ -1470,12 +1500,23 @@ class CalibrationApp:
                     self.param_entries[ch_name]['r2_label'].config(text=f"{r2:.4f}" if not np.isnan(r2) else "N/A")
 
             elif fit_type == "spline":
-                for ch_data, mask, color, label in ((r, mask_r, "red", "Spline R"), (g, mask_g, "green", "Spline G"), (b, mask_b, "blue", "Spline B")):
-                    cs = CubicSpline(doses[mask], ch_data[mask])
-                    self.fit_ax.plot(x_line, cs(x_line), color=color, linestyle="--", label=label)
-                    self.latest_fit_results[label] = {"params": [], "errors": [], "r2": None, "x": x_line.tolist(), "y": cs(x_line).tolist()}
+                for ch_data, mask, color, label in (
+                    (r, mask_r, "red", "Spline R"),
+                    (g, mask_g, "green", "Spline G"),
+                    (b, mask_b, "blue", "Spline B"),
+                ):
+                    knot_doses, knot_values = prepare_spline_knots(doses[mask], ch_data[mask])
+                    channel_x = np.linspace(knot_doses[0], knot_doses[-1], 300)
+                    channel_y = evaluate_spline(channel_x, knot_doses, knot_values)
+                    self.fit_ax.plot(channel_x, channel_y, color=color, linestyle="--", label=label)
+                    self.latest_fit_results[label] = {
+                        "params": [], "errors": [], "r2": None,
+                        "x": channel_x.tolist(), "y": channel_y.tolist(),
+                        "knot_doses": knot_doses.tolist(),
+                        "knot_intensities": knot_values.tolist(),
+                    }
         except Exception as e:
-            print(f"Fit error: {e}")
+            self._set_fit_status(f"Fit error: {e}")
 
         self.fit_ax.set_xlabel("Dose")
         self.fit_ax.set_ylabel("Channel mean value")
@@ -1493,7 +1534,7 @@ class CalibrationApp:
                     self.param_entries[ch][pname].delete(0,tk.END)
                     self.param_entries[ch][pname].insert(0, f"{val:.5g}")
                 self.param_entries[ch]["r2_label"].config(text=f"{res['r2']:.4f}")
-                # Rellenar errores si están disponibles y son finitos
+                # Fill finite parameter errors when available.
                 errors = res.get("errors")
                 if errors is not None and hasattr(errors, '__len__') and len(errors) == 3:
                     for err_val, pname in zip(errors, ("a", "b", "c")):
@@ -1507,7 +1548,7 @@ class CalibrationApp:
                 for pname in ("a", "b", "c"):
                     self.param_entries[ch][pname].delete(0,tk.END)
                 self.param_entries[ch]["r2_label"].config(text="")
-                # limpiar errores
+                # Clear parameter errors.
                 for pname in ("σa","σb","σc"):
                     err_entry = self.param_entries[ch][pname]
                     err_entry.configure(state='normal')
@@ -1573,38 +1614,39 @@ class CalibrationApp:
         self._update_fit_plot()
 
     def _save_spline_csv(self):
-        """Save current spline fit curves to CSV file."""
+        """Export sampled spline curves for inspection; conversion uses the saved knots."""
         if self.fit_type_var.get() != 'spline':
-            messagebox.showwarning("Save Spline", "Switch to 'Cubic spline' fit type first.")
+            messagebox.showwarning(
+                "Export Spline CSV",
+                "Switch to the shape-preserving cubic view first.",
+            )
             return
 
         # Ensure plot up to date
         self._update_fit_plot()
 
         # Expect latest spline results stored
-        x_vals = None
-        rows = []
+        curves = []
         for ch in ('R','G','B'):
             key = f"Spline {ch}"
             res = self.latest_fit_results.get(key)
             if not res or 'x' not in res:
                 messagebox.showerror("Save Spline", "Spline data not available. Run Auto Fit first.")
                 return
-            if x_vals is None:
-                x_vals = res['x']
-            rows.append(res['y'])
+            curves.append((res['x'], res['y']))
 
         # transpose rows to columns
         fname = str(self.data_dir / 'spline_points.csv')
         try:
-            with open(fname,'w',newline='') as f:
+            from app.utils.atomic_file import atomic_open
+            with atomic_open(fname, newline='', encoding='utf-8') as f:
                 w=csv.writer(f)
-                w.writerow(['Dose','SplineR','SplineG','SplineB'])
-                for i, dose in enumerate(x_vals):
-                    w.writerow([dose, rows[0][i], rows[1][i], rows[2][i]])
-            messagebox.showinfo("Save Spline", f"Spline points saved to {os.path.abspath(fname)}")
+                w.writerow(['DoseR','SplineR','DoseG','SplineG','DoseB','SplineB'])
+                for row in zip(curves[0][0], curves[0][1], curves[1][0], curves[1][1], curves[2][0], curves[2][1]):
+                    w.writerow(row)
+            messagebox.showinfo("Export Spline CSV", f"Spline points saved to {os.path.abspath(fname)}")
         except Exception as e:
-            messagebox.showerror("Save Spline", str(e))
+            messagebox.showerror("Export Spline CSV", str(e))
 
     # -------- helper to crop white border -------- #
     def _crop_white_border(self, pil_img, thresh: int = 240):
@@ -1642,7 +1684,7 @@ class CalibrationApp:
             self.last_crop_bbox = (left, top, right, bottom)
             return pil_img.crop((left, top, right, bottom))
         except Exception as e:
-            print(f"Crop error: {e}")
+            logger.error("Calibration image crop failed: %s", e, exc_info=True)
             return pil_img
 
 if __name__ == "__main__":

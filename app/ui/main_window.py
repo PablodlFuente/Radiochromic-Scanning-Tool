@@ -613,6 +613,31 @@ class MainWindow:
             justify=tk.LEFT,
             font=("Arial", 9)
         ).pack(anchor=tk.W, padx=10, pady=(5, 10))
+
+        conversion_frame = ttk.Frame(main_frame)
+        conversion_frame.pack(fill=tk.X, padx=10, pady=5)
+        ttk.Label(conversion_frame, text="Dose conversion:").pack(side=tk.LEFT, padx=(0, 10))
+        conversion_method_var = tk.StringVar(
+            value=self.app_config.get("calibration_conversion_method", "auto")
+        )
+        ttk.Combobox(
+            conversion_frame,
+            textvariable=conversion_method_var,
+            values=["auto", "spline", "fit"],
+            state="readonly",
+            width=12,
+        ).pack(side=tk.LEFT)
+        ttk.Label(
+            main_frame,
+            text=(
+                "Auto: shape-preserving cubic interpolation inside the calibration range and "
+                "rational fit outside it. Spline: calibrated range only. Fit: rational model."
+            ),
+            foreground="gray",
+            justify=tk.LEFT,
+            wraplength=430,
+            font=("Arial", 9),
+        ).pack(anchor=tk.W, padx=10, pady=(0, 10))
         
         # Measurement section
         ttk.Label(
@@ -957,6 +982,7 @@ class MainWindow:
             self.app_config["detailed_logging"] = detailed_logging_var.get()
             self.app_config["uncertainty_estimation_method"] = uncertainty_method_var.get()
             self.app_config["calibration_folder"] = calibration_folder_var.get()
+            self.app_config["calibration_conversion_method"] = conversion_method_var.get()
             self.app_config["check_updates_on_startup"] = check_updates_startup_var.get()
             
             # Save configuration to file
@@ -1145,6 +1171,9 @@ class MainWindow:
         if not success:
             self.update_status("Processing failed; raw image restored")
             messagebox.showerror("Processing failed", self.image_processor.last_processing_error)
+        elif self.image_processor.last_processing_warning:
+            self.update_status(self.image_processor.last_processing_warning)
+            messagebox.showwarning("Processing warning", self.image_processor.last_processing_warning)
         
         # Update display
         self.image_panel.display_image(is_adjustment=True)

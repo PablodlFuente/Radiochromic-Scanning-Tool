@@ -19,7 +19,7 @@ class ConfigurationTests(unittest.TestCase):
             config = ConfigManager(path).load_config()
         self.assertTrue(config["negative_mode"])
         self.assertEqual(config["calibration_folder"], DEFAULT_CONFIG["calibration_folder"])
-        self.assertIn("allow_calibration_extrapolation", config)
+        self.assertEqual(config["calibration_conversion_method"], "auto")
 
     def test_save_replaces_config_atomically(self):
         with tempfile.TemporaryDirectory() as directory:

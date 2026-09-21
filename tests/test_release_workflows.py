@@ -1,5 +1,6 @@
 """Regression cases spanning numerical state, UI entry points and durable outputs."""
 import csv
+import json
 import tempfile
 import threading
 import unittest
@@ -11,6 +12,7 @@ import numpy as np
 
 from app.core.image_processor import ImageProcessor
 from app.calibration.calibration_app import CalibrationApp
+from app.core.spline_calibration import save_spline_calibration
 from custom_plugins.auto_measurements.core.exporter import CSVExporter
 from custom_plugins.auto_measurements.core.ctr_manager import CTRManager
 from custom_plugins.auto_measurements.core.formatter import MeasurementFormatter
@@ -44,6 +46,83 @@ def measurement(value=1.0, **provenance):
 
 
 class ProcessingWorkflowTests(unittest.TestCase):
+    def test_auto_measurement_3d_view_uses_tk_plot_window(self):
+        tab = AutoMeasurementsTab.__new__(AutoMeasurementsTab)
+        tab.frame = object()
+        tab.image_processor = SimpleNamespace(
+            calibration_applied=False,
+            original_image=np.arange(9 * 9 * 3, dtype=float).reshape(9, 9, 3),
+            current_image=None,
+        )
+        with patch("app.ui.plot_window.show_figure") as show:
+            tab._show_circle_3d(4, 4, 2)
+        show.assert_called_once()
+
+    def test_auto_conversion_uses_spline_inside_and_fit_outside_range(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fit_path = root / "fit_parameters.csv"
+            with fit_path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(["Channel", "a", "b", "c", "bit_depth", "dose_min", "dose_max"])
+                for channel in "RGB":
+                    writer.writerow([channel, 0, 100, -1, 16, 0, 2])
+            knots = {
+                channel: (np.array([0., 1., 2.]), np.array([100., 50., 100. / 3.]))
+                for channel in "RGB"
+            }
+            save_spline_calibration(root / "spline_calibration.npz", knots, 16)
+            image = np.array([[[50, 50, 50], [25, 25, 25]]], dtype=np.uint16)
+            p = processor(image)
+            p.image_max_value = 65535
+            p.config = {"calibration_conversion_method": "auto"}
+            p._find_fit_parameters_file = lambda: str(fit_path)
+            self.assertTrue(p.apply_calibration())
+            np.testing.assert_allclose(p.dose_channels[0, 0], [1, 1, 1])
+            np.testing.assert_allclose(p.dose_channels[0, 1], [3, 3, 3])
+            self.assertTrue(p.dose_extrapolated_mask_channels[0, 1].all())
+
+    def test_spline_conversion_does_not_extrapolate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fit_path = root / "fit_parameters.csv"
+            with fit_path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(["Channel", "a", "b", "c", "bit_depth", "dose_min", "dose_max"])
+                for channel in "RGB":
+                    writer.writerow([channel, 0, 100, -1, 16, 0, 2])
+            knots = {
+                channel: (np.array([0., 1., 2.]), np.array([100., 50., 100. / 3.]))
+                for channel in "RGB"
+            }
+            save_spline_calibration(root / "spline_calibration.npz", knots, 16)
+            p = processor(np.array([[[50, 50, 50], [25, 25, 25]]], dtype=np.uint16))
+            p.image_max_value = 65535
+            p.config = {"calibration_conversion_method": "spline"}
+            p._find_fit_parameters_file = lambda: str(fit_path)
+            self.assertTrue(p.apply_calibration())
+            np.testing.assert_allclose(p.dose_channels[0, 0], [1, 1, 1])
+            self.assertTrue(np.isnan(p.dose_channels[0, 1]).all())
+            self.assertFalse(p.dose_extrapolated_mask_channels.any())
+
+    def test_fit_conversion_ignores_an_unrelated_invalid_spline_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fit_path = root / "fit_parameters.csv"
+            with fit_path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(["Channel", "a", "b", "c", "bit_depth", "dose_min", "dose_max"])
+                for channel in "RGB":
+                    writer.writerow([channel, 0, 100, -1, 16, 0, 2])
+            (root / "spline_calibration.npz").write_bytes(b"not an npz file")
+            p = processor(np.array([[[50, 50, 50]]], dtype=np.uint16))
+            p.image_max_value = 65535
+            p.config = {"calibration_conversion_method": "fit"}
+            p._find_fit_parameters_file = lambda: str(fit_path)
+            self.assertTrue(p.apply_calibration())
+            np.testing.assert_allclose(p.dose_channels[0, 0], [1, 1, 1])
+            self.assertIsNone(getattr(p, "last_processing_warning", None))
+
     def test_rectangular_roi_has_exact_requested_even_dimensions(self):
         p = processor(np.ones((9, 9)))
         p.measurement_shape = "rectangular"
@@ -131,7 +210,7 @@ class ExportWorkflowTests(unittest.TestCase):
 
     def test_batch_keeps_calibration_date_and_units_per_measurement(self):
         exporter = CSVExporter(None, SimpleNamespace(config={"calibration_folder": "C"}), None)
-        rows = [measurement(calibration_id="A", date="2026-01-01", units="Gy"),
+        rows = [measurement(calibration_id="A", date="2026-01-01", units="Gy", conversion_method="auto"),
                 measurement(calibration_id="B", date="2026-02-01", units="scanner_intensity")]
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "results.csv"
@@ -141,6 +220,7 @@ class ExportWorkflowTests(unittest.TestCase):
         self.assertEqual([row["calibration_id"] for row in exported], ["A", "B"])
         self.assertEqual([row["Date"] for row in exported], ["2026-01-01", "2026-02-01"])
         self.assertEqual(exported[1]["units"], "scanner_intensity")
+        self.assertEqual([row["conversion_method"] for row in exported], ["auto", "not_applied"])
 
     def test_unknown_provenance_is_never_labelled_current_calibration(self):
         exporter = CSVExporter(None, None, None)
@@ -154,7 +234,8 @@ class CalibrationPersistenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             np.savez(Path(tmp) / "field_flattening.npz", flat_field=np.zeros((2, 2, 3)))
             app = SimpleNamespace(data_dir=Path(tmp), flat_field=None)
-            CalibrationApp._load_field_flattening(app)
+            with self.assertLogs("app.calibration.calibration_app", level="ERROR"):
+                CalibrationApp._load_field_flattening(app)
             self.assertIsNone(app.flat_field)
             with self.assertRaises(ValueError):
                 CalibrationApp._apply_field_flattening(app, np.ones((2, 2, 3)))
@@ -170,8 +251,11 @@ class CalibrationPersistenceTests(unittest.TestCase):
             }
             app = SimpleNamespace(data_dir=Path(tmp), latest_fit_results=results,
                 fit_type_var=SimpleNamespace(get=lambda: "standard"), calibration_bit_depth=16,
-                fit_to_spline_var=SimpleNamespace(get=lambda:False), excluded_points=[],
-                image_files=[], fit_window=SimpleNamespace(destroy=lambda:None))
+                excluded_points=[], image_files=[], fit_window=SimpleNamespace(destroy=lambda:None),
+                _spline_knots_from_data=lambda: {
+                    channel: (np.array([0., 1., 2.]), np.array([100., 50., 100. / 3.]))
+                    for channel in "RGB"
+                })
             with patch("app.calibration.calibration_app.messagebox.showinfo"), patch(
                 "app.calibration.calibration_app.messagebox.showerror") as error:
                 CalibrationApp._apply_fit(app)
@@ -180,6 +264,11 @@ class CalibrationPersistenceTests(unittest.TestCase):
                 rows = list(csv.DictReader(handle))
             self.assertEqual(float(rows[0]["a"]), 1.234567890123)
             self.assertEqual([float(row["dose_max"]) for row in rows], [3., 4., 5.])
+            self.assertTrue((Path(tmp) / "spline_calibration.npz").is_file())
+            manifest = json.loads(
+                (Path(tmp) / "calibration_manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertIn("spline_calibration.npz", manifest["artifacts"])
 
 
 class ControlWorkflowTests(unittest.TestCase):
