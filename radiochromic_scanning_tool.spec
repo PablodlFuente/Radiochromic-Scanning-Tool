@@ -15,6 +15,16 @@ analysis = Analysis(
     excludes=[],
     noarchive=False,
 )
+splash = Splash(
+    "resources/radiochromic_film_analyzer.png",
+    binaries=analysis.binaries,
+    datas=analysis.datas,
+    text_pos=(20, 360),
+    text_size=12,
+    text_color="#2f4f4f",
+    text_default="Starting Radiochromic Film Analyzer…",
+    center="active",
+)
 pyz = PYZ(analysis.pure)
 
 executable = EXE(
@@ -22,6 +32,8 @@ executable = EXE(
     analysis.scripts,
     analysis.binaries,
     analysis.datas,
+    splash.binaries,
+    splash,
     [],
     name="RadiochromicFilmAnalyzer",
     icon="resources/radiochromic_film_analyzer.ico",

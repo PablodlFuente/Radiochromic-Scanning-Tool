@@ -199,7 +199,7 @@ class UpdateChecker:
         creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         subprocess.Popen(
             ["cmd.exe", "/c", str(helper)],
-            cwd=str(downloaded.parent),
+            cwd=str(installer.parent),
             creationflags=creation_flags,
         )
         return {"success": True, "error": None}
@@ -357,6 +357,28 @@ class UpdateChecker:
             "release_url": release.get("html_url", ""),
             "release": release,
             "error": None,
+        }
+
+    def install_latest_published_release(self) -> dict:
+        """Download and schedule a newer published installer before UI startup.
+
+        The caller exits immediately after a successful result. The helper then
+        waits for this process, installs the release, and launches the updated
+        executable without exposing a cancellation path.
+        """
+        status = self.check_for_updates()
+        if not status.get("success"):
+            return {"success": False, "update_started": False, "error": status.get("error")}
+        if not status.get("has_updates"):
+            return {"success": True, "update_started": False, "error": None}
+        downloaded = self.download_release_installer(status["release"])
+        if not downloaded.get("success"):
+            return {"success": False, "update_started": False, "error": downloaded.get("error")}
+        prepared = self.prepare_installer_update(downloaded["path"])
+        return {
+            "success": bool(prepared.get("success")),
+            "update_started": bool(prepared.get("success")),
+            "error": prepared.get("error"),
         }
     
     def has_local_changes(self) -> bool:

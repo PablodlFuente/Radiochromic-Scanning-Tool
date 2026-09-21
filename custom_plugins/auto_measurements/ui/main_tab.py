@@ -111,7 +111,11 @@ class AutoMeasurementsTab(ttk.Frame):
         # Initialize file data manager early (will set UI controls after tree is created)
         self.file_manager = FileDataManager(None, image_processor, main_window)  # tree will be set later
 
-        self.dose_correction_var = tk.StringVar(value="1")
+        self.dose_correction_var = tk.StringVar(
+            value=str(getattr(main_window, "app_config", {}).get(
+                "auto_measurement_dose_correction_factor", 1.0
+            ))
+        )
         self._dose_correction_after_id = None
         self._dose_correction_tooltip_after_id = None
         self._dose_correction_tooltip = None
@@ -586,6 +590,7 @@ class AutoMeasurementsTab(ttk.Frame):
             "auto_measurement_min_square_side": self.min_square_side_var.get(),
             "auto_measurement_max_square_side": self.max_square_side_var.get(),
             "auto_measurement_restrict_diameter": self.restrict_diameter_var.get(),
+            "auto_measurement_dose_correction_factor": self._get_dose_correction_factor(),
         }
         config.update(values)
 

@@ -307,21 +307,9 @@ class MainWindow:
         # Update Apply Flat menu item
         if has_flat:
             self.calibration_menu.entryconfigure(self._flat_menu_index, state=tk.NORMAL)
-            # If the checkbox is checked but the processor hasn't applied the flat,
-            # ensure the correction is actually applied so the UI and internal state
-            # remain in sync. This handles cases where the checkbox was programmatically
-            # set (e.g. on load) but the flattening wasn't yet executed.
-            if self.flat_var.get():
-                try:
-                    if self.image_processor.has_image():
-                        # Reapply corrections to ensure flat is applied immediately
-                        self._reapply_corrections()
-                    else:
-                        # No image yet; make sure flat data is loaded for future operations
-                        self.image_processor.load_field_flattening()
-                except Exception:
-                    # Don't let menu state update fail due to processor errors
-                    logger.exception("Error while attempting to apply flat during menu state update")
+            # This method only updates menu availability.  Applying a correction
+            # can be expensive for large scans and is always performed explicitly
+            # by the image-load or correction worker.
         else:
             self.calibration_menu.entryconfigure(self._flat_menu_index, state=tk.DISABLED)
             # If flat was enabled but is no longer available, clean up
@@ -393,12 +381,28 @@ class MainWindow:
                 if request_id != self._image_load_request_id:
                     return
                 load_success = self.image_processor.load_image(file_path)
+                correction_state = None
+                if load_success:
+                    has_flat = self.image_processor.has_field_flattening()
+                    has_calibration = self.image_processor.has_calibration()
+                    if has_flat or has_calibration:
+                        correction_state = {
+                            "has_flat": has_flat,
+                            "has_calibration": has_calibration,
+                            "success": self.image_processor.process_corrections(
+                                flat=has_flat, calibration=has_calibration
+                            ),
+                            "error": self.image_processor.last_processing_error,
+                            "warning": self.image_processor.last_processing_warning,
+                        }
             
             if not load_success:
                 raise Exception("Image processor reported loading failure")
             
             # Schedule UI updates on the main thread
-            self.parent.after(0, lambda: self._finish_loading_image(file_path, request_id))
+            self.parent.after(
+                0, lambda: self._finish_loading_image(file_path, request_id, correction_state)
+            )
         except (IOError, OSError) as e:
             logger.error(f"File access error loading image: {str(e)}", exc_info=True)
             message = str(e)
@@ -429,7 +433,7 @@ class MainWindow:
         messagebox.showerror(title, message)
         self.update_status(status)
     
-    def _finish_loading_image(self, file_path, request_id):
+    def _finish_loading_image(self, file_path, request_id, correction_state=None):
         """Finish loading image on the main thread."""
         if request_id != self._image_load_request_id:
             return
@@ -462,28 +466,24 @@ class MainWindow:
             self.file_manager.add_recent_file(file_path)
             self._update_recent_menu()
             
-            # Auto-enable flat and calibration if data is available
-            has_flat = self.image_processor.has_field_flattening()
-            has_cal = self.image_processor.has_calibration()
-            
-            if has_flat or has_cal:
-                # Set checkboxes
-                if has_flat:
-                    self.flat_var.set(True)
-                if has_cal:
-                    self.calibration_var.set(True)
-                
-                # Apply corrections (flat first, then dose conversion)
-                corrections_ok = self._reapply_corrections()
-                
-                # Update status
-                if not corrections_ok:
+            # Automatic correction is deliberately performed by the image-load
+            # worker. Keeping the numerical pipeline off the Tk event loop
+            # prevents long pauses for large 16-bit scans.
+            if correction_state is not None:
+                self.flat_var.set(self.image_processor.flat_applied)
+                self.calibration_var.set(self.image_processor.calibration_applied)
+                self.image_panel.display_image(is_adjustment=True)
+                if not correction_state["success"]:
                     self.update_status("Loaded raw image; requested corrections failed")
-                elif has_flat and has_cal:
+                    messagebox.showerror("Processing failed", correction_state["error"])
+                elif correction_state["warning"]:
+                    self.update_status(correction_state["warning"])
+                    messagebox.showwarning("Processing warning", correction_state["warning"])
+                elif correction_state["has_flat"] and correction_state["has_calibration"]:
                     self.update_status(f"Loaded: {os.path.basename(file_path)} (Flat + Dose applied)")
-                elif has_flat:
+                elif correction_state["has_flat"]:
                     self.update_status(f"Loaded: {os.path.basename(file_path)} (Flat applied)")
-                elif has_cal:
+                else:
                     self.update_status(f"Loaded: {os.path.basename(file_path)} (Dose applied)")
             
             # Update window title
@@ -1094,8 +1094,7 @@ class MainWindow:
         # Reload current image if available
         if self.image_processor.has_image():
             self.update_status("Applying settings...")
-            if self._reapply_corrections():
-                self._finish_applying_settings()
+            threading.Thread(target=self._apply_settings_thread, daemon=True).start()
     
     def _apply_settings_thread(self):
         """Apply settings in a background thread."""
@@ -1103,10 +1102,11 @@ class MainWindow:
             # Reprocess image in background thread
             self.image_processor.reprocess_current_image()
 
-            # After reprocessing, ensure corrections (flat/cal) are applied
-            # on the main thread so UI updates and messageboxes are safe.
-            self.parent.after(0, lambda: self._reapply_corrections())
-            self.parent.after(0, lambda: self._finish_applying_settings())
+            # Reapply corrections in a second worker pass. Tk updates remain on
+            # the event loop, while numerical image processing stays off it.
+            self.parent.after(0, lambda: self._reapply_corrections_async(
+                lambda _success: self._finish_applying_settings()
+            ))
         except Exception as e:
             logger.error(f"Error applying settings: {str(e)}", exc_info=True)
             message = str(e)
@@ -1230,6 +1230,74 @@ class MainWindow:
         if not self.loading_image:
             plugin_manager.notify_config_change(self.app_config)
         return success
+
+    def _reapply_corrections_async(self, on_complete=None):
+        """Run the correction pipeline without blocking the Tk event loop."""
+        if not self.image_processor.has_image():
+            if on_complete:
+                on_complete(False)
+            return
+
+        has_flat = bool(self.flat_var.get())
+        has_calibration = bool(self.calibration_var.get())
+        self.update_status("Processing corrections...")
+
+        def worker():
+            try:
+                with self._image_load_lock:
+                    success = self.image_processor.process_corrections(
+                        flat=has_flat, calibration=has_calibration
+                    )
+                    state = {
+                        "success": success,
+                        "error": self.image_processor.last_processing_error,
+                        "warning": self.image_processor.last_processing_warning,
+                        "flat_applied": self.image_processor.flat_applied,
+                        "calibration_applied": self.image_processor.calibration_applied,
+                    }
+            except Exception as exc:
+                logger.error("Correction processing failed", exc_info=True)
+                state = {
+                    "success": False,
+                    "error": str(exc),
+                    "warning": None,
+                    "flat_applied": False,
+                    "calibration_applied": False,
+                }
+            self.parent.after(0, lambda: finish(state))
+
+        def finish(state):
+            self.flat_var.set(state["flat_applied"])
+            self.calibration_var.set(state["calibration_applied"])
+            if not state["success"]:
+                self.update_status("Processing failed; raw image restored")
+                messagebox.showerror("Processing failed", state["error"])
+            elif state["warning"]:
+                self.update_status(state["warning"])
+                messagebox.showwarning("Processing warning", state["warning"])
+            self.image_panel.display_image(is_adjustment=True)
+            from app.plugins.plugin_manager import plugin_manager
+            if not self.loading_image:
+                plugin_manager.notify_config_change(self.app_config)
+            if on_complete:
+                on_complete(state["success"])
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _update_correction_status(self, success):
+        """Describe the correction state after an asynchronous update."""
+        if not success:
+            return
+        flat_on = self.flat_var.get()
+        cal_on = self.calibration_var.get()
+        if cal_on and flat_on:
+            self.update_status("Applied: Flat + Dose Conversion")
+        elif cal_on:
+            self.update_status("Applied: Dose Conversion")
+        elif flat_on:
+            self.update_status("Applied: Flat")
+        else:
+            self.update_status("Original RGB view")
     
     def apply_calibration(self):
         """Toggle dose conversion on/off (independent of flat)."""
@@ -1274,21 +1342,7 @@ class MainWindow:
                     self.calibration_var.set(False)
                     return
         
-        # Reapply all corrections based on current states
-        if not self._reapply_corrections():
-            return
-        
-        # Update status
-        flat_on = self.flat_var.get()
-        cal_on = self.calibration_var.get()
-        if cal_on and flat_on:
-            self.update_status("Applied: Flat + Dose Conversion")
-        elif cal_on:
-            self.update_status("Applied: Dose Conversion")
-        elif flat_on:
-            self.update_status("Applied: Flat")
-        else:
-            self.update_status("Original RGB view")
+        self._reapply_corrections_async(self._update_correction_status)
     
     def apply_flat(self):
         """Toggle field flattening on/off (independent of dose conversion)."""
@@ -1305,21 +1359,7 @@ class MainWindow:
                 self.flat_var.set(False)
                 return
         
-        # Reapply all corrections based on current states
-        if not self._reapply_corrections():
-            return
-        
-        # Update status
-        flat_on = self.flat_var.get()
-        cal_on = self.calibration_var.get()
-        if cal_on and flat_on:
-            self.update_status("Applied: Flat + Dose Conversion")
-        elif cal_on:
-            self.update_status("Applied: Dose Conversion")
-        elif flat_on:
-            self.update_status("Applied: Flat")
-        else:
-            self.update_status("Original RGB view")
+        self._reapply_corrections_async(self._update_correction_status)
     
     def measure_image_flatness(self):
         """Analyze and display flatness/uniformity statistics of the current image."""

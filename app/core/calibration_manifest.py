@@ -35,6 +35,7 @@ def _git_commit() -> str | None:
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=PROJECT_ROOT,
             capture_output=True, text=True, timeout=5,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         return result.stdout.strip() if result.returncode == 0 else None
     except (OSError, subprocess.TimeoutExpired):

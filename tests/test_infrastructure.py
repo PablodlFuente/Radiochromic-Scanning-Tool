@@ -22,6 +22,7 @@ class ConfigurationTests(unittest.TestCase):
         self.assertTrue(config["negative_mode"])
         self.assertEqual(config["calibration_folder"], DEFAULT_CONFIG["calibration_folder"])
         self.assertEqual(config["calibration_conversion_method"], "auto")
+        self.assertEqual(config["auto_measurement_dose_correction_factor"], 1.0)
 
     def test_save_replaces_config_atomically(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -53,6 +54,7 @@ class MetadataSafetyTests(unittest.TestCase):
         self.assertNotIn(hostile_path, command[-1])
         self.assertEqual(environment["RADIOCHROMIC_METADATA_PATH"], str(Path(hostile_path).absolute()))
         self.assertIn("-LiteralPath", command[-1])
+        self.assertEqual(run.call_args.kwargs["creationflags"], getattr(__import__("subprocess"), "CREATE_NO_WINDOW", 0))
 
 
 class PluginLifecycleTests(unittest.TestCase):
@@ -104,6 +106,11 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("RadiochromicFilmAnalyzer-Setup", installer)
         for directory in ("logs", "temp", "custom_plugins", "calibration_data"):
             self.assertIn(f'Name: "{{app}}\\{directory}"; Flags: uninsneveruninstall', installer)
+
+    def test_one_file_build_includes_a_startup_splash(self):
+        spec = Path("radiochromic_scanning_tool.spec").read_text(encoding="utf-8")
+        self.assertIn("Splash(", spec)
+        self.assertIn("splash.binaries", spec)
 
     def test_packaging_uses_the_application_icon(self):
         spec = Path("radiochromic_scanning_tool.spec").read_text(encoding="utf-8")

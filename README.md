@@ -27,7 +27,7 @@ For normal Windows use, download and run [`RadiochromicFilmAnalyzer-Setup.exe` f
 
 Use the installer for the desktop application. The wheel is intended for Python environments and source archives are intended for development or audit.
 
-Release updates run the newer installer silently after the application closes.  They replace program files but preserve calibration data, user plugins, logs, temporary data, configuration and recent-file records.
+With automatic updates enabled (the default), the installed application checks for a newer published release before its main window opens. When one is available, it downloads, installs and launches that release without a cancellation prompt. Updates replace program files but preserve calibration data, user plugins, logs, temporary data, configuration and recent-file records.
 
 For Python installations, install the release wheel or run from source. Python 3.10 or later is required, and standard Windows Python distributions include `tkinter`.
 

@@ -45,6 +45,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "auto_measurement_min_square_side": 100,
     "auto_measurement_max_square_side": 1000,
     "auto_measurement_restrict_diameter": False,
+    "auto_measurement_dose_correction_factor": 1.0,
 }
 
 class ConfigModel:

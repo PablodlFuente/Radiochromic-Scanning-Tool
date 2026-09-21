@@ -141,7 +141,8 @@ class MetadataExtractor:
                 command_environment["RADIOCHROMIC_METADATA_PATH"] = os.path.abspath(img_path)
                 result = subprocess.run(['powershell', '-Command', ps_command], 
                                       capture_output=True, text=True, timeout=10,
-                                      env=command_environment)
+                                      env=command_environment,
+                                      creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
                 if result.returncode == 0 and result.stdout.strip():
                     try:
                         windows_props = json.loads(result.stdout)

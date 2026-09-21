@@ -11,10 +11,8 @@ import logging
 import os
 import glob
 import shutil
-import threading
 from app.ui.main_window import MainWindow
 from app.utils.config_manager import ConfigManager
-from app.utils.updater import UpdateChecker
 from app.paths import APPLICATION_ICON, PROJECT_ROOT, ensure_writable_directories
 
 logger = logging.getLogger(__name__)
@@ -57,17 +55,6 @@ class RCAnalyzer(tk.Tk):
         
         logger.info("RCAnalyzer initialization complete")
         
-        # Check, download and install published releases on startup when enabled.
-        if self.app_config.get("automatic_updates", True):
-            self.after(1500, self._check_updates_on_startup)
-    
-    def _check_updates_on_startup(self):
-        """Check and apply a published release without blocking the interface."""
-        try:
-            self.main_window.check_for_updates(automatic=True)
-        except Exception:
-            logger.warning("Could not start the automatic update check", exc_info=True)
-
     def report_callback_exception(self, exception_type, exception, traceback):
         """Make uncaught Tk callback failures visible while preserving full logs."""
         logger.error(

@@ -142,6 +142,37 @@ class UpdateCheckerReleaseTests(unittest.TestCase):
             if result.get("path"):
                 Path(result["path"]).unlink(missing_ok=True)
 
+    def test_startup_update_downloads_and_schedules_a_new_release(self):
+        checker = UpdateChecker(current_version="2.1.0")
+        checker.check_for_updates = lambda: {
+            "success": True, "has_updates": True, "release": {"tag_name": "v2.1.1"}
+        }
+        checker.download_release_installer = lambda release: {
+            "success": True, "path": "C:/temporary/RadiochromicFilmAnalyzer-Setup.exe"
+        }
+        checker.prepare_installer_update = lambda path: {"success": True, "error": None}
+
+        result = checker.install_latest_published_release()
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result["update_started"])
+
+    def test_installer_helper_uses_the_installer_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "RadiochromicFilmAnalyzer.exe"
+            installer = root / "RadiochromicFilmAnalyzer-Setup.exe"
+            executable.touch()
+            installer.touch()
+            (root / "unins000.exe").touch()
+            checker = UpdateChecker()
+            with patch("app.utils.updater.sys.frozen", True, create=True), patch(
+                "app.utils.updater.sys.executable", str(executable)
+            ), patch("app.utils.updater.subprocess.Popen") as popen:
+                result = checker.prepare_installer_update(installer)
+        self.assertTrue(result["success"], result)
+        self.assertEqual(Path(popen.call_args.kwargs["cwd"]), root)
+
 
 if __name__ == "__main__":
     unittest.main()

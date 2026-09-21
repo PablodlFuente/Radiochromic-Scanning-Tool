@@ -268,7 +268,8 @@ class ImageProcessor:
                     try:
                         import subprocess
                         result = subprocess.run(["wmic", "path", "win32_VideoController", "get", "name"], 
-                                               capture_output=True, text=True)
+                                               capture_output=True, text=True,
+                                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
                         output = result.stdout.lower()
                         if "nvidia" in output:
                             # Extract the actual GPU name from the output
