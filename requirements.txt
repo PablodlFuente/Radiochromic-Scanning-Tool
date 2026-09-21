@@ -6,3 +6,4 @@ opencv-python>=4.8,<5
 psutil>=5.9,<8
 tkcalendar>=1.6,<2
 exifread>=3,<4
+tomli>=2,<3; python_version < "3.11"
