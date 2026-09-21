@@ -25,6 +25,8 @@ Desktop software for radiochromic-film image analysis, scanner flat-field correc
 
 For normal Windows use, download and run [`RadiochromicFilmAnalyzer-Setup.exe` from the latest GitHub Release](https://github.com/PablodlFuente/Radiochromic-Scanning-Tool/releases/latest). It installs the application per user under `LocalAppData`, without administrator rights. Setup creates `logs`, `temp`, `custom_plugins`, `calibration_data` and `docs` beside the installed application.
 
+The installer can also target another folder. The application keeps its configuration, logs, calibrations and user plugins beside the executable, so an installation in a protected folder such as `Program Files` must be run with administrator privileges. If those privileges are unavailable, startup displays a clear message and closes without modifying data.
+
 Use the installer for the desktop application. The wheel is intended for Python environments and source archives are intended for development or audit.
 
 With automatic updates enabled (the default), the installed application checks for a newer published release before its main window opens. When one is available, it downloads, installs and launches that release without a cancellation prompt. Updates replace program files but preserve calibration data, user plugins, logs, temporary data, configuration and recent-file records.

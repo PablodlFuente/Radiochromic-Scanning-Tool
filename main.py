@@ -10,12 +10,36 @@ import os
 import logging
 import datetime
 from app.rc_analyzer import RCAnalyzer
-from app.paths import PROJECT_ROOT, ensure_writable_directories
+from app.paths import ApplicationPermissionError, PROJECT_ROOT, ensure_writable_directories
 from app.utils.config_manager import ConfigManager
 from app.utils.updater import UpdateChecker
 
-# Configure logging: create one log file per run, keep in 'logs' directory, include timestamp in filename
-ensure_writable_directories()
+def _show_permission_error(error):
+    """Report a protected installation directory before Tk/logging starts."""
+    message = (
+        f"{error}\n\n"
+        "Run the installer or application with administrator privileges, or choose a folder "
+        "where you have write permission. The application will now close."
+    )
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(
+                None, message, "Radiochromic Film Analyzer - Permission required", 0x10
+            )
+            return
+        except Exception:
+            pass
+    print(message, file=sys.stderr)
+
+
+# Configure logging only after proving that the selected installation directory
+# accepts writes. This avoids PyInstaller's unhandled-exception dialog.
+try:
+    ensure_writable_directories()
+except ApplicationPermissionError as exc:
+    _show_permission_error(exc)
+    raise SystemExit(1)
 logs_dir = os.path.join(PROJECT_ROOT, "logs")
 os.makedirs(logs_dir, exist_ok=True)
 

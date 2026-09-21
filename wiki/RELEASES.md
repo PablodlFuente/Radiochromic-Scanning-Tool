@@ -27,7 +27,7 @@ python -m pip install -r requirements.txt build pyinstaller
 python -m unittest discover -s tests -v
 python -m build --wheel
 python -m PyInstaller --clean --noconfirm radiochromic_scanning_tool.spec
-iscc /DAppVersion=2.1.4 installer\RadiochromicFilmAnalyzer.iss
+iscc /DAppVersion=2.1.5 installer\RadiochromicFilmAnalyzer.iss
 ```
 
 The release artifacts are written to `dist/`. Run the installer, verify the Start-menu shortcut and confirm that the installed application's log records both bundled plugins before publishing.

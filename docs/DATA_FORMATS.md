@@ -75,3 +75,5 @@ Multi-channel vectors are serialized inside quoted CSV fields. `expanded_uncerta
 ## Logs and user-visible errors
 
 Each run writes a timestamped file under `logs/`; the most recent ten are retained. Expected workflow failures are shown in dialogs or an in-window status label. Unhandled Tk callback failures are also displayed in the GUI while the traceback remains in the log.
+
+The application writes logs, configuration, calibrations and user plugins beside its executable. When it is installed in a protected folder, it must be started with administrator privileges; otherwise it displays a controlled permission message and exits before creating a log file.

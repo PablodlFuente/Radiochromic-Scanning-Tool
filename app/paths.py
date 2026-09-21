@@ -1,6 +1,8 @@
 """Stable bundled-resource and writable-data paths."""
 
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -14,18 +16,32 @@ RECENT_FILES_FILE = PROJECT_ROOT / "recent_files.json"
 APPLICATION_ICON = BUNDLE_ROOT / "resources" / "radiochromic_film_analyzer.ico"
 
 
-def ensure_writable_directories() -> None:
-    """Create the application-owned directories beside the executable.
+class ApplicationPermissionError(PermissionError):
+    """Raised when the selected application directory is not writable."""
 
-    The installer creates these folders during setup.  Keeping this function
-    also makes a manually copied executable usable and never overwrites user
-    data during a release update.
+
+def ensure_writable_directories() -> None:
+    """Create and verify the application-owned writable directories.
+
+    A user may deliberately install the application in a protected location
+    such as ``Program Files``.  Directory creation alone is not sufficient in
+    that case, because existing folders can still reject log writes.  Probe the
+    log directory before the logging subsystem is configured so startup can
+    fail with a controlled privilege message instead of an unhandled exception.
     """
-    for directory in (
+    writable_directories = (
         PROJECT_ROOT / "logs",
         PROJECT_ROOT / "temp",
         PROJECT_ROOT / "custom_plugins",
         CALIBRATION_ROOT,
-        PROJECT_ROOT / "docs",
-    ):
-        directory.mkdir(parents=True, exist_ok=True)
+    )
+    try:
+        for directory in writable_directories:
+            directory.mkdir(parents=True, exist_ok=True)
+        descriptor, probe_path = tempfile.mkstemp(prefix=".write_probe_", dir=PROJECT_ROOT / "logs")
+        os.close(descriptor)
+        Path(probe_path).unlink(missing_ok=True)
+    except OSError as exc:
+        raise ApplicationPermissionError(
+            f"The installation directory is not writable: {PROJECT_ROOT}"
+        ) from exc

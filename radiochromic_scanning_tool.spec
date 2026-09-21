@@ -1,7 +1,10 @@
 from PyInstaller.utils.hooks import collect_submodules
 
 
-hidden_imports = collect_submodules("custom_plugins")
+hidden_imports = sorted(set(
+    collect_submodules("custom_plugins")
+    + ["custom_plugins.analysis_tools", "custom_plugins.auto_measurements"]
+))
 
 analysis = Analysis(
     ["main.py"],

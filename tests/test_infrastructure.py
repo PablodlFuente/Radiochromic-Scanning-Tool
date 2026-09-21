@@ -10,6 +10,7 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 from app.models.config_model import DEFAULT_CONFIG
+from app.paths import ApplicationPermissionError, ensure_writable_directories
 from app.plugins.plugin_manager import PluginManager
 from app.utils.config_manager import ConfigManager
 from app.version import __version__
@@ -41,6 +42,15 @@ class ConfigurationTests(unittest.TestCase):
             path.write_text(json.dumps({"check_updates_on_startup": False}), encoding="utf-8")
             config = ConfigManager(path).load_config()
         self.assertFalse(config["automatic_updates"])
+
+    def test_writable_directory_check_reports_a_controlled_permission_error(self):
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "app.paths.PROJECT_ROOT", Path(directory)
+        ), patch("app.paths.CALIBRATION_ROOT", Path(directory) / "calibration_data"), patch(
+            "app.paths.tempfile.mkstemp", side_effect=PermissionError("denied")
+        ):
+            with self.assertRaises(ApplicationPermissionError):
+                ensure_writable_directories()
 
 
 class MetadataSafetyTests(unittest.TestCase):
@@ -115,6 +125,10 @@ class ReleaseMetadataTests(unittest.TestCase):
         spec = Path("radiochromic_scanning_tool.spec").read_text(encoding="utf-8")
         self.assertIn("Splash(", spec)
         self.assertIn("splash.binaries", spec)
+
+    def test_one_file_build_explicitly_includes_analysis_plugin(self):
+        spec = Path("radiochromic_scanning_tool.spec").read_text(encoding="utf-8")
+        self.assertIn('"custom_plugins.analysis_tools"', spec)
 
     def test_packaging_uses_the_application_icon(self):
         spec = Path("radiochromic_scanning_tool.spec").read_text(encoding="utf-8")
