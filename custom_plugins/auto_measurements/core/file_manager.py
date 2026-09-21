@@ -131,6 +131,7 @@ class FileDataManager:
                             'films': [],
                             'circles': [],
                             'item_to_shape': {},
+                            'geometry_by_item': {},
                             'ctr_map': {},
                             '_shape': (0, 0),
                             'scale': 1.0
@@ -183,6 +184,7 @@ class FileDataManager:
                     'films': [],
                     'circles': [],
                     'item_to_shape': {},
+                    'geometry_by_item': {},
                     'ctr_map': {},
                     '_shape': (0, 0),  # Will be updated by update_overlay_shape()
                     'scale': 1.0
@@ -201,12 +203,15 @@ class FileDataManager:
                     item_name_clean = item_name.replace(" (CTR)", "")
                     if shape_type == 'film':
                         shapes_by_name[('film', item_name_clean)] = coords
-                    elif shape_type == 'circle':
+                        exact = parent_module._OVERLAY.get('geometry_by_item', {}).get(item_id)
+                        if exact is not None:
+                            shapes_by_name[('film_geometry', item_name_clean)] = exact
+                    elif shape_type in {'circle', 'rectangle', 'polygon'}:
                         # Get parent film name
                         parent_id = self.tree.parent(item_id)
                         parent_name = self.tree.item(parent_id, 'text') if parent_id else None
                         if parent_name:
-                            shapes_by_name[('circle', parent_name, item_name_clean)] = coords
+                            shapes_by_name[(shape_type, parent_name, item_name_clean)] = coords
                             # Also store the original radius with clean name
                             original_radii = get_original_radii_callback()
                             if item_id in original_radii:
@@ -280,6 +285,7 @@ class FileDataManager:
                 'films': [],
                 'circles': [],
                 'item_to_shape': {},
+                'geometry_by_item': {},
                 'ctr_map': {},
                 '_shape': (0, 0),
                 'scale': 1.0

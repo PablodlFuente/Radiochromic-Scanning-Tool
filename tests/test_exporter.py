@@ -31,6 +31,19 @@ class CSVExporterTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.exporter.format_for_csv([1.0, "invalid", 3.0])
 
+    def test_schema_four_exports_uncertainty_scope_and_geometry(self):
+        result = {
+            "film": "RC_1", "circle": "A1", "dose": 1.0,
+            "std_per_channel": 0.2, "avg": 1.0, "avg_unc": 0.1,
+            "shape": "rectangle", "geometry": (10, 20, 30, 40),
+            "provenance": {"uncertainty_scope": "roi_repeatability_only"},
+        }
+        row = dict(zip(self.exporter.COLUMNS, self.exporter.result_row(result)))
+        self.assertEqual(row["schema_version"], 4)
+        self.assertEqual(row["uncertainty_scope"], "roi_repeatability_only")
+        self.assertEqual(row["geometry_type"], "rectangle")
+        self.assertEqual(row["geometry_json"], "[10, 20, 30, 40]")
+
 
 if __name__ == "__main__":
     unittest.main()

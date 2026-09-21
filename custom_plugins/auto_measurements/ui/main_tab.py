@@ -116,6 +116,21 @@ class AutoMeasurementsTab(ttk.Frame):
         self._dose_correction_tooltip_after_id = None
         self._dose_correction_tooltip = None
 
+        # Interactive geometry drawing state.  Shapes are defined directly on
+        # the image, so no pixel-size entry is required.
+        self.draw_mode = None
+        self.draw_target = None
+        self._draw_start = None
+        self._polygon_points = []
+        self._last_cursor = None
+        self.preview_tag = "draw_preview"
+        self._original_bindings = {}
+        self._drag_item = None
+        self._drag_origin = None
+        self._drag_shapes = {}
+        self._drag_bindings_installed = False
+        self._shape_picker_window = None
+
         # UI setup
         self._setup_ui()
         
@@ -153,20 +168,10 @@ class AutoMeasurementsTab(ttk.Frame):
         # Multi-file support: file_list, current_file_index, and file_data are now properties
         # that delegate to file_manager (no need to initialize them here)
         
-        # Drawing attributes
-        self.draw_mode = None
-        self.draw_dims = None
-        self._dims_window = None
-        self._dim_vars = []
-        self._last_cursor = None
-        self.preview_tag = "draw_preview"  # Unique tag for canvas preview items
-        
-        # Store original canvas bindings to restore after drawing mode
-        self._original_bindings = {}
-
         # Add sorting state variables
         self.sort_column = None
         self.sort_reverse = False
+        self._install_shape_dragging()
     
     # Properties for backward compatibility (delegate to CTR manager)
     @property
@@ -337,23 +342,16 @@ class AutoMeasurementsTab(ttk.Frame):
         ttk.Button(btn_frame, text="Add Files", command=self._add_files).pack(side=tk.LEFT)
         ttk.Button(btn_frame, text="Start Detection", command=self.start_detection).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Clear", command=self._clear_all).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="Add RC", command=self._add_manual_film).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="Add Circle", command=self._add_manual_circle).pack(side=tk.LEFT)
-        
-        # Circle diameter spinbox (inline, replaces popup window)
-        # Uses DoubleVar to support both px (integer) and mm (decimal) values
-        # Note: internally we use radius in px, but UI shows diameter for user convenience
-        self.circle_diameter_var = tk.DoubleVar(value=200)  # Default diameter = 200px (radius 100)
-        self.circle_diameter_spinbox = ttk.Spinbox(
-            btn_frame, from_=10, to=1000, increment=1, textvariable=self.circle_diameter_var, 
-            width=6, command=self._update_circle_diameter_label
+        self.add_rc_button = ttk.Button(btn_frame, text="Add RC")
+        self.add_rc_button.configure(
+            command=lambda: self._show_shape_picker("film", self.add_rc_button)
         )
-        self.circle_diameter_spinbox.pack(side=tk.LEFT, padx=(2, 0))
-        self.circle_diameter_label = ttk.Label(btn_frame, text="px", width=3)
-        self.circle_diameter_label.pack(side=tk.LEFT)
-        
-        # Trace to update label when value changes (typing or arrow buttons)
-        self.circle_diameter_var.trace_add("write", self._update_circle_diameter_label)
+        self.add_rc_button.pack(side=tk.LEFT, padx=5)
+        self.add_area_button = ttk.Button(btn_frame, text="Add Measurement Area")
+        self.add_area_button.configure(
+            command=lambda: self._show_shape_picker("measurement", self.add_area_button)
+        )
+        self.add_area_button.pack(side=tk.LEFT)
         
         ttk.Button(btn_frame, text="Export CSV", command=self.export_csv).pack(side=tk.LEFT, padx=5)
 
@@ -378,108 +376,6 @@ class AutoMeasurementsTab(ttk.Frame):
         
         # Detection parameter panels
         self._setup_detection_params()
-
-    def _update_circle_diameter_label(self, *args):
-        """Update the circle diameter label to show units (mm or px).
-        
-        Also updates the draw preview dynamically if in circle draw mode.
-        """
-        if self.use_metadata_var.get() and hasattr(self, 'stored_resolution') and self.stored_resolution:
-            self.circle_diameter_label.config(text="mm")
-        else:
-            self.circle_diameter_label.config(text="px")
-        
-        # Update draw preview dynamically if we're in circle draw mode
-        if self.draw_mode == "circle":
-            self._update_draw_dims_from_spinbox()
-    
-    def _update_diameter_from_metadata(self):
-        """Update diameter spinbox value when metadata resolution changes.
-        
-        When Use Metadata is enabled: convert current px value to mm
-        When Use Metadata is disabled: convert current mm value back to px
-        """
-        if not hasattr(self, 'circle_diameter_var'):
-            return
-        
-        current_value = self.circle_diameter_var.get()
-        
-        if self.use_metadata_var.get() and hasattr(self, 'stored_resolution') and self.stored_resolution:
-            # Switching TO mm mode
-            # Store the current px value
-            if not hasattr(self, '_diameter_px_value'):
-                self._diameter_px_value = current_value
-            
-            # Convert px to mm: mm = px * 25.4 / dpi
-            diameter_mm = current_value * 25.4 / self.stored_resolution
-            # Update spinbox to show mm value (use float-friendly format)
-            self.circle_diameter_var.set(round(diameter_mm, 2))
-            
-            # Update spinbox range for mm values (0.1 to 100 mm typically)
-            self.circle_diameter_spinbox.config(from_=0.1, to=100, increment=0.1)
-        else:
-            # Switching TO px mode
-            if hasattr(self, '_diameter_px_value') and self._diameter_px_value:
-                # Restore the original px value
-                self.circle_diameter_var.set(self._diameter_px_value)
-            elif hasattr(self, 'stored_resolution') and self.stored_resolution:
-                # Convert current mm value back to px
-                diameter_px = int(current_value * self.stored_resolution / 25.4)
-                diameter_px = max(10, min(1000, diameter_px))
-                self.circle_diameter_var.set(diameter_px)
-            
-            # Reset spinbox range for px values
-            self.circle_diameter_spinbox.config(from_=10, to=1000, increment=1)
-            
-            # Clear stored px value
-            if hasattr(self, '_diameter_px_value'):
-                delattr(self, '_diameter_px_value')
-        
-        # Update label
-        self._update_circle_diameter_label()
-
-    def _update_draw_dims_from_spinbox(self):
-        """Update draw_dims from the current spinbox value and refresh preview.
-        
-        Called when spinbox value changes while in circle draw mode.
-        """
-        if self.draw_mode != "circle":
-            return
-        
-        try:
-            diameter_value = self.circle_diameter_var.get()
-        except (tk.TclError, ValueError):
-            return  # Invalid value, skip update
-        
-        # If using metadata, spinbox value is in mm - convert to px
-        if self.use_metadata_var.get() and hasattr(self, 'stored_resolution') and self.stored_resolution:
-            # Convert mm to px: px = mm * dpi / 25.4
-            diameter_px = diameter_value * self.stored_resolution / 25.4
-        else:
-            # Value is already in px
-            diameter_px = diameter_value
-        
-        # Convert diameter to radius (integer pixels)
-        radius = max(1, int(diameter_px) // 2)
-        
-        # Update draw_dims
-        self.draw_dims = radius
-        
-        # Refresh the preview if we have a cursor position
-        if self._last_cursor is not None and self._canvas is not None:
-            try:
-                # Delete old preview and redraw
-                self._canvas.delete(self.preview_tag)
-                zoom = self.image_processor.zoom or 1.0
-                x = self._canvas.canvasx(self._last_cursor[0])
-                y = self._canvas.canvasy(self._last_cursor[1])
-                dr = radius * zoom
-                self._canvas.create_oval(
-                    x - dr, y - dr, x + dr, y + dr,
-                    outline="yellow", dash=(4, 2), tags=self.preview_tag,
-                )
-            except Exception:
-                pass  # Canvas might not be ready
 
     def _setup_treeview(self):
         """Setup the TreeView widget."""
@@ -698,8 +594,8 @@ class AutoMeasurementsTab(ttk.Frame):
     def _schedule_dose_correction_update(self, delay_ms=450):
         """Schedule a deferred dose correction recalculation."""
         if self._dose_correction_after_id is not None:
-            self.after_cancel(self._dose_correction_after_id)
-        self._dose_correction_after_id = self.after(delay_ms, self._run_dose_correction_update)
+            self.frame.after_cancel(self._dose_correction_after_id)
+        self._dose_correction_after_id = self.frame.after(delay_ms, self._run_dose_correction_update)
 
     def _run_dose_correction_update(self):
         """Run the pending dose correction recalculation."""
@@ -713,7 +609,7 @@ class AutoMeasurementsTab(ttk.Frame):
     def _on_dose_correction_focus_out(self, _event=None):
         """Recalculate immediately when the entry loses focus."""
         if self._dose_correction_after_id is not None:
-            self.after_cancel(self._dose_correction_after_id)
+            self.frame.after_cancel(self._dose_correction_after_id)
             self._dose_correction_after_id = None
         self._on_dose_correction_changed()
         self._hide_dose_correction_tooltip()
@@ -721,7 +617,7 @@ class AutoMeasurementsTab(ttk.Frame):
     def _on_dose_correction_enter(self, _event=None):
         """Apply the correction factor immediately when Enter is pressed."""
         if self._dose_correction_after_id is not None:
-            self.after_cancel(self._dose_correction_after_id)
+            self.frame.after_cancel(self._dose_correction_after_id)
             self._dose_correction_after_id = None
         self._on_dose_correction_changed()
         self._hide_dose_correction_tooltip()
@@ -730,8 +626,8 @@ class AutoMeasurementsTab(ttk.Frame):
     def _schedule_dose_correction_tooltip(self, _event=None):
         """Show the dose correction tooltip after a short hover delay."""
         if self._dose_correction_tooltip_after_id is not None:
-            self.after_cancel(self._dose_correction_tooltip_after_id)
-        self._dose_correction_tooltip_after_id = self.after(700, self._show_dose_correction_tooltip)
+            self.frame.after_cancel(self._dose_correction_tooltip_after_id)
+        self._dose_correction_tooltip_after_id = self.frame.after(700, self._show_dose_correction_tooltip)
 
     def _show_dose_correction_tooltip(self):
         """Display the dose correction help tooltip."""
@@ -739,7 +635,7 @@ class AutoMeasurementsTab(ttk.Frame):
         if self._dose_correction_tooltip is not None or not hasattr(self, 'dose_correction_entry'):
             return
 
-        tooltip = tk.Toplevel(self)
+        tooltip = tk.Toplevel(self.frame)
         tooltip.wm_overrideredirect(True)
         tooltip.attributes("-topmost", True)
 
@@ -761,7 +657,7 @@ class AutoMeasurementsTab(ttk.Frame):
     def _hide_dose_correction_tooltip(self, _event=None):
         """Cancel pending tooltip display and hide it if visible."""
         if self._dose_correction_tooltip_after_id is not None:
-            self.after_cancel(self._dose_correction_tooltip_after_id)
+            self.frame.after_cancel(self._dose_correction_tooltip_after_id)
             self._dose_correction_tooltip_after_id = None
         if self._dose_correction_tooltip is not None:
             self._dose_correction_tooltip.destroy()
@@ -842,7 +738,7 @@ class AutoMeasurementsTab(ttk.Frame):
         # Create a custom dialog and keep it focused.
         dialog = tk.Toplevel(self.frame)
         dialog.title("Enter DPI Manually")
-        dialog.transient(self.frame)  # Mantener sobre la ventana principal
+        dialog.transient(self.frame)  # Keep the dialog above the main window.
         dialog.grab_set()  # Hacer modal
         
         # Center the dialog.
@@ -1221,7 +1117,15 @@ class AutoMeasurementsTab(ttk.Frame):
         else:
             item_id = sel[0]
             if _get_parent_module()._OVERLAY and item_id in _get_parent_module()._OVERLAY.get("item_to_shape", {}):
-                _get_parent_module()._OVERLAY["highlight"] = _get_parent_module()._OVERLAY["item_to_shape"][item_id]
+                overlay = _get_parent_module()._OVERLAY
+                shape_info = overlay.get("geometry_by_item", {}).get(item_id)
+                if shape_info is None:
+                    item_type, coords = overlay["item_to_shape"][item_id]
+                    shape_info = (
+                        ("rectangle", coords) if item_type == "film"
+                        else (item_type, coords)
+                    )
+                overlay["highlight"] = shape_info
         # Refresh display
         self.main_window.update_image()
 
@@ -1308,8 +1212,47 @@ class AutoMeasurementsTab(ttk.Frame):
         old_text = self.tree.item(item_id, "text")
         item_type = _get_parent_module()._OVERLAY.get("item_to_shape", {}).get(item_id, (None,))[0]
 
+        edit_state = {"saving": False, "finished": False}
+
+        def clean_label(value):
+            value = value.strip()
+            for suffix in (" (GLOBAL CTR)", " (CTR)"):
+                if value.endswith(suffix):
+                    return value[:-len(suffix)].strip()
+            return value
+
+        def duplicate_label(candidate):
+            parent_id = self.tree.parent(item_id)
+            siblings = self.tree.get_children(parent_id)
+            candidate = clean_label(candidate).casefold()
+            return any(
+                sibling != item_id
+                and clean_label(self.tree.item(sibling, "text")).casefold() == candidate
+                for sibling in siblings
+            )
+
         def save_edit(event=None):
-            new_text = entry.get()
+            if edit_state["finished"] or edit_state["saving"]:
+                return "break"
+            edit_state["saving"] = True
+            requested_text = clean_label(entry.get())
+            if not requested_text or duplicate_label(requested_text):
+                message = (
+                    "Names cannot be empty."
+                    if not requested_text
+                    else "Another item in this group already uses that name."
+                )
+                messagebox.showwarning("Invalid name", message, parent=self.frame)
+                edit_state["saving"] = False
+                self.frame.after_idle(lambda: (entry.focus_set(), entry.selection_range(0, tk.END)))
+                return "break"
+
+            status_suffix = next(
+                (suffix for suffix in (" (GLOBAL CTR)", " (CTR)") if old_text.endswith(suffix)),
+                "",
+            )
+            new_text = requested_text + status_suffix
+            edit_state["finished"] = True
             # Update TreeView
             self.tree.item(item_id, text=new_text)
             # Update cached results so CSV export reflects the rename
@@ -1320,14 +1263,21 @@ class AutoMeasurementsTab(ttk.Frame):
                 # Update CTR map if this film has a CTR
                 if old_text in self.ctr_map:
                     self.ctr_map[new_text] = self.ctr_map.pop(old_text)
-            elif item_type == "circle":
+            elif item_type in {"circle", "rectangle", "polygon"}:
                 parent_id = self.tree.parent(item_id)
                 film_name = self.tree.item(parent_id, "text") if parent_id else None
                 for rec in self.results:
-                    if rec["film"] == film_name and rec["circle"] == old_text:
+                    same_item = rec.get("item_id") == item_id
+                    same_legacy_record = (
+                        "item_id" not in rec
+                        and rec["film"] == film_name
+                        and rec["circle"] == old_text
+                    )
+                    if same_item or same_legacy_record:
                         rec["circle"] = new_text
             entry.destroy()
             self._autosize_columns()
+            return "break"
         
         entry.bind("<Return>", save_edit)
         entry.bind("<FocusOut>", save_edit)
@@ -1682,11 +1632,15 @@ class AutoMeasurementsTab(ttk.Frame):
             film_name = self.tree.item(film_id, "text")
             for circle_id in self.tree.get_children(film_id):
                 shape_info = item_to_shape.get(circle_id)
-                if not shape_info or shape_info[0] != "circle":
+                if not shape_info or shape_info[0] not in {"circle", "rectangle", "polygon"}:
                     continue
 
-                cx, cy, r = shape_info[1]
-                res = self._measure_corrected_circle(cx, cy, r)
+                shape_type, geometry = shape_info
+                if shape_type == "circle":
+                    cx, cy, radius = geometry
+                    res = self._measure_corrected_circle(cx, cy, radius)
+                else:
+                    res = self._measure_corrected_geometry(shape_type, geometry)
                 if res is None:
                     continue
 
@@ -1714,7 +1668,13 @@ class AutoMeasurementsTab(ttk.Frame):
                 circle_name = self.tree.item(circle_id, "text").replace(" (CTR)", "").replace(" (GLOBAL CTR)", "")
                 for result in self.results:
                     result_circle = result.get("circle", "").replace(" (CTR)", "").replace(" (GLOBAL CTR)", "")
-                    if result.get("film") != film_name or result_circle != circle_name:
+                    same_item = result.get("item_id") == circle_id
+                    same_legacy_result = (
+                        "item_id" not in result
+                        and result.get("film") == film_name
+                        and result_circle == circle_name
+                    )
+                    if not (same_item or same_legacy_result):
                         continue
 
                     result["dose"] = dose
@@ -1730,10 +1690,23 @@ class AutoMeasurementsTab(ttk.Frame):
                     result["avg_numeric"] = float(rgb_mean)
                     result["std_avg_numeric"] = avg_std
                     result["avg_unc_numeric"] = float(rgb_mean_std)
+                    center_x, center_y = self._geometry_center(shape_type, geometry)
+                    result["x"], result["y"] = center_x, center_y
+                    result["shape"] = shape_type
+                    result["geometry"] = geometry
                     result.update(self._last_measurement_context)
                     result.pop("avg_original", None)
                     result.pop("avg_unc_original", None)
                     break
+
+                dose_values = list(dose) if isinstance(dose, tuple) else [dose]
+                uncertainty_values = list(unc) if isinstance(unc, tuple) else [unc]
+                self.original_values[circle_id] = {
+                    "dose": dose_values,
+                    "sigma": uncertainty_values,
+                    "avg": float(rgb_mean),
+                    "avg_unc": float(rgb_mean_std),
+                }
 
     # ---------------------------------------------------------------
     # Multi-file functionality
@@ -1800,6 +1773,7 @@ class AutoMeasurementsTab(ttk.Frame):
         
         # Rebuild item_to_shape mapping with new TreeView IDs
         new_item_to_shape = {}
+        new_geometry_by_item = {}
         
         # Rebuild TreeView from stored results
         films = {}
@@ -1813,6 +1787,9 @@ class AutoMeasurementsTab(ttk.Frame):
                     film_id = self.tree.insert("", "end", text=film_name, values=("", "", "", "", ""))
                     films[film_name] = film_id
                     new_item_to_shape[film_id] = ('film', coords)
+                    geometry_key = ('film_geometry', film_name)
+                    if geometry_key in shapes_by_name:
+                        new_geometry_by_item[film_id] = shapes_by_name[geometry_key]
                     logging.debug(f"[_update_treeview] Restored film {film_name} from shapes_by_name")
         
         # SECOND: Rebuild circles from results
@@ -1826,6 +1803,9 @@ class AutoMeasurementsTab(ttk.Frame):
                 film_key = ('film', film_name)
                 if film_key in shapes_by_name:
                     new_item_to_shape[film_id] = ('film', shapes_by_name[film_key])
+                geometry_key = ('film_geometry', film_name)
+                if geometry_key in shapes_by_name:
+                    new_geometry_by_item[film_id] = shapes_by_name[geometry_key]
             else:
                 film_id = films[film_name]
             
@@ -1860,6 +1840,7 @@ class AutoMeasurementsTab(ttk.Frame):
             
             values = (dose_str, sigma_str, avg_str, avg_unc_str, ci95_str)
             circle_id = self.tree.insert(film_id, "end", text=circle_name, values=values)
+            result["item_id"] = circle_id
             
             # Store original measurements with new TreeView ID
             # IMPORTANT: Store FORMATTED values (avg_str, avg_unc_str) not raw numeric values
@@ -1872,9 +1853,11 @@ class AutoMeasurementsTab(ttk.Frame):
                                             avg_unc_str)   # Already formatted by format_for_treeview
             
             # Restore circle shape mapping
-            circle_key = ('circle', film_name, circle_name)
+            shape_type = result.get('shape', 'circle')
+            circle_key = (shape_type, film_name, circle_name)
             if circle_key in shapes_by_name:
-                new_item_to_shape[circle_id] = ('circle', shapes_by_name[circle_key])
+                new_item_to_shape[circle_id] = (shape_type, shapes_by_name[circle_key])
+                new_geometry_by_item[circle_id] = (shape_type, shapes_by_name[circle_key])
             else:
                 # Fallback: use coordinates from result
                 cx, cy = result.get('x', 0), result.get('y', 0)
@@ -1890,6 +1873,7 @@ class AutoMeasurementsTab(ttk.Frame):
         # Update _OVERLAY with new mapping
         if _get_parent_module()._OVERLAY:
             _get_parent_module()._OVERLAY['item_to_shape'] = new_item_to_shape
+            _get_parent_module()._OVERLAY['geometry_by_item'] = new_geometry_by_item
             # Rebuild films list from shapes
             new_films = []
             for film_id in films.values():
@@ -2219,7 +2203,8 @@ class AutoMeasurementsTab(ttk.Frame):
             "_shape": img_rgb.shape[:2], 
             "scale": 1.0, 
             "ctr_map": {}, 
-            "item_to_shape": {}
+            "item_to_shape": {},
+            "geometry_by_item": {},
         }
 
         # Process each film
@@ -2338,6 +2323,9 @@ class AutoMeasurementsTab(ttk.Frame):
 
                 # Store results
                 self.results.append({
+                    "item_id": circ_id,
+                    "shape": "circle",
+                    "geometry": (abs_cx, abs_cy, r_int),
                     "film": film_name,
                     "circle": circ_name,
                     "dose": dose,                        # Raw numeric dose (NOT formatted string)
@@ -2359,6 +2347,17 @@ class AutoMeasurementsTab(ttk.Frame):
                     "channel_weights": channel_weights,  # Sensitivity weights {'R': w, 'G': w, 'B': w} or None
                     **self._last_measurement_context,
                 })
+
+            # Detect square measurement areas independently of the Hough-circle
+            # pass.  They use the same size controls, interpreted as half-side
+            # limits so the existing detection panel remains coherent.
+            for square_x, square_y, square_width, square_height in self.detector.detect_squares(
+                film_roi, params
+            ):
+                self._insert_measurement_shape(
+                    "rectangle",
+                    (x + square_x, y + square_y, square_width, square_height),
+                )
 
             # Automatically detect CTR circle
             self._detect_ctr_automatically(film_name, film_circles)
@@ -2489,9 +2488,6 @@ class AutoMeasurementsTab(ttk.Frame):
             self.conversion_label.config(text="")
 
         self.updating_parameters_programmatically = False  # Reset flag to False
-        
-        # Update circle diameter spinbox value and label
-        self._update_diameter_from_metadata()
         
         logging.info("Unit Conversion Update complete.\n")
 
@@ -2932,7 +2928,7 @@ class AutoMeasurementsTab(ttk.Frame):
                 self.results = [rec for rec in self.results 
                               if rec["film"] != film_name]
                 
-            elif shape_type == "circle":
+            elif shape_type in {"circle", "rectangle", "polygon"}:
                 if coords in _get_parent_module()._OVERLAY.get("circles", []):
                     _get_parent_module()._OVERLAY["circles"].remove(coords)
                 # Remove from CTR mapping if it was a CTR
@@ -2943,9 +2939,17 @@ class AutoMeasurementsTab(ttk.Frame):
                 
                 # Remove this specific circle from results
                 circle_name_clean = item_text.replace(" (CTR)", "")
-                self.results = [rec for rec in self.results 
-                              if not (rec["film"] == parent_text and 
-                                     rec["circle"].replace(" (CTR)", "") == circle_name_clean)]
+                self.results = [
+                    rec for rec in self.results
+                    if rec.get("item_id") != item_id
+                    and not (
+                        "item_id" not in rec
+                        and rec["film"] == parent_text
+                        and rec["circle"].replace(" (CTR)", "") == circle_name_clean
+                    )
+                ]
+
+            _get_parent_module()._OVERLAY.get("geometry_by_item", {}).pop(item_id, None)
 
         # Clean up stored data
         self.original_measurements.pop(item_id, None)
@@ -3067,42 +3071,57 @@ class AutoMeasurementsTab(ttk.Frame):
     # Manual addition and drawing
     # ---------------------------------------------------------------
 
-    def _add_manual_film(self):
-        """Start manual film addition mode."""
-        self._start_draw_mode("film", (300, 200))
+    def _show_shape_picker(self, target, anchor):
+        """Open a compact geometry picker directly below the pressed button."""
+        if self._shape_picker_window is not None:
+            try:
+                self._shape_picker_window.destroy()
+            except tk.TclError:
+                pass
+        self.draw_target = target
+        popup = tk.Toplevel(self.frame)
+        popup.overrideredirect(True)
+        popup.transient(self.frame.winfo_toplevel())
+        popup.attributes("-topmost", True)
+        picker = ttk.Frame(popup, padding=3, relief="solid", borderwidth=1)
+        picker.pack()
 
-    def _add_manual_circle(self):
-        """Start manual circle addition mode using the inline diameter spinbox."""
-        # Get diameter from the inline spinbox
-        diameter_value = self.circle_diameter_var.get()
-        
-        # If using metadata, spinbox value is in mm - convert to px
-        if self.use_metadata_var.get() and hasattr(self, 'stored_resolution') and self.stored_resolution:
-            # Convert mm to px: px = mm * dpi / 25.4
-            diameter_px = diameter_value * self.stored_resolution / 25.4
-        else:
-            # Value is already in px
-            diameter_px = diameter_value
-        
-        # Convert diameter to radius (integer pixels)
-        radius = int(diameter_px) // 2
-        self._start_draw_mode("circle", radius)
+        def select_shape(shape_type):
+            popup.destroy()
+            self._shape_picker_window = None
+            self._start_draw_mode(shape_type)
 
-    def _start_draw_mode(self, shape_type: str, dims):
-        """Start interactive drawing mode."""
+        for label, shape_type in (
+            ("Circle", "circle"),
+            ("Rectangle", "rectangle"),
+            ("Custom Area", "polygon"),
+        ):
+            ttk.Button(
+                picker, text=label,
+                command=lambda selected=shape_type: select_shape(selected),
+            ).pack(side=tk.LEFT, padx=1)
+
+        popup.update_idletasks()
+        x = anchor.winfo_rootx()
+        y = anchor.winfo_rooty() + anchor.winfo_height() + 2
+        popup.geometry(f"+{x}+{y}")
+        popup.bind("<Escape>", lambda _event: popup.destroy())
+        popup.focus_force()
+        self._shape_picker_window = popup
+
+    def _start_draw_mode(self, shape_type: str):
+        """Start direct circle, rectangle, or free-form drawing on the image."""
         if self._canvas is None or not self.image_processor.has_image():
             messagebox.showwarning("Draw", "No image loaded or canvas not available.")
+            return
+        if self.draw_target not in {"film", "measurement"}:
             return
 
         self._cancel_draw()
         self.draw_mode = shape_type
-        self.draw_dims = dims
+        self._draw_start = None
+        self._polygon_points = []
         
-        # Only open dimension window for films, circles use inline spinbox
-        if shape_type == "film":
-            self._open_dims_window()
-        
-        # Save references to ImagePanel's original methods before overriding
         if hasattr(self.main_window, 'image_panel'):
             image_panel = self.main_window.image_panel
             self._original_bindings = {
@@ -3113,60 +3132,34 @@ class AutoMeasurementsTab(ttk.Frame):
         self._canvas.config(cursor="crosshair")
         self._canvas.delete(self.preview_tag)
         self._canvas.bind("<Motion>", self._on_draw_move)
-        self._canvas.bind("<Button-1>", self._on_draw_click)
+        self._drag_bindings_installed = False
+        if shape_type == "polygon":
+            self._canvas.bind("<Button-1>", self._on_polygon_point)
+            self._canvas.bind("<Button-3>", self._finish_polygon)
+            self.frame.winfo_toplevel().bind("<space>", self._finish_polygon)
+        else:
+            self._canvas.bind("<ButtonPress-1>", self._on_draw_press)
+            self._canvas.bind("<B1-Motion>", self._on_draw_drag)
+            self._canvas.bind("<ButtonRelease-1>", self._on_draw_release)
         self.frame.winfo_toplevel().bind("<Escape>", self._cancel_draw)
 
-    def _open_dims_window(self):
-        """Open dimension editing window."""
-        if self._dims_window is not None:
-            self._dims_window.destroy()
-        
-        self._dims_window = tk.Toplevel(self.frame)
-        self._dims_window.title("Dimensions")
-        self._dims_window.resizable(False, False)
-        self._dims_window.attributes("-topmost", True)
-        self._dim_vars.clear()
+    def _canvas_image_point(self, event):
+        zoom = self.image_processor.zoom or 1.0
+        return (
+            float(self._canvas.canvasx(event.x) / zoom),
+            float(self._canvas.canvasy(event.y) / zoom),
+        )
 
-        def on_var_change(*_):
-            try:
-                if self.draw_mode == "film" and len(self._dim_vars) == 2:
-                    w = int(self._dim_vars[0].get())
-                    h = int(self._dim_vars[1].get())
-                    if w > 0 and h > 0:
-                        self.draw_dims = (w, h)
-                elif self.draw_mode == "circle" and self._dim_vars:
-                    r = int(self._dim_vars[0].get())
-                    if r > 0:
-                        self.draw_dims = r
-            except ValueError:
-                pass
-            self._update_preview()
-
-        if self.draw_mode == "film":
-            w, h = self.draw_dims
-            w_var = tk.StringVar(value=str(w))
-            h_var = tk.StringVar(value=str(h))
-            self._dim_vars.extend([w_var, h_var])
-            tk.Label(self._dims_window, text="Width:").grid(row=0, column=0, padx=4, pady=2)
-            tk.Entry(self._dims_window, textvariable=w_var, width=6).grid(row=0, column=1, padx=4, pady=2)
-            tk.Label(self._dims_window, text="Height:").grid(row=1, column=0, padx=4, pady=2)
-            tk.Entry(self._dims_window, textvariable=h_var, width=6).grid(row=1, column=1, padx=4, pady=2)
-        elif self.draw_mode == "circle":
-            r = self.draw_dims
-            r_var = tk.StringVar(value=str(r))
-            self._dim_vars.append(r_var)
-            tk.Label(self._dims_window, text="Radius:").grid(row=0, column=0, padx=4, pady=2)
-            tk.Entry(self._dims_window, textvariable=r_var, width=6).grid(row=0, column=1, padx=4, pady=2)
-
-        for var in self._dim_vars:
-            var.trace_add("write", on_var_change)
-
-    def _update_preview(self):
-        """Update drawing preview."""
-        if self.draw_mode is None or self._last_cursor is None:
-            return
-        dummy_evt = type("_e", (), {"x": self._last_cursor[0], "y": self._last_cursor[1]})()
-        self._on_draw_move(dummy_evt)
+    def _preview_geometry(self, current):
+        if self._draw_start is None:
+            return None
+        x0, y0 = self._draw_start
+        x1, y1 = current
+        if self.draw_mode == "circle":
+            return ("circle", ((x0 + x1) / 2, (y0 + y1) / 2,
+                               np.hypot(x1 - x0, y1 - y0) / 2))
+        return ("rectangle", (min(x0, x1), min(y0, y1),
+                              abs(x1 - x0), abs(y1 - y0)))
 
     def _on_draw_move(self, event):
         """Update preview while moving cursor."""
@@ -3175,57 +3168,82 @@ class AutoMeasurementsTab(ttk.Frame):
 
         canvas = self._canvas
         canvas.delete(self.preview_tag)
-        
-        x = canvas.canvasx(event.x)
-        y = canvas.canvasy(event.y)
-        zoom = self.image_processor.zoom or 1.0
-        
         self._last_cursor = (event.x, event.y)
-
-        if self.draw_mode == "film":
-            w, h = self.draw_dims
-            dx = (w * zoom) / 2
-            dy = (h * zoom) / 2
-            canvas.create_rectangle(
-                x - dx, y - dy, x + dx, y + dy,
-                outline="yellow", dash=(4, 2), tags=self.preview_tag,
-            )
-        elif self.draw_mode == "circle":
-            r = self.draw_dims
-            dr = r * zoom
-            canvas.create_oval(
-                x - dr, y - dr, x + dr, y + dr,
-                outline="yellow", dash=(4, 2), tags=self.preview_tag,
-            )
-
-    def _on_draw_click(self, event):
-        """Finalize shape placement on click."""
-        if self.draw_mode is None:
-            return
-
-        canvas = self._canvas
-        x_canvas = canvas.canvasx(event.x)
-        y_canvas = canvas.canvasy(event.y)
         zoom = self.image_processor.zoom or 1.0
+        current = self._canvas_image_point(event)
+        if self.draw_mode == "polygon":
+            points = self._polygon_points + [current]
+            if len(points) >= 2:
+                flat = [coordinate * zoom for point in points for coordinate in point]
+                canvas.create_line(*flat, fill="yellow", dash=(4, 2),
+                                   tags=self.preview_tag)
+            return
+        geometry = self._preview_geometry(current)
+        if geometry is not None:
+            self._draw_preview_geometry(*geometry)
 
-        if self.draw_mode == "film":
-            w, h = self.draw_dims
-            x_top = int(x_canvas / zoom - w / 2)
-            y_top = int(y_canvas / zoom - h / 2)
-            self._insert_film(x_top, y_top, w, h)
-        elif self.draw_mode == "circle":
-            r = self.draw_dims
-            cx = int(x_canvas / zoom)
-            cy = int(y_canvas / zoom)
-            self._insert_circle(cx, cy, r)
+    def _draw_preview_geometry(self, shape_type, coords):
+        zoom = self.image_processor.zoom or 1.0
+        if shape_type == "circle":
+            cx, cy, radius = coords
+            self._canvas.create_oval(
+                (cx - radius) * zoom, (cy - radius) * zoom,
+                (cx + radius) * zoom, (cy + radius) * zoom,
+                outline="yellow", dash=(4, 2), tags=self.preview_tag,
+            )
+        elif shape_type == "rectangle":
+            x, y, width, height = coords
+            self._canvas.create_rectangle(
+                x * zoom, y * zoom, (x + width) * zoom, (y + height) * zoom,
+                outline="yellow", dash=(4, 2), tags=self.preview_tag,
+            )
 
+    def _on_draw_press(self, event):
+        self._draw_start = self._canvas_image_point(event)
+
+    def _on_draw_drag(self, event):
+        self._on_draw_move(event)
+
+    def _on_draw_release(self, event):
+        geometry = self._preview_geometry(self._canvas_image_point(event))
+        if geometry is None:
+            return
+        shape_type, coords = geometry
+        bbox = self._geometry_bbox(shape_type, coords)
+        if bbox[2] < 3 or bbox[3] < 3:
+            messagebox.showwarning("Draw", "Drag to define an area larger than 3 pixels.")
+            return
+        self._commit_drawn_geometry(shape_type, coords)
         self._cancel_draw()
+
+    def _on_polygon_point(self, event):
+        self._polygon_points.append(self._canvas_image_point(event))
+        self._on_draw_move(event)
+        return "break"
+
+    def _finish_polygon(self, _event=None):
+        if self.draw_mode != "polygon":
+            return
+        if len(self._polygon_points) < 3:
+            messagebox.showwarning("Draw", "A custom area requires at least three points.")
+            return "break"
+        self._commit_drawn_geometry("polygon", tuple(self._polygon_points))
+        self._cancel_draw()
+        return "break"
+
+    def _commit_drawn_geometry(self, shape_type, coords):
+        if self.draw_target == "film":
+            self._insert_film_shape(shape_type, coords)
+        else:
+            self._insert_measurement_shape(shape_type, coords)
 
     def _cancel_draw(self, event=None):
         """Cancel drawing mode."""
         if hasattr(self, "_canvas") and self._canvas is not None:
             self._canvas.delete(self.preview_tag)
             self._canvas.config(cursor="")
+            for event_name in ("<ButtonPress-1>", "<B1-Motion>", "<ButtonRelease-1>", "<Button-3>"):
+                self._canvas.unbind(event_name)
             
             # Restore original ImagePanel bindings
             if hasattr(self, "_original_bindings") and self._original_bindings:
@@ -3233,20 +3251,350 @@ class AutoMeasurementsTab(ttk.Frame):
                     if callback:
                         self._canvas.bind(event_type, callback)
                 self._original_bindings.clear()
+                self._install_shape_dragging()
 
         try:
             self.frame.winfo_toplevel().unbind("<Escape>")
+            self.frame.winfo_toplevel().unbind("<space>")
         except Exception:
             pass
 
-        if getattr(self, "_dims_window", None) is not None:
-            self._dims_window.destroy()
-            self._dims_window = None
-        
-        self._dim_vars.clear()
         self._last_cursor = None
+        self._draw_start = None
+        self._polygon_points = []
         self.draw_mode = None
-        self.draw_dims = None
+
+    @staticmethod
+    def _translate_geometry(shape_type, coords, dx, dy):
+        if shape_type == "circle":
+            cx, cy, radius = coords
+            return (cx + dx, cy + dy, radius)
+        if shape_type == "rectangle":
+            x, y, width, height = coords
+            return (x + dx, y + dy, width, height)
+        return tuple((x + dx, y + dy) for x, y in coords)
+
+    @classmethod
+    def _point_in_geometry(cls, x, y, shape_type, coords):
+        if shape_type == "circle":
+            cx, cy, radius = coords
+            return (x - cx) ** 2 + (y - cy) ** 2 <= radius ** 2
+        if shape_type == "rectangle":
+            left, top, width, height = coords
+            return left <= x <= left + width and top <= y <= top + height
+        contour = np.asarray(coords, dtype=np.float32)
+        return cv2.pointPolygonTest(contour, (float(x), float(y)), False) >= 0
+
+    def _install_shape_dragging(self):
+        if self._canvas is None or self._drag_bindings_installed:
+            return
+        self._canvas.bind("<Button-1>", self._on_shape_drag_start, add="+")
+        self._canvas.bind("<B1-Motion>", self._on_shape_drag_motion, add="+")
+        self._canvas.bind("<ButtonRelease-1>", self._on_shape_drag_end, add="+")
+        self._drag_bindings_installed = True
+
+    def _on_shape_drag_start(self, event):
+        if self.draw_mode is not None:
+            return
+        overlay = _get_parent_module()._OVERLAY or {}
+        point = self._canvas_image_point(event)
+        item_to_shape = overlay.get("item_to_shape", {})
+        geometry_by_item = overlay.get("geometry_by_item", {})
+        candidates = []
+        for item_id, (item_type, coords) in item_to_shape.items():
+            geometry_type, geometry = geometry_by_item.get(
+                item_id, ("rectangle", coords) if item_type == "film" else (item_type, coords)
+            )
+            if geometry_type not in {"circle", "rectangle", "polygon"}:
+                continue
+            if self._point_in_geometry(*point, geometry_type, geometry):
+                area = self._geometry_bbox(geometry_type, geometry)[2] * self._geometry_bbox(
+                    geometry_type, geometry
+                )[3]
+                candidates.append((item_type == "film", area, item_id))
+        if not candidates:
+            return
+        candidate_ids = {candidate[2] for candidate in candidates}
+        selected = self.tree.selection()
+        if selected and selected[0] in candidate_ids:
+            self._drag_item = selected[0]
+        else:
+            _, _, self._drag_item = min(candidates)
+        self._drag_origin = point
+        moving_ids = [self._drag_item]
+        self._drag_shapes = {
+            item_id: (
+                item_to_shape[item_id],
+                geometry_by_item.get(item_id),
+            )
+            for item_id in moving_ids if item_id in item_to_shape
+        }
+        self._canvas.config(cursor="fleur")
+        return "break"
+
+    def _on_shape_drag_motion(self, event):
+        if self._drag_item is None or self._drag_origin is None:
+            return
+        current_x, current_y = self._canvas_image_point(event)
+        dx = current_x - self._drag_origin[0]
+        dy = current_y - self._drag_origin[1]
+        overlay = _get_parent_module()._OVERLAY
+        for item_id, ((item_type, coords), exact_geometry) in self._drag_shapes.items():
+            translated = self._translate_geometry(
+                "rectangle" if item_type == "film" else item_type, coords, dx, dy
+            )
+            overlay["item_to_shape"][item_id] = (item_type, translated)
+            if exact_geometry is not None:
+                geometry_type, geometry = exact_geometry
+                overlay["geometry_by_item"][item_id] = (
+                    geometry_type,
+                    self._translate_geometry(geometry_type, geometry, dx, dy),
+                )
+        self._rebuild_legacy_overlay_lists()
+        self.main_window.update_image()
+        return "break"
+
+    def _shape_position_is_valid(self, item_id):
+        overlay = _get_parent_module()._OVERLAY or {}
+        item_type = overlay.get("item_to_shape", {}).get(item_id, (None,))[0]
+        shape_type, coords = self._effective_geometry(item_id)
+        if shape_type is None or not self._geometry_inside_image(shape_type, coords):
+            return False
+        if item_type == "film":
+            for child_id in self.tree.get_children(item_id):
+                child_type, child_coords = self._effective_geometry(child_id)
+                if child_type is None or not self._geometry_contains(
+                    shape_type, coords, child_type, child_coords
+                ):
+                    return False
+            return True
+        parent_id = self.tree.parent(item_id)
+        if not parent_id:
+            return False
+        parent_type, parent_coords = self._effective_geometry(parent_id)
+        return self._geometry_contains(
+            parent_type, parent_coords, shape_type, coords
+        )
+
+    def _restore_drag_origin(self):
+        overlay = _get_parent_module()._OVERLAY or {}
+        for item_id, (shape_info, exact_geometry) in self._drag_shapes.items():
+            overlay.setdefault("item_to_shape", {})[item_id] = shape_info
+            if exact_geometry is None:
+                overlay.get("geometry_by_item", {}).pop(item_id, None)
+            else:
+                overlay.setdefault("geometry_by_item", {})[item_id] = exact_geometry
+        self._rebuild_legacy_overlay_lists()
+
+    def _on_shape_drag_end(self, _event):
+        if self._drag_item is None:
+            return
+        moved_item = self._drag_item
+        valid_position = self._shape_position_is_valid(moved_item)
+        if not valid_position:
+            self._restore_drag_origin()
+        self._drag_item = None
+        self._drag_origin = None
+        self._drag_shapes = {}
+        self._canvas.config(cursor="")
+        if valid_position and self.tree.parent(moved_item):
+            self._refresh_all_measurements()
+            self._update_ctr_subtraction()
+        elif not valid_position:
+            self.frame.bell()
+        self.main_window.update_image()
+        return "break"
+
+    def _rebuild_legacy_overlay_lists(self):
+        overlay = _get_parent_module()._OVERLAY or {}
+        overlay["films"] = [
+            coords for item_type, coords in overlay.get("item_to_shape", {}).values()
+            if item_type == "film"
+        ]
+        overlay["circles"] = [
+            coords for item_type, coords in overlay.get("item_to_shape", {}).values()
+            if item_type == "circle"
+        ]
+
+    @staticmethod
+    def _geometry_bbox(shape_type, coords):
+        if shape_type == "circle":
+            cx, cy, radius = coords
+            return (cx - radius, cy - radius, 2 * radius, 2 * radius)
+        if shape_type == "rectangle":
+            return tuple(coords)
+        points = np.asarray(coords, dtype=float)
+        x0, y0 = np.min(points, axis=0)
+        x1, y1 = np.max(points, axis=0)
+        return (float(x0), float(y0), float(x1 - x0), float(y1 - y0))
+
+    @classmethod
+    def _geometry_center(cls, shape_type, coords):
+        x, y, width, height = cls._geometry_bbox(shape_type, coords)
+        return (x + width / 2, y + height / 2)
+
+    def _geometry_mask(self, shape_type, coords):
+        height, width = self.image_processor.current_image.shape[:2]
+        mask = np.zeros((height, width), dtype=np.uint8)
+        if shape_type == "circle":
+            cx, cy, radius = coords
+            cv2.circle(mask, (int(round(cx)), int(round(cy))),
+                       max(1, int(round(radius))), 1, -1)
+        elif shape_type == "rectangle":
+            x, y, rect_width, rect_height = coords
+            x0, y0 = max(0, int(np.floor(x))), max(0, int(np.floor(y)))
+            x1 = min(width, int(np.ceil(x + rect_width)))
+            y1 = min(height, int(np.ceil(y + rect_height)))
+            mask[y0:y1, x0:x1] = 1
+        else:
+            points = np.rint(np.asarray(coords, dtype=float)).astype(np.int32)
+            cv2.fillPoly(mask, [points], 1)
+        return mask.astype(bool)
+
+    def _effective_geometry(self, item_id):
+        overlay = _get_parent_module()._OVERLAY or {}
+        exact = overlay.get("geometry_by_item", {}).get(item_id)
+        if exact is not None:
+            return exact
+        item_type, coords = overlay.get("item_to_shape", {}).get(item_id, (None, None))
+        if item_type == "film":
+            return ("rectangle", coords)
+        return (item_type, coords)
+
+    def _geometry_inside_image(self, shape_type, coords):
+        x, y, width, height = self._geometry_bbox(shape_type, coords)
+        image_height, image_width = self.image_processor.current_image.shape[:2]
+        return (
+            x >= 0 and y >= 0 and x + width <= image_width
+            and y + height <= image_height
+        )
+
+    def _geometry_contains(self, outer_type, outer_coords, inner_type, inner_coords):
+        """Return whether the complete inner mask belongs to the outer geometry."""
+        if not self._geometry_inside_image(inner_type, inner_coords):
+            return False
+        outer_mask = self._geometry_mask(outer_type, outer_coords)
+        inner_mask = self._geometry_mask(inner_type, inner_coords)
+        return bool(np.any(inner_mask) and not np.any(inner_mask & ~outer_mask))
+
+    def _insert_film_shape(self, shape_type, coords):
+        """Insert an RC whose grouping extent is the geometry bounding box."""
+        if not self._geometry_inside_image(shape_type, coords):
+            messagebox.showwarning("Add RC", "The complete RC must be inside the image.")
+            return
+        x, y, width, height = self._geometry_bbox(shape_type, coords)
+        film_id = self._insert_film(
+            int(round(x)), int(round(y)),
+            max(1, int(round(width))), max(1, int(round(height))),
+        )
+        if film_id:
+            overlay = _get_parent_module()._OVERLAY
+            overlay.setdefault("geometry_by_item", {})[film_id] = (shape_type, coords)
+            self.main_window.update_image()
+
+    def _measure_corrected_geometry(self, shape_type, coords):
+        processor = self.image_processor
+        with processor.processing_lock:
+            result = processor.measure_mask(self._geometry_mask(shape_type, coords))
+            self._last_measurement_context = {
+                "provenance": {
+                    **dict(processor.calibration_provenance),
+                    "units": "Gy" if processor.calibration_applied else "scanner_intensity",
+                    "calibration_id": processor.calibration_provenance.get("calibration_id", ""),
+                    "calibration_integrity": processor.calibration_provenance.get(
+                        "calibration_integrity", "not_applied"
+                    ),
+                    "uncertainty_method": processor.config.get(
+                        "uncertainty_estimation_method", "weighted_average"
+                    ),
+                    "source_file": processor.current_file,
+                    "date": self.date_var.get() or self.metadata_date or "",
+                    "dose_correction_factor": self._get_dose_correction_factor(),
+                },
+                "valid_pixel_counts": list(getattr(processor, "last_valid_pixel_counts", [])),
+                "channel_weights": dict(processor.last_channel_weights or {}),
+                "geometry_type": shape_type,
+            }
+        if result is None:
+            return None
+        dose, std, unc, average, average_uncertainty, pixel_count = result
+        dose, std, unc, average, average_uncertainty = self._apply_dose_correction(
+            dose, std, unc, average, average_uncertainty
+        )
+        return dose, std, unc, average, average_uncertainty, pixel_count
+
+    def _insert_measurement_shape(self, shape_type, coords):
+        """Measure and insert a directly drawn geometry."""
+        if shape_type == "circle":
+            cx, cy, radius = coords
+            return self._insert_circle(int(round(cx)), int(round(cy)), max(1, int(round(radius))))
+
+        overlay = _get_parent_module()._OVERLAY
+        if overlay is None:
+            messagebox.showwarning("Add Measurement Area", "Add an RC before adding measurement areas.")
+            return
+        center_x, center_y = self._geometry_center(shape_type, coords)
+        parent_id = ""
+        for item_id, (item_type, _bounds) in overlay.get("item_to_shape", {}).items():
+            if item_type != "film":
+                continue
+            film_type, film_coords = self._effective_geometry(item_id)
+            if self._geometry_contains(film_type, film_coords, shape_type, coords):
+                parent_id = item_id
+                break
+        if not parent_id:
+            messagebox.showwarning(
+                "Add Measurement Area",
+                "The measurement area must be inside a radiochromic film (RC).",
+            )
+            return
+
+        result = self._measure_corrected_geometry(shape_type, coords)
+        if result is None:
+            messagebox.showwarning(
+                "Add Measurement Area", "No valid pixels were found in the drawn area."
+            )
+            return
+        dose, std, unc, average, average_uncertainty, pixel_count = result
+        average_std = float(np.mean(std)) if isinstance(std, tuple) else float(std)
+        dose_str, std_str, average_str, uncertainty_str, ci95_str = (
+            self.formatter.format_for_treeview(
+                dose, std, float(average), float(average_uncertainty), sig=2
+            )
+        )
+        area_index = len(self.tree.get_children(parent_id)) + 1
+        area_name = f"A{area_index}M"
+        item_id = self.tree.insert(
+            parent_id, "end", text=area_name,
+            values=(dose_str, std_str, average_str, uncertainty_str, ci95_str),
+        )
+        overlay["item_to_shape"][item_id] = (shape_type, coords)
+        overlay.setdefault("geometry_by_item", {})[item_id] = (shape_type, coords)
+        self._store_original_measurement(
+            item_id, dose_str, std_str, average_str, uncertainty_str
+        )
+        dose_values = list(dose) if isinstance(dose, tuple) else [dose]
+        uncertainty_values = list(unc) if isinstance(unc, tuple) else [unc]
+        self.original_values[item_id] = {
+            "dose": dose_values, "sigma": uncertainty_values,
+            "avg": float(average), "avg_unc": float(average_uncertainty),
+        }
+        film_name = self.tree.item(parent_id, "text")
+        self.results.append({
+            "item_id": item_id, "film": film_name, "circle": area_name,
+            "shape": shape_type, "geometry": coords,
+            "dose": dose, "std_per_channel": std,
+            "unc": unc, "avg": float(average),
+            "avg_unc": float(average_uncertainty), "std": average_std,
+            "pixel_count": pixel_count, "x": center_x, "y": center_y,
+            "dose_numeric": dose, "std_numeric": std, "unc_numeric": unc,
+            "avg_numeric": float(average), "std_avg_numeric": average_std,
+            "avg_unc_numeric": float(average_uncertainty),
+            "channel_weights": dict(self.image_processor.last_channel_weights or {}),
+            **self._last_measurement_context,
+        })
+        self.tree.item(parent_id, open=True)
+        self.main_window.update_image()
 
     def _insert_film(self, x: int, y: int, w: int, h: int):
         """Insert a new film manually."""
@@ -3272,6 +3620,7 @@ class AutoMeasurementsTab(ttk.Frame):
         logging.info(f"[_insert_film] Total films in _OVERLAY: {len(_get_parent_module()._OVERLAY['films'])}")
         self.tree.item(film_id, open=True)
         self.main_window.update_image()
+        return film_id
 
     def _insert_circle(self, cx: int, cy: int, r: int):
         """Insert a new circle manually."""
@@ -3294,8 +3643,10 @@ class AutoMeasurementsTab(ttk.Frame):
         for fid, (item_type, coords) in _get_parent_module()._OVERLAY["item_to_shape"].items():
             if item_type != "film":
                 continue
-            fx, fy, fw, fh = coords
-            if (fx <= cx <= fx + fw) and (fy <= cy <= fy + fh):
+            film_type, film_coords = self._effective_geometry(fid)
+            if self._geometry_contains(
+                film_type, film_coords, "circle", (cx, cy, r)
+            ):
                 parent_id = fid
                 parent_film_name = self.tree.item(fid, 'text')
                 break
@@ -3303,9 +3654,9 @@ class AutoMeasurementsTab(ttk.Frame):
         # VALIDATION: Circle must be inside a film
         if not parent_id:
             messagebox.showwarning(
-                "Add Circle",
-                "The circle must be inside a radiochromic film (RC).\n\n"
-                "Add an RC first, then draw the circle within its boundaries."
+                "Add Measurement Area",
+                "The measurement area must be inside a radiochromic film (RC).\n\n"
+                "Add an RC first, then draw the area within its boundaries."
             )
             logging.warning(f"[_insert_circle] Circle at ({cx}, {cy}) rejected: no parent film found")
             return
@@ -3361,8 +3712,8 @@ class AutoMeasurementsTab(ttk.Frame):
         else:
             logging.warning("[_insert_circle] Circle at (%s, %s) rejected: measurement failed", cx, cy)
             messagebox.showwarning(
-                "Add Circle",
-                "No valid measurement could be obtained for this region. The circle was not saved.",
+                "Add Measurement Area",
+                "No valid measurement could be obtained for this region. The area was not saved.",
             )
             return
 
@@ -3401,6 +3752,9 @@ class AutoMeasurementsTab(ttk.Frame):
         # Store result
         film_name = self.tree.item(parent_id, "text") if parent_id else None
         self.results.append({
+            "item_id": circ_id,
+            "shape": "circle",
+            "geometry": (cx, cy, r),
             "film": film_name,
             "circle": circ_name,
             "dose": dose,                              # Raw numeric dose (NOT formatted string)

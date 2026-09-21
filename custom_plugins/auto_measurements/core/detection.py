@@ -97,6 +97,60 @@ class DetectionEngine:
             for (cx, cy, r) in circles:
                 result.append((int(cx), int(cy), int(r)))
         return result
+
+    def detect_squares(self, roi: np.ndarray, params: DetectionParams) -> List[Tuple[int, int, int, int]]:
+        """Detect square measurement areas from closed, four-corner contours."""
+        roi8 = self.ensure_uint8(roi)
+        blurred = cv2.GaussianBlur(roi8, (5, 5), 0)
+        edges = cv2.Canny(
+            blurred,
+            max(10, int(params.param1)),
+            max(30, int(params.param1) * 3),
+        )
+        edges = cv2.morphologyEx(
+            edges, cv2.MORPH_CLOSE, np.ones((3, 3), dtype=np.uint8)
+        )
+        contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+        minimum_side = max(5.0, 2.0 * float(params.min_circle_radius))
+        maximum_side = max(minimum_side, 2.0 * float(params.max_circle_radius))
+        image_height, image_width = roi8.shape[:2]
+        candidates = []
+        for contour in contours:
+            perimeter = cv2.arcLength(contour, True)
+            if perimeter <= 0:
+                continue
+            polygon = cv2.approxPolyDP(contour, 0.025 * perimeter, True)
+            if len(polygon) != 4 or not cv2.isContourConvex(polygon):
+                continue
+            x, y, width, height = cv2.boundingRect(polygon)
+            if min(width, height) < minimum_side or max(width, height) > maximum_side:
+                continue
+            if x <= 1 or y <= 1 or x + width >= image_width - 1 or y + height >= image_height - 1:
+                continue
+            aspect_ratio = width / float(height)
+            contour_area = abs(float(cv2.contourArea(polygon)))
+            rectangularity = contour_area / float(width * height)
+            if not 0.82 <= aspect_ratio <= 1.22 or rectangularity < 0.72:
+                continue
+            candidates.append((contour_area, (x, y, width, height)))
+
+        # Edge detection often returns the inner and outer border of one square.
+        # Keep the largest representative of strongly overlapping candidates.
+        selected = []
+        for _, candidate in sorted(candidates, reverse=True):
+            x, y, width, height = candidate
+            duplicate = False
+            for sx, sy, sw, sh in selected:
+                intersection = max(0, min(x + width, sx + sw) - max(x, sx)) * max(
+                    0, min(y + height, sy + sh) - max(y, sy)
+                )
+                union = width * height + sw * sh - intersection
+                if union and intersection / union > 0.75:
+                    duplicate = True
+                    break
+            if not duplicate:
+                selected.append(candidate)
+        return sorted(selected, key=lambda box: (box[1], box[0]))
     
     def organize_circles_as_matrix(self, circles: List[Tuple[int, int, int]]) -> List[Tuple[str, Tuple[int, int, int]]]:
         """Organize circles into a matrix grid (row-column) and assign names like C11, C12, C21, etc.

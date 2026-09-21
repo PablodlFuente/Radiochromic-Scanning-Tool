@@ -55,6 +55,18 @@ class TkWorkflowTests(unittest.TestCase):
                 from custom_plugins import auto_measurements
                 tab = auto_measurements._AUTO_MEASUREMENTS_INSTANCE
                 self.assertIsNotNone(tab)
+                button_labels = {
+                    child.cget("text")
+                    for container in tab.frame.winfo_children()
+                    for child in container.winfo_children()
+                    if child.winfo_class() == "TButton"
+                }
+                self.assertIn("Add Measurement Area", button_labels)
+                self.assertNotIn("Add Circle", button_labels)
+                tab._show_dose_correction_tooltip()
+                root.update_idletasks()
+                self.assertIsNotNone(tab._dose_correction_tooltip)
+                tab._hide_dose_correction_tooltip()
                 first = str(Path(directory) / "primera.tif")
                 second = str(Path(directory) / "segunda.tif")
                 write_tiff_unchanged(first, np.full((16, 16, 3), 1000, dtype=np.uint16))
@@ -65,6 +77,12 @@ class TkWorkflowTests(unittest.TestCase):
                     root.after(100, root.quit)
 
                 def next_image(_):
+                    tab._clear_overlay()
+                    tab._insert_film_shape("rectangle", (1, 1, 14, 14))
+                    film_id = tab.tree.get_children()[0]
+                    tab._insert_measurement_shape("rectangle", (3, 3, 5, 5))
+                    self.assertEqual(len(tab.tree.get_children(film_id)), 1)
+                    self.assertEqual(tab.results[0]["shape"], "rectangle")
                     tab.file_manager.file_list = [first]
                     tab.file_manager.current_file_index = 0
                     tab.results = [{"film": "previous"}]

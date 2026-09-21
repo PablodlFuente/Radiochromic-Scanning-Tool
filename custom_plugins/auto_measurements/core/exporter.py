@@ -172,8 +172,9 @@ class CSVExporter:
         "doses_per_channel", "STD_doses_per_channel", "average",
         "standard_uncertainty_average", "expanded_uncertainty_k1.96",
         "pixel_count", "uncertainty_calculation_method", "channel_weights",
-        "calibration_id", "calibration_integrity", "units", "conversion_method", "valid_pixel_counts",
-        "measurement_status", "x", "y", "radius", "dose_correction_factor",
+        "calibration_id", "calibration_integrity", "units", "conversion_method",
+        "uncertainty_scope", "valid_pixel_counts", "measurement_status",
+        "geometry_type", "geometry_json", "x", "y", "radius", "dose_correction_factor",
         "flat_applied", "ctr_context",
     ]
 
@@ -202,7 +203,7 @@ class CSVExporter:
         if counts and min(counts) < result.get("pixel_count", 0) and status == "valid":
             status = "partial_pixels"
         return [
-            3, os.path.basename(provenance.get("source_file") or file_path),
+            4, os.path.basename(provenance.get("source_file") or file_path),
             provenance.get("date", ""), result["film"], result["circle"],
             self.format_for_csv(values["dose"]), self.format_for_csv(values["std"]),
             self.format_for_csv(mean), self.format_for_csv(uncertainty),
@@ -211,7 +212,9 @@ class CSVExporter:
             json.dumps(result.get("channel_weights") or {}, sort_keys=True),
             provenance.get("calibration_id", ""), provenance.get("calibration_integrity", "unknown"),
             provenance.get("units", "unknown"), provenance.get("conversion_method", "not_applied"),
+            provenance.get("uncertainty_scope", "roi_repeatability_only"),
             json.dumps(counts), status,
+            result.get("shape", "circle"), json.dumps(result.get("geometry", [])),
             result.get("x", ""), result.get("y", ""), result.get("radius", ""),
             provenance.get("dose_correction_factor", ""), provenance.get("flat_applied", False),
             json.dumps(result.get("ctr_context", {}), sort_keys=True),

@@ -148,12 +148,41 @@ def process(image: np.ndarray):
     blue_orange = scale_color((255, 165, 0))  # Blue-ish for global CTR
     yellow = scale_color((0, 255, 255))
     
-    # Draw films (green rectangles)
-    for (x, y, w_rect, h_rect) in _OVERLAY.get("films", []):
-        cv2.rectangle(out, 
-                      (int(x * sx), int(y * sy)),
-                      (int((x + w_rect) * sx), int((y + h_rect) * sy)),
-                      green, 2)
+    def draw_geometry(shape_type, coords, color, thickness=2):
+        if shape_type == "circle":
+            cx, cy, radius = coords
+            cv2.circle(out, (int(cx * sx), int(cy * sy)),
+                       max(1, int(radius * min(sx, sy))), color, thickness,
+                       lineType=cv2.LINE_AA)
+        elif shape_type == "rectangle":
+            x, y, rect_width, rect_height = coords
+            cv2.rectangle(
+                out, (int(x * sx), int(y * sy)),
+                (int((x + rect_width) * sx), int((y + rect_height) * sy)),
+                color, thickness,
+            )
+        elif shape_type == "polygon":
+            points = np.asarray(coords, dtype=float).copy()
+            points[:, 0] *= sx
+            points[:, 1] *= sy
+            cv2.polylines(out, [np.rint(points).astype(np.int32)], True,
+                          color, thickness, lineType=cv2.LINE_AA)
+
+    item_to_shape = _OVERLAY.get("item_to_shape", {})
+    geometry_by_item = _OVERLAY.get("geometry_by_item", {})
+    film_items = [
+        (item_id, bounds) for item_id, (item_type, bounds) in item_to_shape.items()
+        if item_type == "film"
+    ]
+    if film_items:
+        for item_id, bounds in film_items:
+            shape_type, coords = geometry_by_item.get(
+                item_id, ("rectangle", bounds)
+            )
+            draw_geometry(shape_type, coords, green)
+    else:
+        for bounds in _OVERLAY.get("films", []):
+            draw_geometry("rectangle", bounds, green)
     
     # Draw circles (green) or CTR circles (orange dashed) or Global CTR (blue dashed)
     # Pre-compute CTR circle coordinates for efficient lookup
@@ -169,14 +198,14 @@ def process(image: np.ndarray):
                     if ctr_item_id in _OVERLAY["item_to_shape"]:
                         shape_info = _OVERLAY["item_to_shape"][ctr_item_id]
                         if shape_info[0] == "circle":
-                            ctr_coords.add(tuple(shape_info[1:]))
+                            ctr_coords.add(tuple(shape_info[1]))
             else:
                 # Backward compatibility: single item_id
                 ctr_item_id = ctr_item_ids
                 if ctr_item_id in _OVERLAY["item_to_shape"]:
                     shape_info = _OVERLAY["item_to_shape"][ctr_item_id]
                     if shape_info[0] == "circle":
-                        ctr_coords.add(tuple(shape_info[1:]))
+                        ctr_coords.add(tuple(shape_info[1]))
     
     # Check for global CTR
     if "global_ctr" in _OVERLAY and _OVERLAY["global_ctr"]:
@@ -184,7 +213,7 @@ def process(image: np.ndarray):
         if global_ctr_item_id and global_ctr_item_id in _OVERLAY.get("item_to_shape", {}):
             shape_info = _OVERLAY["item_to_shape"][global_ctr_item_id]
             if shape_info[0] == "circle":
-                global_ctr_coords = tuple(shape_info[1:])
+                global_ctr_coords = tuple(shape_info[1])
     
     for (cx, cy, r) in _OVERLAY.get("circles", []):
         circle_tuple = (cx, cy, r)
@@ -203,6 +232,11 @@ def process(image: np.ndarray):
             # Draw normal circle (green)
             cv2.circle(out, (int(cx * sx), int(cy * sy)), int(r * sx), 
                       green, 2, lineType=cv2.LINE_AA)
+
+    # Directly drawn non-circular measurement areas are stored by TreeView item.
+    for item_id, (item_type, coords) in item_to_shape.items():
+        if item_type in {"rectangle", "polygon"}:
+            draw_geometry(item_type, coords, green)
     
     # Draw highlighted shape on top (yellow)
     hl = _OVERLAY.get("highlight")
@@ -217,6 +251,8 @@ def process(image: np.ndarray):
         elif stype == "circle":
             cx, cy, r = coords
             cv2.circle(out, (int(cx * sx), int(cy * sy)), int(r * sx), yellow, 3)
+        elif stype in {"rectangle", "polygon"}:
+            draw_geometry(stype, coords, yellow, 3)
     return out
 
 
