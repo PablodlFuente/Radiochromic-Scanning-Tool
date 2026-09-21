@@ -33,6 +33,18 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "check_updates_on_startup": True,
     "notebook_tab_order": [],
     "allow_flat_field_resize": False,
+    "auto_measurement_detection_mode": "Circles and squares",
+    "auto_measurement_rc_threshold": 180,
+    "auto_measurement_rc_min_area": 5000,
+    "auto_measurement_min_circle_radius": 200,
+    "auto_measurement_max_circle_radius": 400,
+    "auto_measurement_min_distance": 200,
+    "auto_measurement_hough_param1": 15,
+    "auto_measurement_hough_param2": 40,
+    "auto_measurement_default_diameter": 300,
+    "auto_measurement_min_square_side": 100,
+    "auto_measurement_max_square_side": 1000,
+    "auto_measurement_restrict_diameter": False,
 }
 
 class ConfigModel:

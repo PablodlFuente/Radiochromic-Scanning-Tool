@@ -111,8 +111,8 @@ class DetectionEngine:
             edges, cv2.MORPH_CLOSE, np.ones((3, 3), dtype=np.uint8)
         )
         contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-        minimum_side = max(5.0, 2.0 * float(params.min_circle_radius))
-        maximum_side = max(minimum_side, 2.0 * float(params.max_circle_radius))
+        minimum_side = max(5.0, float(params.min_square_side))
+        maximum_side = max(minimum_side, float(params.max_square_side))
         image_height, image_width = roi8.shape[:2]
         candidates = []
         for contour in contours:

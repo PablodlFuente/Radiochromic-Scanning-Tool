@@ -89,10 +89,18 @@ class TkWorkflowTests(unittest.TestCase):
                 self.assertEqual(tab.draw_target, "film")
                 tab._shape_picker_window.destroy()
                 root.update()
+                tab._show_detection_settings()
+                root.update()
+                self.assertIsNotNone(tab._detection_settings_window)
+                self.assertEqual(
+                    tab.detection_mode_var.get(), "Circles and squares"
+                )
                 tab._show_dose_correction_tooltip()
                 root.update_idletasks()
                 self.assertIsNotNone(tab._dose_correction_tooltip)
                 tab._hide_dose_correction_tooltip()
+                tab._detection_settings_window.destroy()
+                tab._detection_settings_window = None
                 first = str(Path(directory) / "primera.tif")
                 second = str(Path(directory) / "segunda.tif")
                 write_tiff_unchanged(first, np.full((16, 16, 3), 1000, dtype=np.uint16))

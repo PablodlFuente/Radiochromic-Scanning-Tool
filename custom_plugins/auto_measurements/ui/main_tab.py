@@ -127,9 +127,12 @@ class AutoMeasurementsTab(ttk.Frame):
         self._original_bindings = {}
         self._drag_item = None
         self._drag_origin = None
+        self._drag_offset = (0.0, 0.0)
         self._drag_shapes = {}
         self._drag_bindings_installed = False
+        self.drag_preview_tag = "shape_drag_preview"
         self._shape_picker_window = None
+        self._detection_settings_window = None
 
         # UI setup
         self._setup_ui()
@@ -352,7 +355,10 @@ class AutoMeasurementsTab(ttk.Frame):
             command=lambda: self._show_shape_picker("measurement", self.add_area_button)
         )
         self.add_area_button.pack(side=tk.LEFT)
-        
+        ttk.Button(
+            btn_frame, text="⚙", width=3,
+            command=self._show_detection_settings,
+        ).pack(side=tk.LEFT, padx=(5, 0))
         ttk.Button(btn_frame, text="Export CSV", command=self.export_csv).pack(side=tk.LEFT, padx=5)
 
         # CTR control frame
@@ -444,75 +450,30 @@ class AutoMeasurementsTab(ttk.Frame):
         self.tree.heading("ci95", command=lambda: self._sort_by_column("ci95"))
 
     def _setup_detection_params(self):
-        """Setup detection parameter frames."""
-        # Film detection parameters
-        self.rc_thresh_var = tk.IntVar(value=180)
-        self.rc_min_area_var = tk.IntVar(value=5000)
-        film_frame = ttk.LabelFrame(self.frame, text="RC Detection")
-        film_frame.pack(fill=tk.X, padx=10, pady=5)
-        ttk.Label(film_frame, text="Threshold (0-255):").grid(row=0, column=0, sticky=tk.W, pady=2)
-        ttk.Entry(film_frame, textvariable=self.rc_thresh_var, width=6).grid(row=0, column=1, sticky=tk.W)
-        
-        # Store reference to area label for unit updates
-        self.area_label = ttk.Label(film_frame, text="Min Area (px²):")
-        self.area_label.grid(row=1, column=0, sticky=tk.W, pady=2)
-        ttk.Entry(film_frame, textvariable=self.rc_min_area_var, width=8).grid(row=1, column=1, sticky=tk.W)
-
-        # Circle detection parameters
-        self.min_circle_var = tk.IntVar(value=200)
-        self.max_circle_var = tk.IntVar(value=400)
-        self.min_dist_var = tk.IntVar(value=200)
-        self.param1_var = tk.IntVar(value=15)
-        self.param2_var = tk.IntVar(value=40)
-        self.default_diameter_var = tk.IntVar(value=300)
-
-        detection_row = ttk.Frame(self.frame)
-        detection_row.pack(fill=tk.X, padx=10, pady=5)
-
-        circle_frame = ttk.LabelFrame(detection_row, text="Circle Detection")
-        circle_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        
-        # Store references to labels for unit updates
-        self.min_radius_label = ttk.Label(circle_frame, text="Min Radius (px):")
-        self.min_radius_label.grid(row=0, column=0, sticky=tk.W)
-        ttk.Entry(circle_frame, textvariable=self.min_circle_var, width=6).grid(row=0, column=1)
-        
-        self.max_radius_label = ttk.Label(circle_frame, text="Max Radius (px):")
-        self.max_radius_label.grid(row=0, column=2, sticky=tk.W)
-        ttk.Entry(circle_frame, textvariable=self.max_circle_var, width=6).grid(row=0, column=3)
-        
-        self.min_dist_label = ttk.Label(circle_frame, text="Min Distance (px):")
-        self.min_dist_label.grid(row=1, column=0, sticky=tk.W)
-        ttk.Entry(circle_frame, textvariable=self.min_dist_var, width=6).grid(row=1, column=1)
-        
-        ttk.Label(circle_frame, text="Param1:").grid(row=2, column=0, sticky=tk.W)
-        ttk.Entry(circle_frame, textvariable=self.param1_var, width=6).grid(row=2, column=1)
-        ttk.Label(circle_frame, text="Param2:").grid(row=2, column=2, sticky=tk.W)
-        ttk.Entry(circle_frame, textvariable=self.param2_var, width=6).grid(row=2, column=3)
-        
-        self.default_diameter_label = ttk.Label(circle_frame, text="Default Diameter (px):")
-        self.default_diameter_label.grid(row=3, column=0, sticky=tk.W)
-        ttk.Entry(circle_frame, textvariable=self.default_diameter_var, width=6).grid(row=3, column=1)
-        
-        # Add diameter restriction checkbox
-        self.restrict_diameter_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            circle_frame,
-            text="Use default diameter for all circles",
-            variable=self.restrict_diameter_var,
-            command=self._apply_diameter_restriction,
-        ).grid(row=4, column=0, columnspan=4, sticky=tk.W)
-
-        correction_frame = ttk.LabelFrame(detection_row, text="Dose Correction")
-        correction_frame.pack(side=tk.LEFT, fill=tk.Y, padx=(8, 0))
-        ttk.Label(correction_frame, text="Correction factor:").grid(row=0, column=0, sticky=tk.W, padx=8, pady=(6, 2))
-        self.dose_correction_entry = ttk.Entry(correction_frame, textvariable=self.dose_correction_var, width=10)
-        self.dose_correction_entry.grid(row=1, column=0, sticky=tk.W, padx=8, pady=(0, 6))
-        self.dose_correction_entry.bind("<KeyRelease>", self._on_dose_correction_key_release)
-        self.dose_correction_entry.bind("<Return>", self._on_dose_correction_enter)
-        self.dose_correction_entry.bind("<FocusOut>", self._on_dose_correction_focus_out)
-        self.dose_correction_entry.bind("<Enter>", self._schedule_dose_correction_tooltip)
-        self.dose_correction_entry.bind("<Leave>", self._hide_dose_correction_tooltip)
+        """Initialize AutoMeasurement settings; controls live in the gear dialog."""
+        config = getattr(self.main_window, "app_config", {})
+        self.detection_mode_var = tk.StringVar(
+            value=config.get("auto_measurement_detection_mode", "Circles and squares")
+        )
+        self.rc_thresh_var = tk.IntVar(value=config.get("auto_measurement_rc_threshold", 180))
+        self.rc_min_area_var = tk.IntVar(value=config.get("auto_measurement_rc_min_area", 5000))
+        self.min_circle_var = tk.IntVar(value=config.get("auto_measurement_min_circle_radius", 200))
+        self.max_circle_var = tk.IntVar(value=config.get("auto_measurement_max_circle_radius", 400))
+        self.min_dist_var = tk.IntVar(value=config.get("auto_measurement_min_distance", 200))
+        self.param1_var = tk.IntVar(value=config.get("auto_measurement_hough_param1", 15))
+        self.param2_var = tk.IntVar(value=config.get("auto_measurement_hough_param2", 40))
+        self.default_diameter_var = tk.IntVar(value=config.get("auto_measurement_default_diameter", 300))
+        self.min_square_side_var = tk.IntVar(value=config.get("auto_measurement_min_square_side", 100))
+        self.max_square_side_var = tk.IntVar(value=config.get("auto_measurement_max_square_side", 1000))
+        self.restrict_diameter_var = tk.BooleanVar(
+            value=config.get("auto_measurement_restrict_diameter", False)
+        )
+        self.area_label = None
+        self.min_radius_label = None
+        self.max_radius_label = None
+        self.min_dist_label = None
+        self.default_diameter_label = None
+        self.dose_correction_entry = None
         
         # Recalculate when default diameter value changes
         self.default_diameter_var.trace_add("write", lambda *args: self._apply_diameter_restriction())
@@ -520,6 +481,112 @@ class AutoMeasurementsTab(ttk.Frame):
         for name in ('rc_min_area', 'min_circle', 'max_circle', 'min_dist', 'default_diameter'):
             var = getattr(self, f'{name}_var')
             var.trace_add("write", lambda *args, n=name, v=var: self._on_param_change(n, v))
+
+    def _show_detection_settings(self):
+        """Open the AutoMeasurement detection settings dialog."""
+        if self._detection_settings_window is not None:
+            try:
+                self._detection_settings_window.lift()
+                return
+            except tk.TclError:
+                self._detection_settings_window = None
+
+        window = tk.Toplevel(self.frame)
+        self._detection_settings_window = window
+        window.title("AutoMeasurement Settings")
+        window.resizable(False, False)
+        window.transient(self.frame.winfo_toplevel())
+        container = ttk.Frame(window, padding=14)
+        container.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(container, text="Measurement area detection:").grid(row=0, column=0, sticky=tk.W)
+        ttk.Combobox(
+            container, textvariable=self.detection_mode_var, state="readonly", width=22,
+            values=("Circles", "Squares", "Circles and squares"),
+        ).grid(row=0, column=1, sticky=tk.W, padx=(8, 0))
+
+        film_frame = ttk.LabelFrame(container, text="RC Detection", padding=8)
+        film_frame.grid(row=1, column=0, columnspan=2, sticky=tk.EW, pady=(12, 6))
+        ttk.Label(film_frame, text="Threshold (0-255):").grid(row=0, column=0, sticky=tk.W)
+        ttk.Entry(film_frame, textvariable=self.rc_thresh_var, width=8).grid(row=0, column=1, sticky=tk.W)
+        self.area_label = ttk.Label(film_frame, text="Min Area (px²):")
+        self.area_label.grid(row=1, column=0, sticky=tk.W)
+        ttk.Entry(film_frame, textvariable=self.rc_min_area_var, width=8).grid(row=1, column=1, sticky=tk.W)
+
+        circle_frame = ttk.LabelFrame(container, text="Circle Detection", padding=8)
+        circle_frame.grid(row=2, column=0, columnspan=2, sticky=tk.EW, pady=6)
+        self.min_radius_label = ttk.Label(circle_frame, text="Min Radius (px):")
+        self.min_radius_label.grid(row=0, column=0, sticky=tk.W)
+        ttk.Entry(circle_frame, textvariable=self.min_circle_var, width=8).grid(row=0, column=1)
+        self.max_radius_label = ttk.Label(circle_frame, text="Max Radius (px):")
+        self.max_radius_label.grid(row=0, column=2, sticky=tk.W, padx=(12, 0))
+        ttk.Entry(circle_frame, textvariable=self.max_circle_var, width=8).grid(row=0, column=3)
+        self.min_dist_label = ttk.Label(circle_frame, text="Min Distance (px):")
+        self.min_dist_label.grid(row=1, column=0, sticky=tk.W)
+        ttk.Entry(circle_frame, textvariable=self.min_dist_var, width=8).grid(row=1, column=1)
+        ttk.Label(circle_frame, text="Edge threshold:").grid(row=2, column=0, sticky=tk.W)
+        ttk.Entry(circle_frame, textvariable=self.param1_var, width=8).grid(row=2, column=1)
+        ttk.Label(circle_frame, text="Center threshold:").grid(row=2, column=2, sticky=tk.W, padx=(12, 0))
+        ttk.Entry(circle_frame, textvariable=self.param2_var, width=8).grid(row=2, column=3)
+        self.default_diameter_label = ttk.Label(circle_frame, text="Default Diameter (px):")
+        self.default_diameter_label.grid(row=3, column=0, sticky=tk.W)
+        ttk.Entry(circle_frame, textvariable=self.default_diameter_var, width=8).grid(row=3, column=1)
+        ttk.Checkbutton(
+            circle_frame, text="Use default diameter for all circles",
+            variable=self.restrict_diameter_var, command=self._apply_diameter_restriction,
+        ).grid(row=4, column=0, columnspan=4, sticky=tk.W)
+
+        square_frame = ttk.LabelFrame(container, text="Square Detection", padding=8)
+        square_frame.grid(row=3, column=0, columnspan=2, sticky=tk.EW, pady=6)
+        ttk.Label(square_frame, text="Min Side (px):").grid(row=0, column=0, sticky=tk.W)
+        ttk.Entry(square_frame, textvariable=self.min_square_side_var, width=8).grid(row=0, column=1)
+        ttk.Label(square_frame, text="Max Side (px):").grid(row=0, column=2, sticky=tk.W, padx=(12, 0))
+        ttk.Entry(square_frame, textvariable=self.max_square_side_var, width=8).grid(row=0, column=3)
+
+        correction_frame = ttk.LabelFrame(container, text="Dose Correction", padding=8)
+        correction_frame.grid(row=4, column=0, columnspan=2, sticky=tk.EW, pady=6)
+        ttk.Label(correction_frame, text="Correction factor:").grid(row=0, column=0, sticky=tk.W)
+        self.dose_correction_entry = ttk.Entry(
+            correction_frame, textvariable=self.dose_correction_var, width=10
+        )
+        self.dose_correction_entry.grid(row=0, column=1, sticky=tk.W, padx=(8, 0))
+        self.dose_correction_entry.bind("<KeyRelease>", self._on_dose_correction_key_release)
+        self.dose_correction_entry.bind("<Return>", self._on_dose_correction_enter)
+        self.dose_correction_entry.bind("<FocusOut>", self._on_dose_correction_focus_out)
+        self.dose_correction_entry.bind("<Enter>", self._schedule_dose_correction_tooltip)
+        self.dose_correction_entry.bind("<Leave>", self._hide_dose_correction_tooltip)
+
+        def close_settings():
+            self._save_detection_settings()
+            self._hide_dose_correction_tooltip()
+            self._detection_settings_window = None
+            window.destroy()
+
+        ttk.Button(container, text="Close", command=close_settings).grid(
+            row=5, column=0, columnspan=2, sticky=tk.E, pady=(10, 0)
+        )
+        window.protocol("WM_DELETE_WINDOW", close_settings)
+        self._update_parameter_labels(self.parameters_converted)
+
+    def _save_detection_settings(self):
+        config = getattr(self.main_window, "app_config", None)
+        if config is None:
+            return
+        values = {
+            "auto_measurement_detection_mode": self.detection_mode_var.get(),
+            "auto_measurement_rc_threshold": self.rc_thresh_var.get(),
+            "auto_measurement_rc_min_area": self.rc_min_area_var.get(),
+            "auto_measurement_min_circle_radius": self.min_circle_var.get(),
+            "auto_measurement_max_circle_radius": self.max_circle_var.get(),
+            "auto_measurement_min_distance": self.min_dist_var.get(),
+            "auto_measurement_hough_param1": self.param1_var.get(),
+            "auto_measurement_hough_param2": self.param2_var.get(),
+            "auto_measurement_default_diameter": self.default_diameter_var.get(),
+            "auto_measurement_min_square_side": self.min_square_side_var.get(),
+            "auto_measurement_max_square_side": self.max_square_side_var.get(),
+            "auto_measurement_restrict_diameter": self.restrict_diameter_var.get(),
+        }
+        config.update(values)
 
     def _get_dose_correction_factor(self) -> float:
         """Return the multiplicative dose correction factor."""
@@ -632,7 +699,7 @@ class AutoMeasurementsTab(ttk.Frame):
     def _show_dose_correction_tooltip(self):
         """Display the dose correction help tooltip."""
         self._dose_correction_tooltip_after_id = None
-        if self._dose_correction_tooltip is not None or not hasattr(self, 'dose_correction_entry'):
+        if self._dose_correction_tooltip is not None or self.dose_correction_entry is None:
             return
 
         tooltip = tk.Toplevel(self.frame)
@@ -875,6 +942,12 @@ class AutoMeasurementsTab(ttk.Frame):
     
     def _update_parameter_labels(self, show_mm):
         """Update parameter labels to show current units."""
+        labels = (
+            self.area_label, self.min_radius_label, self.max_radius_label,
+            self.min_dist_label, self.default_diameter_label,
+        )
+        if any(label is None or not label.winfo_exists() for label in labels):
+            return
         if show_mm:
             # Update labels to show mm units
             self.area_label.config(text="Min Area (mm²):")
@@ -2178,7 +2251,9 @@ class AutoMeasurementsTab(ttk.Frame):
             param1=self.param1_var.get(),
             param2=self.param2_var.get(),
             default_diameter=self.default_diameter_var.get(),
-            restrict_diameter=self.restrict_diameter_var.get()
+            restrict_diameter=self.restrict_diameter_var.get(),
+            min_square_side=self.min_square_side_var.get(),
+            max_square_side=self.max_square_side_var.get(),
         )
         
         # Detect films using DetectionEngine
@@ -2216,7 +2291,12 @@ class AutoMeasurementsTab(ttk.Frame):
 
             # 2. Detect circles inside film using DetectionEngine
             film_circles = []
-            detected_circles = self.detector.detect_circles(film_roi, params)
+            mode = self.detection_mode_var.get()
+            detect_circles = mode in {"Circles", "Circles and squares"}
+            detect_squares = mode in {"Squares", "Circles and squares"}
+            detected_circles = (
+                self.detector.detect_circles(film_roi, params) if detect_circles else []
+            )
             detected_circles = sorted(detected_circles, key=lambda c: (c[1], c[0]))
 
             # Store original radii
@@ -2348,12 +2428,11 @@ class AutoMeasurementsTab(ttk.Frame):
                     **self._last_measurement_context,
                 })
 
-            # Detect square measurement areas independently of the Hough-circle
-            # pass.  They use the same size controls, interpreted as half-side
-            # limits so the existing detection panel remains coherent.
-            for square_x, square_y, square_width, square_height in self.detector.detect_squares(
-                film_roi, params
-            ):
+            # Detect square measurement areas only when requested.
+            detected_squares = (
+                self.detector.detect_squares(film_roi, params) if detect_squares else []
+            )
+            for square_x, square_y, square_width, square_height in detected_squares:
                 self._insert_measurement_shape(
                     "rectangle",
                     (x + square_x, y + square_y, square_width, square_height),
@@ -3167,7 +3246,7 @@ class AutoMeasurementsTab(ttk.Frame):
         self.draw_mode = shape_type
         self._draw_start = None
         self._polygon_points = []
-        
+
         if hasattr(self.main_window, 'image_panel'):
             image_panel = self.main_window.image_panel
             self._original_bindings = {
@@ -3367,6 +3446,7 @@ class AutoMeasurementsTab(ttk.Frame):
         else:
             _, _, self._drag_item = min(candidates)
         self._drag_origin = point
+        self._drag_offset = (0.0, 0.0)
         moving_ids = [self._drag_item]
         self._drag_shapes = {
             item_id: (
@@ -3376,6 +3456,7 @@ class AutoMeasurementsTab(ttk.Frame):
             for item_id in moving_ids if item_id in item_to_shape
         }
         self._canvas.config(cursor="fleur")
+        self._draw_drag_preview(0.0, 0.0)
         return "break"
 
     def _on_shape_drag_motion(self, event):
@@ -3384,6 +3465,44 @@ class AutoMeasurementsTab(ttk.Frame):
         current_x, current_y = self._canvas_image_point(event)
         dx = current_x - self._drag_origin[0]
         dy = current_y - self._drag_origin[1]
+        self._drag_offset = (dx, dy)
+        self._draw_drag_preview(dx, dy)
+        return "break"
+
+    def _draw_drag_preview(self, dx, dy):
+        """Draw a lightweight canvas preview without rebuilding the image."""
+        self._canvas.delete(self.drag_preview_tag)
+        zoom = self.image_processor.zoom or 1.0
+        for item_id, ((item_type, coords), exact_geometry) in self._drag_shapes.items():
+            if exact_geometry is None:
+                shape_type = "rectangle" if item_type == "film" else item_type
+                geometry = coords
+            else:
+                shape_type, geometry = exact_geometry
+            translated = self._translate_geometry(shape_type, geometry, dx, dy)
+            options = {
+                "outline": "#00ffff", "width": 2,
+                "dash": (5, 3), "tags": self.drag_preview_tag,
+            }
+            if shape_type == "circle":
+                cx, cy, radius = translated
+                self._canvas.create_oval(
+                    (cx - radius) * zoom, (cy - radius) * zoom,
+                    (cx + radius) * zoom, (cy + radius) * zoom,
+                    **options,
+                )
+            elif shape_type == "rectangle":
+                x, y, width, height = translated
+                self._canvas.create_rectangle(
+                    x * zoom, y * zoom, (x + width) * zoom, (y + height) * zoom,
+                    **options,
+                )
+            elif shape_type == "polygon":
+                flat = [coordinate * zoom for point in translated for coordinate in point]
+                self._canvas.create_polygon(*flat, fill="", **options)
+
+    def _apply_drag_offset(self):
+        dx, dy = self._drag_offset
         overlay = _get_parent_module()._OVERLAY
         for item_id, ((item_type, coords), exact_geometry) in self._drag_shapes.items():
             translated = self._translate_geometry(
@@ -3397,8 +3516,6 @@ class AutoMeasurementsTab(ttk.Frame):
                     self._translate_geometry(geometry_type, geometry, dx, dy),
                 )
         self._rebuild_legacy_overlay_lists()
-        self.main_window.update_image()
-        return "break"
 
     def _shape_position_is_valid(self, item_id):
         overlay = _get_parent_module()._OVERLAY or {}
@@ -3436,12 +3553,15 @@ class AutoMeasurementsTab(ttk.Frame):
         if self._drag_item is None:
             return
         moved_item = self._drag_item
+        self._apply_drag_offset()
         valid_position = self._shape_position_is_valid(moved_item)
         if not valid_position:
             self._restore_drag_origin()
         self._drag_item = None
         self._drag_origin = None
+        self._drag_offset = (0.0, 0.0)
         self._drag_shapes = {}
+        self._canvas.delete(self.drag_preview_tag)
         self._canvas.config(cursor="")
         if valid_position and self.tree.parent(moved_item):
             self._refresh_all_measurements()

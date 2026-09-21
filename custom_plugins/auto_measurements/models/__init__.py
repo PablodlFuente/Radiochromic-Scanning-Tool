@@ -34,7 +34,9 @@ class DetectionParams:
                  param1: int = 15,
                  param2: int = 40,
                  default_diameter: int = 300,
-                 restrict_diameter: bool = False):
+                 restrict_diameter: bool = False,
+                 min_square_side: int = 100,
+                 max_square_side: int = 1000):
         self.rc_threshold = rc_threshold
         self.rc_min_area = rc_min_area
         self.min_circle_radius = min_circle_radius
@@ -44,6 +46,8 @@ class DetectionParams:
         self.param2 = param2
         self.default_diameter = default_diameter
         self.restrict_diameter = restrict_diameter
+        self.min_square_side = min_square_side
+        self.max_square_side = max_square_side
     
     def to_dict(self) -> dict:
         """Convert to dictionary for storage."""
@@ -56,7 +60,9 @@ class DetectionParams:
             'param1': self.param1,
             'param2': self.param2,
             'default_diameter': self.default_diameter,
-            'restrict_diameter': self.restrict_diameter
+            'restrict_diameter': self.restrict_diameter,
+            'min_square_side': self.min_square_side,
+            'max_square_side': self.max_square_side,
         }
 
 
