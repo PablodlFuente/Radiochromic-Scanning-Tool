@@ -2357,6 +2357,8 @@ class AutoMeasurementsTab(ttk.Frame):
                 self._insert_measurement_shape(
                     "rectangle",
                     (x + square_x, y + square_y, square_width, square_height),
+                    name_prefix="S",
+                    manual=False,
                 )
 
             # Automatically detect CTR circle
@@ -3523,7 +3525,9 @@ class AutoMeasurementsTab(ttk.Frame):
         )
         return dose, std, unc, average, average_uncertainty, pixel_count
 
-    def _insert_measurement_shape(self, shape_type, coords):
+    def _insert_measurement_shape(
+        self, shape_type, coords, *, name_prefix="A", manual=True
+    ):
         """Measure and insert a directly drawn geometry."""
         if shape_type == "circle":
             cx, cy, radius = coords
@@ -3562,8 +3566,15 @@ class AutoMeasurementsTab(ttk.Frame):
                 dose, std, float(average), float(average_uncertainty), sig=2
             )
         )
-        area_index = len(self.tree.get_children(parent_id)) + 1
-        area_name = f"A{area_index}M"
+        used_names = {
+            self.tree.item(child_id, "text").split(" ", 1)[0]
+            for child_id in self.tree.get_children(parent_id)
+        }
+        area_index = 1
+        suffix = "M" if manual else ""
+        while f"{name_prefix}{area_index}{suffix}" in used_names:
+            area_index += 1
+        area_name = f"{name_prefix}{area_index}{suffix}"
         item_id = self.tree.insert(
             parent_id, "end", text=area_name,
             values=(dose_str, std_str, average_str, uncertainty_str, ci95_str),
