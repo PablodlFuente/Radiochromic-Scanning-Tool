@@ -34,6 +34,8 @@ class MeasurementPanel:
         # Measurement data
         self.current_measurement_data = None
         self.has_valid_measurement = False  # Flag to track if we have a valid measurement
+        self._two_d_window = None
+        self._three_d_window = None
         
         # Manual line selection state
         self.manual_line_points = []  # Will store [(x1, y1), (x2, y2)]
@@ -1199,6 +1201,8 @@ class MeasurementPanel:
 
     def _show_3d_view(self):
         """Show 3D view of RGB channels."""
+        if self._focus_existing_view("_three_d_window"):
+            return
         # Check if we have valid measurement data
         if not self.has_valid_measurement:
             return
@@ -1222,6 +1226,7 @@ class MeasurementPanel:
         
         # Create a new window for 3D view
         view_window = tk.Toplevel(self.frame)
+        self._three_d_window = view_window
         view_window.title("3D RGB Channel View")
         view_window.geometry("900x700")
         
@@ -1323,14 +1328,19 @@ class MeasurementPanel:
         canvas.mpl_connect('motion_notify_event', motion_notify_callback)
     
         # Add a close button
-        ttk.Button(
-            view_window,
-            text="Close",
-            command=view_window.destroy
-        ).pack(pady=10)
+        def close_view():
+            if self._three_d_window is view_window:
+                self._three_d_window = None
+            plt.close(fig)
+            view_window.destroy()
+
+        view_window.protocol("WM_DELETE_WINDOW", close_view)
+        ttk.Button(view_window, text="Close", command=close_view).pack(pady=10)
     
     def _show_2d_view(self):
         """Show 2D heat map view of measurement data."""
+        if self._focus_existing_view("_two_d_window"):
+            return
         # Check if we have valid measurement data
         if not self.has_valid_measurement:
             return
@@ -1355,6 +1365,7 @@ class MeasurementPanel:
         
         # Create a new window for 2D view
         view_window = tk.Toplevel(self.frame)
+        self._two_d_window = view_window
         view_window.title("2D Heat Map View")
         view_window.geometry("800x600")
         
@@ -1521,11 +1532,30 @@ class MeasurementPanel:
         canvas.mpl_connect('motion_notify_event', motion_notify_callback)
         
         # Add a close button
-        ttk.Button(
-            view_window,
-            text="Close",
-            command=view_window.destroy
-        ).pack(pady=10)
+        def close_view():
+            if self._two_d_window is view_window:
+                self._two_d_window = None
+            plt.close(fig)
+            view_window.destroy()
+
+        view_window.protocol("WM_DELETE_WINDOW", close_view)
+        ttk.Button(view_window, text="Close", command=close_view).pack(pady=10)
+
+    def _focus_existing_view(self, attribute):
+        """Bring an existing measurement visualization forward when present."""
+        window = getattr(self, attribute, None)
+        if window is None:
+            return False
+        try:
+            if window.winfo_exists():
+                window.deiconify()
+                window.lift()
+                window.focus_force()
+                return True
+        except tk.TclError:
+            pass
+        setattr(self, attribute, None)
+        return False
     
     def _start_manual_line_selection(self):
         """Start manual line selection mode - user clicks 2 points on canvas."""

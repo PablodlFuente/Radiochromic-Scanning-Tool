@@ -6,10 +6,32 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 import matplotlib.pyplot as plt
 
 
-def show_figure(parent, figure, title):
-    """Display *figure* in a Tk window whose lifetime is owned by the application."""
+def show_figure(parent, figure, title, window_key=None):
+    """Display a figure in one reusable Tk window for each logical view."""
     owner = parent.winfo_toplevel()
+    key = window_key or title
+    windows = getattr(owner, "_plot_windows", None)
+    if windows is None:
+        windows = {}
+        owner._plot_windows = windows
+
+    existing = windows.get(key)
+    if existing is not None:
+        try:
+            if existing.winfo_exists():
+                # The newly created figure is not displayed; release it and
+                # bring the already open view to the foreground instead.
+                plt.close(figure)
+                existing.deiconify()
+                existing.lift()
+                existing.focus_force()
+                return existing
+        except tk.TclError:
+            pass
+        windows.pop(key, None)
+
     window = tk.Toplevel(owner)
+    windows[key] = window
     window.title(title)
     window.geometry("900x700")
     canvas = FigureCanvasTkAgg(figure, master=window)
@@ -21,6 +43,8 @@ def show_figure(parent, figure, title):
 
     def close_window():
         plt.close(figure)
+        if windows.get(key) is window:
+            windows.pop(key, None)
         window.destroy()
 
     window.close_figure = close_window

@@ -359,6 +359,7 @@ class AutoMeasurementsTab(ttk.Frame):
             btn_frame, text="⚙", width=3,
             command=self._show_detection_settings,
         ).pack(side=tk.LEFT, padx=(5, 0))
+        ttk.Button(btn_frame, text="Copy as XLSX", command=self.copy_as_xlsx).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Export CSV", command=self.export_csv).pack(side=tk.LEFT, padx=5)
 
         # CTR control frame
@@ -1269,7 +1270,7 @@ class AutoMeasurementsTab(ttk.Frame):
             return
 
         cx, cy, r = circle_coords
-        self._show_circle_3d(cx, cy, r)
+        self._show_circle_3d(cx, cy, r, item_id=item_id)
 
     def _on_edit_label(self, event):
         """Edit item label on double-click."""
@@ -3052,7 +3053,7 @@ class AutoMeasurementsTab(ttk.Frame):
         # Finally delete from TreeView
         self.tree.delete(item_id)
 
-    def _show_circle_3d(self, cx: int, cy: int, r: int):
+    def _show_circle_3d(self, cx: int, cy: int, r: int, item_id=None):
         """Show 3D visualization of circle area."""
         try:
             cx = int(round(float(cx)))
@@ -3113,7 +3114,8 @@ class AutoMeasurementsTab(ttk.Frame):
         ax.set_zlabel(z_label)
 
         from app.ui.plot_window import show_figure
-        show_figure(self.frame, fig, plot_title)
+        window_key = f"auto-measurement-3d:{item_id or (cx, cy, r)}"
+        show_figure(self.frame, fig, plot_title, window_key=window_key)
 
     def _autosize_columns(self):
         """Adjust column widths to fit content."""
@@ -4057,6 +4059,47 @@ class AutoMeasurementsTab(ttk.Frame):
             self.original_radii,
             self.original_values
         )
+
+    def copy_as_xlsx(self):
+        """Copy visible result rows as tab-separated data for Excel or Calc."""
+        selected = set(self.tree.selection())
+        rows = []
+
+        def append_item(item_id, depth=0):
+            if not selected or item_id in selected or any(
+                ancestor in selected for ancestor in self._tree_ancestors(item_id)
+            ):
+                label = ("  " * depth) + self.tree.item(item_id, "text")
+                rows.append([label] + [self.tree.set(item_id, column) for column in self.tree["columns"]])
+            for child_id in self.tree.get_children(item_id):
+                append_item(child_id, depth + 1)
+
+        for root_id in self.tree.get_children(""):
+            append_item(root_id)
+
+        if not rows:
+            messagebox.showinfo("Copy as XLSX", "There are no measurement rows to copy.", parent=self.frame)
+            return
+
+        headers = [self.tree.heading("#0", "text")] + [
+            self.tree.heading(column, "text") for column in self.tree["columns"]
+        ]
+        payload = "\n".join("\t".join(str(value) for value in row) for row in [headers, *rows])
+        self.frame.clipboard_clear()
+        self.frame.clipboard_append(payload)
+        self.frame.update_idletasks()
+        messagebox.showinfo(
+            "Copy as XLSX",
+            f"Copied {len(rows)} row{'s' if len(rows) != 1 else ''} to the clipboard. Paste into Excel or LibreOffice Calc.",
+            parent=self.frame,
+        )
+
+    def _tree_ancestors(self, item_id):
+        """Yield the ancestors of a tree item, nearest parent first."""
+        parent_id = self.tree.parent(item_id)
+        while parent_id:
+            yield parent_id
+            parent_id = self.tree.parent(parent_id)
 
 
 

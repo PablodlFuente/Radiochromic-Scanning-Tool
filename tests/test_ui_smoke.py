@@ -30,6 +30,21 @@ class TkWorkflowTests(unittest.TestCase):
         root.update_idletasks()
         root.destroy()
 
+    def test_plot_window_reuses_the_same_logical_view(self):
+        try:
+            root = tk.Tk()
+        except tk.TclError as exc:
+            self.skipTest(f"Tk display unavailable: {exc}")
+        root.withdraw()
+        first = show_figure(root, plt.figure(), "Reusable plot")
+        second = show_figure(root, plt.figure(), "Reusable plot")
+        root.update_idletasks()
+        self.assertIs(first, second)
+        self.assertEqual(len(root._plot_windows), 1)
+        first.close_figure()
+        root.update_idletasks()
+        root.destroy()
+
     def test_loading_another_image_clears_results_and_keeps_native_precision(self):
         try:
             root = tk.Tk()
@@ -54,7 +69,7 @@ class TkWorkflowTests(unittest.TestCase):
                 root.main_window = window
                 self.assertEqual(
                     window.about_footer.cget("text"),
-                    "Version 2.0.2 · Pablo de la Fuente Fernández",
+                    "Version 2.1.0 · Pablo de la Fuente Fernández",
                 )
                 with patch("app.ui.main_window.webbrowser.open_new_tab") as open_browser:
                     window.open_local_documentation()
@@ -70,6 +85,7 @@ class TkWorkflowTests(unittest.TestCase):
                     if child.winfo_class() == "TButton"
                 }
                 self.assertIn("Add Measurement Area", button_labels)
+                self.assertIn("Copy as XLSX", button_labels)
                 self.assertNotIn("Add Circle", button_labels)
                 tab.global_ctr = {"item_id": "missing"}
                 tab._update_ctr_column_headings(True)

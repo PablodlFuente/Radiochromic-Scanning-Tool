@@ -1296,7 +1296,9 @@ class AnalysisTab:
                 ax.set_ylim(bottom=0)
 
         if not separate_rc:
-            axes_list[0].legend(loc='best')
+            # Keep the fitted equation in the upper-left corner and the
+            # series legend in the opposite corner.
+            axes_list[0].legend(loc='lower right')
 
         if self._show_analysis_data_var.get():
             self._refresh_dose_tree()

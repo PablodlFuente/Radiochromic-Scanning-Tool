@@ -59,6 +59,48 @@ class ProcessingWorkflowTests(unittest.TestCase):
             tab._show_circle_3d(4, 4, 2)
         show.assert_called_once()
 
+    def test_copy_as_xlsx_uses_selection_and_tab_separated_values(self):
+        class Tree:
+            def selection(self):
+                return ("circle",)
+
+            def get_children(self, item_id=""):
+                return {"": ("film",), "film": ("circle",), "circle": ()}[item_id]
+
+            def parent(self, item_id):
+                return {"film": "", "circle": "film"}[item_id]
+
+            def item(self, item_id, option):
+                return {"film": "RC_1", "circle": "C1"}[item_id]
+
+            def set(self, item_id, column):
+                return {"dose": "1.0", "average": "1.0"}[column]
+
+            def heading(self, column, option):
+                return {"#0": "Element", "dose": "Dose", "average": "Average"}[column]
+
+            def __getitem__(self, item):
+                if item == "columns":
+                    return ("dose", "average")
+                raise KeyError(item)
+
+        class Frame:
+            def clipboard_clear(self):
+                self.payload = ""
+
+            def clipboard_append(self, payload):
+                self.payload = payload
+
+            def update_idletasks(self):
+                pass
+
+        tab = AutoMeasurementsTab.__new__(AutoMeasurementsTab)
+        tab.tree = Tree()
+        tab.frame = Frame()
+        with patch("custom_plugins.auto_measurements.ui.main_tab.messagebox.showinfo"):
+            tab.copy_as_xlsx()
+        self.assertEqual(tab.frame.payload, "Element\tDose\tAverage\n  C1\t1.0\t1.0")
+
     def test_auto_conversion_uses_spline_inside_and_fit_outside_range(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
