@@ -29,12 +29,14 @@ All blanks must have the same geometry and dtype and contain finite positive val
 2. Confirm the dose assigned to every image, including dose zero when measured.
 3. Define and measure the film ROIs.
 4. Review included and excluded R, G and B points.
-5. Open the fit window and inspect both the rational and spline views.
+5. Inspect the rational model (solid line) and PCHIP spline (dashed line) shown together in the fit window.
 6. Choose `Save Calibration` from either plot view to save both models.
 
 Saving writes the rational parameters and the exact spline knots. Input rows may be in any order. Repeated doses are averaged for the spline. A non-monotonic channel is rejected with an in-window diagnostic; review or exclude the responsible calibration points rather than silently forcing monotonicity.
 
 `Export Spline CSV` is optional and exists for inspection in other software. Dose conversion reconstructs the curve from `spline_calibration.npz`, not from sampled CSV points.
+
+Use `Calibration → Modify Calibration` to reopen the selected calibration. The editor restores measured points, saved per-channel exclusions and the recorded bit depth. Click a point marker to exclude it or restore a hollow marker; clicks outside the fixed screen-space selection radius do not alter calibration data. `Restore All Excluded Points` re-includes every point before recalculating and saving both models.
 
 ## Apply dose conversion
 

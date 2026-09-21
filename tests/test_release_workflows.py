@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import numpy as np
+from matplotlib.figure import Figure
 
 from app.core.image_processor import ImageProcessor
 from app.calibration.calibration_app import CalibrationApp
@@ -230,6 +231,36 @@ class ExportWorkflowTests(unittest.TestCase):
 
 
 class CalibrationPersistenceTests(unittest.TestCase):
+    def test_fit_point_selection_requires_a_near_screen_click(self):
+        app = CalibrationApp.__new__(CalibrationApp)
+        figure = Figure()
+        app.fit_ax = figure.add_subplot()
+        app.fit_ax.set_xlim(0, 10)
+        app.fit_ax.set_ylim(0, 100)
+        figure.canvas.draw()
+        app._get_calibration_data = lambda: (
+            np.array([1.0]), np.array([20.0]), np.array([40.0]), np.array([60.0]),
+            np.array([0.0]), np.array([0.0]), np.array([0.0]),
+        )
+        point_x, point_y = app.fit_ax.transData.transform((1.0, 20.0))
+        far_event = SimpleNamespace(inaxes=app.fit_ax, x=point_x + 100, y=point_y + 100)
+        near_event = SimpleNamespace(inaxes=app.fit_ax, x=point_x + 2, y=point_y + 2)
+        self.assertIsNone(app._nearest_fit_point(far_event))
+        self.assertEqual(app._nearest_fit_point(near_event)[:3], ("R", 0, 1.0))
+
+    def test_saved_exclusions_are_restored_for_modify_calibration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "calibration_manifest.json").write_text(json.dumps({
+                "dose_calibration": {"excluded_points": [
+                    {"channel": "R", "index": 1}, {"channel": "B", "index": 3},
+                    {"channel": "invalid", "index": 0},
+                ]}
+            }), encoding="utf-8")
+            app = SimpleNamespace(data_dir=root, image_files=["a", "b", "c"], excluded_points=set())
+            CalibrationApp._restore_saved_exclusions(app)
+        self.assertEqual(app.excluded_points, {("R", 1)})
+
     def test_calibration_dialog_rejects_nonpositive_flat(self):
         with tempfile.TemporaryDirectory() as tmp:
             np.savez(Path(tmp) / "field_flattening.npz", flat_field=np.zeros((2, 2, 3)))

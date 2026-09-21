@@ -10,6 +10,7 @@ import os
 import re
 import numpy as np
 import csv
+import json
 import tempfile
 import logging
 from pathlib import Path
@@ -27,7 +28,7 @@ from app.core.spline_calibration import (
 logger = logging.getLogger(__name__)
 
 class CalibrationApp:
-    def __init__(self, root, data_dir=None):
+    def __init__(self, root, data_dir=None, *, load_existing=False, open_fit=False):
         self.root = root
         self.root.title("Radiochromic Film Calibration")
         self.root.geometry("1200x800")
@@ -162,6 +163,11 @@ class CalibrationApp:
         # Field flattening data
         self.flat_field = None
         self._load_field_flattening()
+
+        if load_existing:
+            self._load_existing_calibration_data()
+            if open_fit and self.image_files:
+                self.root.after_idle(self.open_fit_window)
     
     def _load_field_flattening(self):
         """Load field flattening data if available."""
@@ -187,8 +193,94 @@ class CalibrationApp:
                 except Exception as e:
                     self._flat_field_error = str(e)
                     logger.error("Failed to load field flattening: %s", e, exc_info=True)
-        
+
         logger.info("No field flattening data found; calibration images will remain uncorrected")
+
+    def _load_existing_calibration_data(self):
+        """Restore measured calibration points and saved exclusions for editing."""
+        path = Path(self.csv_filename)
+        if not path.is_file():
+            messagebox.showerror("Modify Calibration", "calibration_data.csv was not found.")
+            return
+
+        required = {
+            "ImageName", "Dose", "ROIShape", "ROISize", "ROIX_orig", "ROIY_orig",
+            "MeanR", "MeanG", "MeanB", "StdDevR", "StdDevG", "StdDevB", "NumPixels",
+        }
+        try:
+            with path.open(newline="", encoding="utf-8") as handle:
+                rows = list(csv.DictReader(handle))
+            if not rows or not required.issubset(rows[0]):
+                raise ValueError("The calibration CSV has an unsupported or incomplete header.")
+
+            for row in rows:
+                image_name = row["ImageName"].strip()
+                if not image_name:
+                    continue
+                source = self._find_existing_calibration_image(image_name)
+                image_path = str(source or (self.data_dir / image_name))
+                roi = {
+                    "shape": row["ROIShape"] or "rectangle",
+                    "size": float(row["ROISize"]),
+                    "x_img": float(row["ROIX_orig"]),
+                    "y_img": float(row["ROIY_orig"]),
+                    "mean_r": float(row["MeanR"]),
+                    "mean_g": float(row["MeanG"]),
+                    "mean_b": float(row["MeanB"]),
+                    "std_r": float(row["StdDevR"]),
+                    "std_g": float(row["StdDevG"]),
+                    "std_b": float(row["StdDevB"]),
+                    "num_pixels": int(float(row["NumPixels"])),
+                }
+                self.image_files.append(image_path)
+                self.gray_values.append(row["Dose"])
+                self.image_rois[image_path] = [roi]
+
+            self._restore_saved_exclusions()
+            self._restore_saved_bit_depth()
+            self._populate_image_list()
+            self._check_calibration_readiness()
+            logger.info("Loaded %s calibration points for modification", len(self.image_files))
+        except (OSError, ValueError, KeyError) as exc:
+            logger.error("Could not restore calibration data: %s", exc, exc_info=True)
+            messagebox.showerror("Modify Calibration", f"Could not load calibration data:\n{exc}")
+
+    def _find_existing_calibration_image(self, image_name):
+        """Find an image by recorded filename without changing the process directory."""
+        candidates = (self.data_dir / "Calibrations", self.data_dir)
+        for directory in candidates:
+            candidate = directory / image_name
+            if candidate.is_file():
+                return candidate
+        return None
+
+    def _restore_saved_exclusions(self):
+        """Restore per-channel exclusions recorded in the calibration manifest."""
+        manifest_path = self.data_dir / "calibration_manifest.json"
+        if not manifest_path.is_file():
+            return
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            exclusions = manifest.get("dose_calibration", {}).get("excluded_points", [])
+            self.excluded_points = {
+                (str(entry["channel"]), int(entry["index"]))
+                for entry in exclusions
+                if str(entry.get("channel")) in {"R", "G", "B"}
+                and 0 <= int(entry.get("index", -1)) < len(self.image_files)
+            }
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            logger.warning("Saved exclusions could not be restored: %s", exc)
+
+    def _restore_saved_bit_depth(self):
+        """Restore the calibration bit depth from the rational-fit artifact when present."""
+        fit_path = self.data_dir / "fit_parameters.csv"
+        try:
+            with fit_path.open(newline="", encoding="utf-8") as handle:
+                first = next(csv.DictReader(handle), None)
+            if first and first.get("bit_depth"):
+                self.calibration_bit_depth = int(first["bit_depth"])
+        except (OSError, ValueError, KeyError):
+            logger.warning("Calibration bit depth could not be restored from %s", fit_path)
     
     def _apply_field_flattening(self, image: np.ndarray) -> np.ndarray:
         """Apply field flattening correction to an image.
@@ -1124,15 +1216,20 @@ class CalibrationApp:
         controls_frame = tk.Frame(self.fit_window)
         controls_frame.pack(side=tk.TOP, fill=tk.X, pady=5)
 
+        # Both models are always calculated and displayed.  The variable remains
+        # for compatibility with the existing plotting and export helpers.
         self.fit_type_var = tk.StringVar(value="standard")
-        for text,val in (("Rational fit", "standard"),("Shape-preserving cubic","spline")):
-            tk.Radiobutton(controls_frame, text=text, variable=self.fit_type_var, value=val, command=self._on_fit_type_changed).pack(side=tk.LEFT, padx=5)
-
         self.fit_status_var = tk.StringVar(value="")
         tk.Label(
             controls_frame, textvariable=self.fit_status_var,
             foreground="#b00020", anchor="w",
         ).pack(side=tk.LEFT, padx=10, fill=tk.X, expand=True)
+
+        self.fit_summary_var = tk.StringVar(value="")
+        tk.Label(
+            self.fit_window, textvariable=self.fit_summary_var,
+            anchor="w", justify=tk.LEFT, foreground="#404040",
+        ).pack(fill=tk.X, padx=10, pady=(0, 4))
 
         # ----- PARAMETER TABLE -----
         param_frame = tk.LabelFrame(self.fit_window, text="Fit Parameters (editable)")
@@ -1163,30 +1260,30 @@ class CalibrationApp:
         btn_frame = tk.Frame(self.fit_window)
         btn_frame.pack(fill=tk.X, pady=5)
         tk.Button(btn_frame, text="Auto Fit", command=self._auto_fit).pack(side=tk.LEFT, padx=10)
+        tk.Button(btn_frame, text="Restore All Excluded Points", command=self._restore_all_excluded_points).pack(side=tk.LEFT, padx=5)
         tk.Button(btn_frame, text="Save Calibration", command=self._apply_fit).pack(side=tk.RIGHT, padx=10)
         tk.Button(controls_frame, text="Export Spline CSV", command=self._save_spline_csv).pack(side=tk.RIGHT, padx=5)
 
         # prepare results dict before plotting
         self.latest_fit_results = {}
+        self._fit_hover_artist = None
 
         self.fit_fig.canvas.mpl_connect('button_press_event', self._on_fit_click)
+        self.fit_fig.canvas.mpl_connect('motion_notify_event', self._on_fit_motion)
 
         self._update_fit_plot()
         self._manual_override.clear() # clear manual overrides when opening fit window
 
         self.fit_canvas.draw()
 
-    def _on_fit_type_changed(self):
-        """Clear params when switching type and refresh plot."""
-        for ch in ("R","G","B"):
-            for pn in ("a","σa","b","σb","c","σc"):
-                self.param_entries[ch][pn].delete(0,tk.END)
-            self.param_entries[ch]["r2_label"].config(text="")
-        self._auto_fit()
-
     def _auto_fit(self):
         """Perform automatic fitting and update plot."""
         self._manual_override.clear()
+        self._update_fit_plot()
+
+    def _restore_all_excluded_points(self):
+        """Include every recorded point again in both calibration models."""
+        self.excluded_points.clear()
         self._update_fit_plot()
 
     def _set_fit_status(self, message):
@@ -1218,9 +1315,6 @@ class CalibrationApp:
         try:
             if getattr(self, "_flat_field_error", None):
                 raise ValueError(f"Cannot save calibration: {self._flat_field_error}")
-            if self.fit_type_var.get() != "standard":
-                self.fit_type_var.set("standard")
-                self._update_fit_plot()
             spline_knots = self._spline_knots_from_data()
             for channel in ("R", "G", "B"):
                 fit = self.latest_fit_results.get(f"Fit {channel}", {})
@@ -1299,9 +1393,10 @@ class CalibrationApp:
             messagebox.showerror("Save error", str(e))
 
     def _update_fit_plot(self):
-        """Redraw scatter and chosen fit."""
+        """Redraw measured points with both rational and PCHIP models."""
         doses, r, g, b, sr, sg, sb = self._get_calibration_data()
         self.fit_ax.clear()
+        self._fit_hover_artist = None
         if hasattr(self, "fit_status_var"):
             self.fit_status_var.set("")
         if len(doses) == 0:
@@ -1479,7 +1574,7 @@ class CalibrationApp:
                     }
 
                     # Draw the fitted response.
-                    line_style = "-." if ch_name in self._manual_override else "--"
+                    line_style = "-." if ch_name in self._manual_override else "-"
                     plot_label_text = f"Manual {ch_name}" if ch_name in self._manual_override else label
                     self.fit_ax.plot(x_line, model(x_line, *current_popt), color=color, linestyle=line_style, label=plot_label_text)
 
@@ -1499,22 +1594,22 @@ class CalibrationApp:
                     
                     self.param_entries[ch_name]['r2_label'].config(text=f"{r2:.4f}" if not np.isnan(r2) else "N/A")
 
-            elif fit_type == "spline":
-                for ch_data, mask, color, label in (
-                    (r, mask_r, "red", "Spline R"),
-                    (g, mask_g, "green", "Spline G"),
-                    (b, mask_b, "blue", "Spline B"),
-                ):
-                    knot_doses, knot_values = prepare_spline_knots(doses[mask], ch_data[mask])
-                    channel_x = np.linspace(knot_doses[0], knot_doses[-1], 300)
-                    channel_y = evaluate_spline(channel_x, knot_doses, knot_values)
-                    self.fit_ax.plot(channel_x, channel_y, color=color, linestyle="--", label=label)
-                    self.latest_fit_results[label] = {
-                        "params": [], "errors": [], "r2": None,
-                        "x": channel_x.tolist(), "y": channel_y.tolist(),
-                        "knot_doses": knot_doses.tolist(),
-                        "knot_intensities": knot_values.tolist(),
-                    }
+            # PCHIP is always shown and saved alongside the rational fit.
+            for ch_data, mask, color, label in (
+                (r, mask_r, "red", "Spline R"),
+                (g, mask_g, "green", "Spline G"),
+                (b, mask_b, "blue", "Spline B"),
+            ):
+                knot_doses, knot_values = prepare_spline_knots(doses[mask], ch_data[mask])
+                channel_x = np.linspace(knot_doses[0], knot_doses[-1], 300)
+                channel_y = evaluate_spline(channel_x, knot_doses, knot_values)
+                self.fit_ax.plot(channel_x, channel_y, color=color, linestyle="--", label=label)
+                self.latest_fit_results[label] = {
+                    "params": [], "errors": [], "r2": None,
+                    "x": channel_x.tolist(), "y": channel_y.tolist(),
+                    "knot_doses": knot_doses.tolist(),
+                    "knot_intensities": knot_values.tolist(),
+                }
         except Exception as e:
             self._set_fit_status(f"Fit error: {e}")
 
@@ -1523,6 +1618,17 @@ class CalibrationApp:
         self.fit_ax.legend()
         self.fit_ax.grid(True)
         self.fit_canvas.draw()
+
+        if hasattr(self, "fit_summary_var"):
+            included = ", ".join(
+                f"{channel}: {sum((channel, index) not in self.excluded_points for index in idxs)}/{npts}"
+                for channel in ("R", "G", "B")
+            )
+            self.fit_summary_var.set(
+                f"Dose range: {float(np.min(doses)):.6g}–{float(np.max(doses)):.6g} Gy | "
+                f"Bit depth: {self.calibration_bit_depth}-bit | Included points: {included}. "
+                "Solid = rational fit; dashed = PCHIP spline. Click a marker to exclude or restore it."
+            )
 
         # fill entry boxes & r2 labels
         for ch in ("R","G","B"):
@@ -1560,41 +1666,52 @@ class CalibrationApp:
         if event.button != 1 or event.inaxes != self.fit_ax:
             return  # Only respond to left-click inside axes
 
-        # Retrieve current data
-        doses, r, g, b, sr, sg, sb = self._get_calibration_data()
-        if len(doses) == 0:
+        candidate = self._nearest_fit_point(event)
+        if candidate is None:
             return
-
-        # Build list of points with channels
-        points = []  # tuples: (channel, idx, x, y)
-        for idx in range(len(doses)):
-            points.append(('R', idx, doses[idx], r[idx]))
-            points.append(('G', idx, doses[idx], g[idx]))
-            points.append(('B', idx, doses[idx], b[idx]))
-
-        # Determine nearest point in data coordinates
-        x_click, y_click = event.xdata, event.ydata
-        if x_click is None or y_click is None:
-            return
-
-        distances = [ (abs(px - x_click)**2 + abs(py - y_click)**2, ch, idx) for ch, idx, px, py in points ]
-        dist, ch_sel, idx_sel = min(distances, key=lambda t: t[0])
-
-        # Define tolerance as 2% of x-range and y-range
-        x_range = self.fit_ax.get_xlim()
-        y_range = self.fit_ax.get_ylim()
-        tol = 0.02 * ((x_range[1]-x_range[0])**2 + (y_range[1]-y_range[0])**2)
-        if dist > tol:
-            return  # Click too far from any point
-
-        key = (ch_sel, idx_sel)
+        channel, index, _, _ = candidate
+        key = (channel, index)
         if key in self.excluded_points:
             self.excluded_points.remove(key)
         else:
             self.excluded_points.add(key)
-
-        # Refresh plot
         self._update_fit_plot()
+
+    def _nearest_fit_point(self, event, maximum_distance=12):
+        """Return the closest calibration point only when it is near in screen pixels."""
+        if event.inaxes != self.fit_ax or event.x is None or event.y is None:
+            return None
+        doses, red, green, blue, *_ = self._get_calibration_data()
+        if not len(doses):
+            return None
+        candidates = []
+        for channel, values in (("R", red), ("G", green), ("B", blue)):
+            for index, (dose, value) in enumerate(zip(doses, values)):
+                if not (np.isfinite(dose) and np.isfinite(value)):
+                    continue
+                screen_x, screen_y = self.fit_ax.transData.transform((dose, value))
+                distance = float(np.hypot(screen_x - event.x, screen_y - event.y))
+                candidates.append((distance, channel, index, dose, value))
+        if not candidates:
+            return None
+        distance, channel, index, dose, value = min(candidates, key=lambda item: item[0])
+        if distance > maximum_distance:
+            return None
+        return channel, index, dose, value
+
+    def _on_fit_motion(self, event):
+        """Highlight the point that can be excluded or restored by a click."""
+        candidate = self._nearest_fit_point(event)
+        if self._fit_hover_artist is not None:
+            self._fit_hover_artist.remove()
+            self._fit_hover_artist = None
+        if candidate is not None:
+            _, _, dose, value = candidate
+            self._fit_hover_artist = self.fit_ax.plot(
+                [dose], [value], marker="o", markersize=12, markerfacecolor="none",
+                markeredgecolor="black", markeredgewidth=1.5, zorder=10,
+            )[0]
+        self.fit_canvas.draw_idle()
 
     def _on_param_entry_changed(self, event=None):
         """Called on manual parameter change."""
@@ -1615,21 +1732,13 @@ class CalibrationApp:
 
     def _save_spline_csv(self):
         """Export sampled spline curves for inspection; conversion uses the saved knots."""
-        if self.fit_type_var.get() != 'spline':
-            messagebox.showwarning(
-                "Export Spline CSV",
-                "Switch to the shape-preserving cubic view first.",
-            )
-            return
-
         # Ensure plot up to date
         self._update_fit_plot()
 
         # Expect latest spline results stored
         curves = []
         for ch in ('R','G','B'):
-            key = f"Spline {ch}"
-            res = self.latest_fit_results.get(key)
+            res = self.latest_fit_results.get(f"Spline {ch}")
             if not res or 'x' not in res:
                 messagebox.showerror("Save Spline", "Spline data not available. Run Auto Fit first.")
                 return

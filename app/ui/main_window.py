@@ -16,6 +16,7 @@ from app.ui.image_panel import ImagePanel
 from app.core.image_processor import ImageProcessor
 from app.utils.file_manager import FileManager
 from app.utils.config_manager import ConfigManager
+from app.paths import CALIBRATION_ROOT
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,8 @@ class MainWindow:
                                          command=self.start_calibration_wizard)
         self.calibration_menu.add_command(label="Update Scanner Flatness", 
                                          command=self.start_flatness_wizard)
+        self.calibration_menu.add_command(label="Modify Calibration",
+                                         command=self.modify_calibration)
         self.calibration_menu.add_separator()
         
         # Toggle for field flattening (independent)
@@ -1153,6 +1156,35 @@ class MainWindow:
 
         # Create the wizard in flatness_only mode
         ScannerCalibrationWizard(self.parent, app_config=self.app_config, flatness_only=True)
+
+    def modify_calibration(self):
+        """Open the selected calibration directly in the fit-editing window."""
+        folder_name = str(self.app_config.get("calibration_folder", "default"))
+        calibration_dir = (CALIBRATION_ROOT / folder_name).resolve()
+        try:
+            calibration_dir.relative_to(CALIBRATION_ROOT.resolve())
+        except ValueError:
+            messagebox.showerror("Modify Calibration", "The selected calibration folder is invalid.")
+            return
+        if not (calibration_dir / "calibration_data.csv").is_file():
+            messagebox.showerror(
+                "Modify Calibration",
+                "The selected calibration does not contain calibration_data.csv.",
+            )
+            return
+        try:
+            from app.calibration.calibration_app import CalibrationApp
+            calibration_window = tk.Toplevel(self.parent)
+            calibration_window.title("Modify Calibration")
+            calibration_window.geometry("1200x800")
+            calibration_app = CalibrationApp(
+                calibration_window, data_dir=calibration_dir,
+                load_existing=True, open_fit=True,
+            )
+            calibration_window.calibration_app = calibration_app
+        except Exception as exc:
+            logger.error("Failed to open calibration editor", exc_info=True)
+            messagebox.showerror("Modify Calibration", f"Could not open the calibration editor:\n{exc}")
     
     def _reapply_corrections(self):
         """Reapply flat and/or dose corrections based on current checkbox states.
