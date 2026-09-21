@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 APP_DIR = os.fspath(PROJECT_ROOT)
 GITHUB_REPOSITORY = "PablodlFuente/Radiochromic-Scanning-Tool"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
+RELEASE_INSTALLER_NAME = "RadiochromicFilmAnalyzer-Setup.exe"
 
 
 class UpdateChecker:
@@ -91,23 +92,20 @@ class UpdateChecker:
             return None, str(exc)
 
     @staticmethod
-    def _select_executable_asset(release):
+    def _select_installer_asset(release):
+        """Return the uniquely named installer from a published release."""
         assets = release.get("assets", [])
-        preferred = [
+        installers = [
             asset for asset in assets
-            if str(asset.get("name", "")).lower() == "radiochromicfilmanalyzer.exe"
+            if str(asset.get("name", "")).lower() == RELEASE_INSTALLER_NAME.lower()
         ]
-        candidates = preferred or [
-            asset for asset in assets
-            if str(asset.get("name", "")).lower().endswith(".exe")
-        ]
-        return candidates[0] if len(candidates) == 1 else None
+        return installers[0] if len(installers) == 1 else None
 
-    def download_release_executable(self, release):
-        """Download and verify the executable asset from a published release."""
-        asset = self._select_executable_asset(release)
+    def download_release_installer(self, release):
+        """Download and verify the installer asset from a published release."""
+        asset = self._select_installer_asset(release)
         if asset is None:
-            return {"success": False, "error": "The release has no unambiguous Windows executable asset"}
+            return {"success": False, "error": "The release has no Windows installer asset"}
         url = asset.get("browser_download_url")
         expected_size = int(asset.get("size") or 0)
         if not url:
@@ -131,40 +129,53 @@ class UpdateChecker:
                     byte_count += len(block)
             if expected_size and byte_count != expected_size:
                 destination.unlink(missing_ok=True)
-                return {"success": False, "error": "Downloaded executable size does not match the release asset"}
+                return {"success": False, "error": "Downloaded installer size does not match the release asset"}
             declared_digest = str(asset.get("digest") or "")
             if declared_digest.startswith("sha256:") and digest.hexdigest() != declared_digest[7:]:
                 destination.unlink(missing_ok=True)
-                return {"success": False, "error": "Downloaded executable failed SHA-256 verification"}
+                return {"success": False, "error": "Downloaded installer failed SHA-256 verification"}
             return {"success": True, "path": str(destination), "asset": asset, "error": None}
         except Exception as exc:
             destination.unlink(missing_ok=True)
             logger.error("Release download failed", exc_info=True)
             return {"success": False, "error": str(exc)}
 
-    def prepare_executable_replacement(self, downloaded_path):
-        """Schedule replacement of a frozen executable after this process exits."""
+    def prepare_installer_update(self, downloaded_path):
+        """Run a release installer after the packaged application exits.
+
+        Inno Setup recognizes the existing application ID and installs into the
+        existing directory.  It replaces program files while preserving the
+        user-owned calibration, log, plugin and configuration directories.
+        """
         if not getattr(sys, "frozen", False):
             return {
                 "success": False,
-                "error": "Automatic executable replacement is only available in the packaged application",
+                "error": "Automatic installation is only available in the packaged application",
             }
         current_executable = Path(sys.executable).resolve()
-        downloaded = Path(downloaded_path).resolve()
-        helper = downloaded.parent / "apply_radiochromic_update.cmd"
+        if not (current_executable.parent / "unins000.exe").is_file():
+            return {
+                "success": False,
+                "error": (
+                    "Automatic updates require an installed application. "
+                    "Run the release installer manually to migrate this portable copy."
+                ),
+            }
+        installer = Path(downloaded_path).resolve()
+        helper = installer.parent / "apply_radiochromic_update.cmd"
         helper.write_text(
             "@echo off\n"
             "setlocal\n"
             f"set \"TARGET={current_executable}\"\n"
-            f"set \"SOURCE={downloaded}\"\n"
+            f"set \"INSTALLER={installer}\"\n"
             f"set \"APP_PID={os.getpid()}\"\n"
             ":wait_for_exit\n"
             "tasklist /FI \"PID eq %APP_PID%\" 2>NUL | find \"%APP_PID%\" >NUL\n"
             "if not errorlevel 1 (timeout /t 1 /nobreak >NUL & goto wait_for_exit)\n"
-            "copy /Y \"%SOURCE%\" \"%TARGET%\" >NUL\n"
+            "start \"\" /wait \"%INSTALLER%\" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART\n"
             "if errorlevel 1 exit /b 1\n"
             "start \"\" \"%TARGET%\"\n"
-            "del \"%SOURCE%\"\n"
+            "del \"%INSTALLER%\"\n"
             "del \"%~f0\"\n",
             encoding="utf-8",
         )
@@ -175,6 +186,11 @@ class UpdateChecker:
             creationflags=creation_flags,
         )
         return {"success": True, "error": None}
+
+    # Compatibility aliases retained for integrations using the previous API.
+    _select_executable_asset = _select_installer_asset
+    download_release_executable = download_release_installer
+    prepare_executable_replacement = prepare_installer_update
     
     def is_git_available(self) -> bool:
         """Check if git is installed and available."""

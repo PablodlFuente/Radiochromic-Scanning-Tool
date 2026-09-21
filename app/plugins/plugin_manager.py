@@ -277,22 +277,43 @@ class PluginManager:
         Returns:
             The loaded module or None if loading failed
         """
-        # Construct the full module name: custom_plugins.package_name
-        full_mod_name = f"custom_plugins.{pkg_name}"
+        # Source-tree built-ins retain their canonical names because other
+        # integrated modules share state through these package objects.
+        if not getattr(sys, "frozen", False) and pkg_name in {"analysis_tools", "auto_measurements"}:
+            full_mod_name = f"custom_plugins.{pkg_name}"
+            if full_mod_name in sys.modules and not force_reload:
+                return sys.modules[full_mod_name]
+            try:
+                return importlib.import_module(full_mod_name)
+            except Exception as exc:
+                logger.error(f"Failed to import built-in package {full_mod_name}: {exc}", exc_info=True)
+                return None
+
+        # User packages are loaded under an independent namespace.  In a
+        # frozen build ``custom_plugins`` is bundled in the import archive,
+        # so it cannot reliably discover adjacent user package directories.
+        full_mod_name = f"radiochromic_user_plugin_{pkg_name}"
         
         if full_mod_name in sys.modules and not force_reload:
             return sys.modules[full_mod_name]
         
-        # Add parent directory to sys.path if not already there
-        parent_dir = os.path.dirname(pkg_path)
-        if parent_dir not in sys.path:
-            sys.path.insert(0, parent_dir)
-        
         try:
-            # Import the package
-            module = importlib.import_module(full_mod_name)
+            init_file = os.path.join(pkg_path, "__init__.py")
+            spec = importlib.util.spec_from_file_location(
+                full_mod_name,
+                init_file,
+                submodule_search_locations=[pkg_path],
+            )
+            if spec is None or spec.loader is None:
+                raise ImportError(f"Cannot create package specification for {pkg_path}")
+            module = importlib.util.module_from_spec(spec)
+            # Relative imports inside a user plugin need the package to be
+            # registered before its initializer executes.
+            sys.modules[full_mod_name] = module
+            spec.loader.exec_module(module)
             return module
         except Exception as exc:
+            sys.modules.pop(full_mod_name, None)
             logger.error(f"Failed to import package {full_mod_name}: {exc}", exc_info=True)
             return None
 

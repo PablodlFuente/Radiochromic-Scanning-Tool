@@ -23,7 +23,9 @@ Desktop software for radiochromic-film image analysis, scanner flat-field correc
 
 ## Installation
 
-For normal Windows use, download `RadiochromicFilmAnalyzer.exe` from the latest GitHub Release and place it in a writable folder. Configuration, logs, temporary data and calibration directories are created beside the executable.
+For normal Windows use, download and run `RadiochromicFilmAnalyzer-Setup.exe` from the latest GitHub Release.  It installs the application per user under `LocalAppData`, without administrator rights.  Setup creates `logs`, `temp`, `custom_plugins`, `calibration_data` and `docs` beside the installed application.
+
+Release updates run the newer installer silently after the application closes.  They replace program files but preserve calibration data, user plugins, logs, temporary data, configuration and recent-file records.
 
 For Python installations, install the release wheel or run from source. Python 3.10 or later is required, and standard Windows Python distributions include `tkinter`.
 
@@ -34,7 +36,7 @@ python -m pip install -r requirements.txt
 python main.py
 ```
 
-Published releases contain the Windows executable and wheel. GitHub also attaches source archives automatically. Development commits do not trigger application updates.
+Published releases contain the Windows installer and wheel. GitHub also attaches source archives automatically. Development commits do not trigger application updates.
 
 CUDA acceleration is optional and requires compatible OpenCV/CuPy builds. All scientific functions are available on CPU.
 

@@ -15,7 +15,7 @@ import threading
 from app.ui.main_window import MainWindow
 from app.utils.config_manager import ConfigManager
 from app.utils.updater import UpdateChecker
-from app.paths import PROJECT_ROOT
+from app.paths import APPLICATION_ICON, PROJECT_ROOT, ensure_writable_directories
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +25,12 @@ class RCAnalyzer(tk.Tk):
     def __init__(self):
         """Initialize the application."""
         super().__init__()
+        ensure_writable_directories()
+        if APPLICATION_ICON.is_file():
+            try:
+                self.iconbitmap(default=str(APPLICATION_ICON))
+            except tk.TclError:
+                logger.warning("Could not apply application icon", exc_info=True)
         
         logger.info("Initializing RCAnalyzer application")
         

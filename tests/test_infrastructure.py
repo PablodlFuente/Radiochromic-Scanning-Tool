@@ -70,11 +70,38 @@ class PluginLifecycleTests(unittest.TestCase):
         self.assertIn("analysis_tools", manager.plugin_names())
         self.assertIn("auto_measurements", manager.plugin_names())
 
+    def test_user_plugin_package_loads_independently_of_bundled_namespace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            package = Path(directory) / "my_plugin"
+            package.mkdir()
+            (package / "helper.py").write_text("VALUE = 7\n", encoding="utf-8")
+            (package / "__init__.py").write_text(
+                "from .helper import VALUE\n"
+                "def process(image):\n"
+                "    return image + VALUE\n",
+                encoding="utf-8",
+            )
+            manager = PluginManager(directory)
+        self.assertIn("my_plugin", manager.plugin_names())
+
 
 class ReleaseMetadataTests(unittest.TestCase):
     def test_wheel_and_application_versions_match(self):
         project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
         self.assertEqual(project["project"]["version"], __version__)
+
+    def test_installer_is_per_user_and_preserves_user_data_directories(self):
+        installer = Path("installer/RadiochromicFilmAnalyzer.iss").read_text(encoding="utf-8")
+        self.assertIn("DefaultDirName={localappdata}\\Programs", installer)
+        self.assertIn("PrivilegesRequired=lowest", installer)
+        self.assertIn("RadiochromicFilmAnalyzer-Setup", installer)
+        for directory in ("logs", "temp", "custom_plugins", "calibration_data"):
+            self.assertIn(f'Name: "{{app}}\\{directory}"; Flags: uninsneveruninstall', installer)
+
+    def test_packaging_uses_the_application_icon(self):
+        spec = Path("radiochromic_scanning_tool.spec").read_text(encoding="utf-8")
+        self.assertTrue(Path("resources/radiochromic_film_analyzer.ico").is_file())
+        self.assertIn('icon="resources/radiochromic_film_analyzer.ico"', spec)
 
 
 if __name__ == "__main__":

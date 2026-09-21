@@ -95,15 +95,19 @@ class UpdateCheckerReleaseTests(unittest.TestCase):
 
         self.assertFalse(checker.check_for_updates()["has_updates"])
 
-    def test_executable_asset_selection_prefers_release_name(self):
+    def test_installer_asset_selection_requires_the_release_installer(self):
         release = {"assets": [
             {"name": "helper.exe"},
-            {"name": "RadiochromicFilmAnalyzer.exe"},
+            {"name": "RadiochromicFilmAnalyzer-Setup.exe"},
         ]}
 
-        selected = UpdateChecker._select_executable_asset(release)
+        selected = UpdateChecker._select_installer_asset(release)
 
-        self.assertEqual(selected["name"], "RadiochromicFilmAnalyzer.exe")
+        self.assertEqual(selected["name"], "RadiochromicFilmAnalyzer-Setup.exe")
+
+    def test_installer_selection_does_not_accept_an_ambiguous_executable(self):
+        release = {"assets": [{"name": "RadiochromicFilmAnalyzer.exe"}]}
+        self.assertIsNone(UpdateChecker._select_installer_asset(release))
 
 
 if __name__ == "__main__":

@@ -1635,7 +1635,7 @@ class MainWindow:
                     self.parent.after(0, lambda: append_status("\nA newer published release is available."))
                     if not getattr(sys, "frozen", False):
                         self.parent.after(0, lambda: append_status(
-                            "Automatic replacement is available in the packaged executable."
+                            "Automatic installation is available in the installed application."
                         ))
                         return
                     
@@ -1656,23 +1656,23 @@ class MainWindow:
         def perform_update_thread():
             """Background thread to perform the update."""
             try:
-                self.parent.after(0, lambda: append_status("\nDownloading the release executable..."))
+                self.parent.after(0, lambda: append_status("\nDownloading the release installer..."))
                 release, error = updater.get_latest_release()
                 result = ({"success": False, "error": error} if release is None
-                          else updater.download_release_executable(release))
+                          else updater.download_release_installer(release))
                 if result['success']:
-                    result = updater.prepare_executable_replacement(result['path'])
+                    result = updater.prepare_installer_update(result['path'])
                 
                 if result['success']:
                     self.parent.after(0, lambda: append_status("✅ Update downloaded and verified."))
-                    self.parent.after(0, lambda: append_status("The application will close and restart with the new release."))
+                    self.parent.after(0, lambda: append_status("The application will close while the release installer updates program files and then restart."))
                     
                     # Show restart prompt
                     def prompt_restart():
                         if messagebox.askyesno(
                             "Update Complete",
-                            "The application has been updated successfully.\n\n"
-                            "Would you like to restart now to apply the changes?"
+                            "The release installer is ready.\n\n"
+                            "Close the application now to install the update and restart?"
                         ):
                             update_window.destroy()
                             self.parent.destroy()
