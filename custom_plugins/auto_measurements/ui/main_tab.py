@@ -3081,23 +3081,34 @@ class AutoMeasurementsTab(ttk.Frame):
             except tk.TclError:
                 pass
         self.draw_target = target
+        owner = self.frame.winfo_toplevel()
         popup = tk.Toplevel(self.frame)
         popup.overrideredirect(True)
-        popup.transient(self.frame.winfo_toplevel())
+        popup.transient(owner)
         popup.attributes("-topmost", True)
+        self._shape_picker_window = popup
+        binding_ids = {}
         picker = tk.Frame(
             popup, background="#7a7a7a", borderwidth=0,
             padx=12, pady=10,
         )
         picker.pack()
 
-        def close_popup():
+        def cleanup_popup(_event=None):
             if self._shape_picker_window is popup:
                 self._shape_picker_window = None
+            for sequence, binding_id in tuple(binding_ids.items()):
+                try:
+                    owner.unbind(sequence, binding_id)
+                except tk.TclError:
+                    pass
+            binding_ids.clear()
+
+        def close_popup(_event=None):
             try:
                 popup.destroy()
             except tk.TclError:
-                pass
+                cleanup_popup()
 
         def select_shape(shape_type):
             close_popup()
@@ -3125,18 +3136,24 @@ class AutoMeasurementsTab(ttk.Frame):
         x = max(0, min(x, popup.winfo_screenwidth() - popup.winfo_reqwidth()))
         y = max(0, min(y, popup.winfo_screenheight() - popup.winfo_reqheight()))
         popup.geometry(f"+{x}+{y}")
-        popup.bind("<Escape>", lambda _event: close_popup())
+        popup.bind("<Destroy>", cleanup_popup, add="+")
 
-        def close_when_focus_leaves(_event=None):
-            def check_focus():
-                focused = popup.focus_get()
-                if focused is None or not str(focused).startswith(str(popup)):
-                    close_popup()
-            popup.after_idle(check_focus)
+        def close_on_outside_click(event):
+            widget = event.widget
+            while widget is not None:
+                if widget is popup:
+                    return
+                widget = getattr(widget, "master", None)
+            close_popup()
 
-        popup.bind("<FocusOut>", close_when_focus_leaves)
-        popup.focus_force()
-        self._shape_picker_window = popup
+        binding_ids["<ButtonPress-1>"] = owner.bind(
+            "<ButtonPress-1>", close_on_outside_click, add="+"
+        )
+        binding_ids["<Escape>"] = owner.bind(
+            "<Escape>", close_popup, add="+"
+        )
+        popup.deiconify()
+        popup.lift()
 
     def _start_draw_mode(self, shape_type: str):
         """Start direct circle, rectangle, or free-form drawing on the image."""

@@ -63,9 +63,13 @@ class TkWorkflowTests(unittest.TestCase):
                 }
                 self.assertIn("Add Measurement Area", button_labels)
                 self.assertNotIn("Add Circle", button_labels)
-                tab._show_shape_picker("measurement", tab.add_area_button)
-                root.update_idletasks()
+                tab.add_area_button.invoke()
+                root.update()
                 popup = tab._shape_picker_window
+                self.assertIsNotNone(popup)
+                root.after(100, root.quit)
+                root.mainloop()
+                self.assertTrue(popup.winfo_exists())
                 picker = popup.winfo_children()[0]
                 menu_buttons = picker.winfo_children()
                 self.assertEqual(
@@ -77,7 +81,14 @@ class TkWorkflowTests(unittest.TestCase):
                     for button in menu_buttons
                 ))
                 popup.destroy()
-                tab._shape_picker_window = None
+                root.update()
+                self.assertIsNone(tab._shape_picker_window)
+                tab.add_rc_button.invoke()
+                root.update()
+                self.assertIsNotNone(tab._shape_picker_window)
+                self.assertEqual(tab.draw_target, "film")
+                tab._shape_picker_window.destroy()
+                root.update()
                 tab._show_dose_correction_tooltip()
                 root.update_idletasks()
                 self.assertIsNotNone(tab._dose_correction_tooltip)
