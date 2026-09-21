@@ -101,8 +101,12 @@ class UpdateChecker:
         ]
         return installers[0] if len(installers) == 1 else None
 
-    def download_release_installer(self, release):
-        """Download and verify the installer asset from a published release."""
+    def download_release_installer(self, release, progress_callback=None):
+        """Download and verify the installer asset from a published release.
+
+        ``progress_callback`` receives ``(downloaded_bytes, total_bytes)`` and
+        is optional so callers without a GUI can use the same verified path.
+        """
         asset = self._select_installer_asset(release)
         if asset is None:
             return {"success": False, "error": "The release has no Windows installer asset"}
@@ -116,10 +120,22 @@ class UpdateChecker:
         request = urllib.request.Request(
             url, headers={"User-Agent": f"RadiochromicFilmAnalyzer/{self.current_version}"}
         )
+        def report_progress(downloaded_bytes, total_bytes):
+            if progress_callback is None:
+                return
+            try:
+                progress_callback(downloaded_bytes, total_bytes)
+            except Exception:
+                # A closed progress dialog must never interrupt a verified update.
+                logger.debug("Update progress callback failed", exc_info=True)
+
         try:
             digest = hashlib.sha256()
             byte_count = 0
             with urllib.request.urlopen(request, timeout=120) as response, destination.open("wb") as output:
+                response_size = response.headers.get("Content-Length")
+                total_size = expected_size or int(response_size or 0)
+                report_progress(0, total_size)
                 while True:
                     block = response.read(1024 * 1024)
                     if not block:
@@ -127,6 +143,7 @@ class UpdateChecker:
                     output.write(block)
                     digest.update(block)
                     byte_count += len(block)
+                    report_progress(byte_count, total_size)
             if expected_size and byte_count != expected_size:
                 destination.unlink(missing_ok=True)
                 return {"success": False, "error": "Downloaded installer size does not match the release asset"}

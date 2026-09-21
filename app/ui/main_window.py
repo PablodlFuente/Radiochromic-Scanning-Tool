@@ -962,20 +962,20 @@ class MainWindow:
             font=("Arial", 11, "bold")
         ).pack(anchor=tk.W, pady=(20, 5))
         
-        # Check for updates on startup
-        check_updates_startup_var = tk.BooleanVar(
-            value=self.app_config.get("check_updates_on_startup", True)
+        # Automatic release updates
+        automatic_updates_var = tk.BooleanVar(
+            value=self.app_config.get("automatic_updates", True)
         )
         
         ttk.Checkbutton(
             main_frame, 
-            text="Check for updates when application starts", 
-            variable=check_updates_startup_var
+            text="Download and install updates automatically",
+            variable=automatic_updates_var
         ).pack(anchor=tk.W, padx=10, pady=5)
         
         ttk.Label(
             main_frame,
-            text="When enabled, the application will check GitHub for new versions on startup.",
+            text="When enabled, the application checks published releases at startup, downloads a newer installer with visible progress, installs it, and restarts.",
             foreground="gray",
             justify=tk.LEFT,
             font=("Arial", 9)
@@ -1000,7 +1000,8 @@ class MainWindow:
             self.app_config["uncertainty_estimation_method"] = uncertainty_method_var.get()
             self.app_config["calibration_folder"] = calibration_folder_var.get()
             self.app_config["calibration_conversion_method"] = conversion_method_var.get()
-            self.app_config["check_updates_on_startup"] = check_updates_startup_var.get()
+            self.app_config["automatic_updates"] = automatic_updates_var.get()
+            self.app_config.pop("check_updates_on_startup", None)
             
             # Save configuration to file
             try:
@@ -1614,8 +1615,8 @@ class MainWindow:
             logger.error("Could not open local documentation", exc_info=True)
             messagebox.showerror("Documentation unavailable", str(exc), parent=self.parent)
     
-    def check_for_updates(self):
-        """Check for updates from GitHub and offer to update if available."""
+    def check_for_updates(self, automatic=False):
+        """Check published GitHub releases and optionally install automatically."""
         from app.utils.updater import UpdateChecker
         
         # Create update checker
@@ -1623,10 +1624,11 @@ class MainWindow:
         
         # Create a progress dialog
         update_window = tk.Toplevel(self.parent)
-        update_window.title("Check for Updates")
-        update_window.geometry("450x300")
+        update_window.title("Software Update")
+        update_window.geometry("500x360")
         update_window.resizable(False, False)
-        update_window.grab_set()  # Modal
+        if not automatic:
+            update_window.grab_set()
         
         # Center the window
         update_window.update_idletasks()
@@ -1648,6 +1650,14 @@ class MainWindow:
         # Status text widget
         status_text = tk.Text(main_frame, height=8, width=50, state=tk.DISABLED, wrap=tk.WORD)
         status_text.pack(fill=tk.BOTH, expand=True, pady=(0, 15))
+
+        download_progress_var = tk.DoubleVar(value=0)
+        download_progress = ttk.Progressbar(
+            main_frame, variable=download_progress_var, maximum=100, mode="determinate"
+        )
+        download_progress.pack(fill=tk.X, pady=(0, 3))
+        progress_label = ttk.Label(main_frame, text="Waiting for an available release…")
+        progress_label.pack(anchor=tk.W, pady=(0, 12))
         
         # Button frame
         button_frame = ttk.Frame(main_frame)
@@ -1658,6 +1668,10 @@ class MainWindow:
         
         close_btn = ttk.Button(button_frame, text="Close", command=update_window.destroy)
         close_btn.pack(side=tk.RIGHT, padx=5)
+
+        if automatic:
+            # Do not interrupt normal startup when the installed version is current.
+            update_window.withdraw()
         
         def append_status(text):
             """Append text to the status widget."""
@@ -1665,7 +1679,22 @@ class MainWindow:
             status_text.insert(tk.END, text + "\n")
             status_text.see(tk.END)
             status_text.config(state=tk.DISABLED)
-            update_window.update()
+            if update_window.winfo_exists():
+                update_window.update_idletasks()
+
+        def update_download_progress(downloaded_bytes, total_bytes):
+            """Render worker-thread download progress on the Tk event loop."""
+            if not update_window.winfo_exists():
+                return
+            if total_bytes > 0:
+                percentage = min(100.0, downloaded_bytes * 100.0 / total_bytes)
+                download_progress_var.set(percentage)
+                progress_label.config(
+                    text=(f"Downloaded {downloaded_bytes / 1024 / 1024:.1f} MB of "
+                          f"{total_bytes / 1024 / 1024:.1f} MB ({percentage:.0f}%)")
+                )
+            else:
+                progress_label.config(text=f"Downloaded {downloaded_bytes / 1024 / 1024:.1f} MB")
         
         def check_updates_thread():
             """Background thread to check for updates."""
@@ -1676,7 +1705,11 @@ class MainWindow:
                 result = updater.check_for_updates()
                 
                 if not result['success']:
-                    self.parent.after(0, lambda: append_status(f"❌ Error: {result['error']}"))
+                    if automatic:
+                        logger.warning("Automatic update check failed: %s", result["error"])
+                        self.parent.after(0, update_window.destroy)
+                    else:
+                        self.parent.after(0, lambda: append_status(f"❌ Error: {result['error']}"))
                     return
                 
                 current_version = result['current_version']
@@ -1685,19 +1718,28 @@ class MainWindow:
                 self.parent.after(0, lambda: append_status(f"Latest release: {latest_version}"))
                 
                 if not result['has_updates']:
-                    self.parent.after(0, lambda: append_status("\n✅ You are running the latest version!"))
+                    if automatic:
+                        self.parent.after(0, update_window.destroy)
+                    else:
+                        self.parent.after(0, lambda: append_status("\n✅ You are running the latest version!"))
                 else:
-                    self.parent.after(0, lambda: append_status("\nA newer published release is available."))
                     if not getattr(sys, "frozen", False):
+                        self.parent.after(0, update_window.deiconify)
+                        self.parent.after(0, lambda: append_status("\nA newer published release is available."))
                         self.parent.after(0, lambda: append_status(
                             "Automatic installation is available in the installed application."
                         ))
                         return
-                    
-                    # Enable update button
-                    def enable_update():
-                        update_btn.config(state=tk.NORMAL, command=do_update)
-                    self.parent.after(0, enable_update)
+
+                    def update_available():
+                        update_window.deiconify()
+                        append_status("\nA newer published release is available.")
+                        if automatic:
+                            append_status("Automatic updates are enabled. Downloading the installer…")
+                            do_update()
+                        else:
+                            update_btn.config(state=tk.NORMAL, command=do_update)
+                    self.parent.after(0, update_available)
                     
             except Exception as e:
                 message = str(e)
@@ -1714,25 +1756,35 @@ class MainWindow:
                 self.parent.after(0, lambda: append_status("\nDownloading the release installer..."))
                 release, error = updater.get_latest_release()
                 result = ({"success": False, "error": error} if release is None
-                          else updater.download_release_installer(release))
-                if result['success']:
-                    result = updater.prepare_installer_update(result['path'])
+                          else updater.download_release_installer(
+                              release,
+                              progress_callback=lambda downloaded, total: self.parent.after(
+                                  0, lambda d=downloaded, t=total: update_download_progress(d, t)
+                              ),
+                          ))
                 
                 if result['success']:
                     self.parent.after(0, lambda: append_status("✅ Update downloaded and verified."))
-                    self.parent.after(0, lambda: append_status("The application will close while the release installer updates program files and then restart."))
-                    
-                    # Show restart prompt
-                    def prompt_restart():
-                        if messagebox.askyesno(
-                            "Update Complete",
-                            "The release installer is ready.\n\n"
-                            "Close the application now to install the update and restart?"
+                    self.parent.after(0, lambda: progress_label.config(text="Download verified. Preparing installation…"))
+
+                    def start_installation():
+                        if not automatic and not messagebox.askyesno(
+                            "Update ready",
+                            "The installer has been downloaded and verified.\n\n"
+                            "Close the application now to install the update and restart?",
+                            parent=update_window,
                         ):
-                            update_window.destroy()
-                            self.parent.destroy()
-                    
-                    self.parent.after(0, prompt_restart)
+                            append_status("Installation postponed. You can close this window and update later.")
+                            return
+                        install_result = updater.prepare_installer_update(result["path"])
+                        if not install_result["success"]:
+                            append_status(f"❌ Error preparing installation: {install_result['error']}")
+                            return
+                        append_status("Installing the release and restarting the application…")
+                        update_window.destroy()
+                        self.parent.destroy()
+
+                    self.parent.after(0, start_installation)
                 else:
                     self.parent.after(0, lambda: append_status(f"❌ Error during update:\n{result['error']}"))
                     

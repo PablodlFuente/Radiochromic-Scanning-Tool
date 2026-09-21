@@ -57,32 +57,16 @@ class RCAnalyzer(tk.Tk):
         
         logger.info("RCAnalyzer initialization complete")
         
-        # Check for updates on startup if enabled (after mainloop starts)
-        if self.app_config.get("check_updates_on_startup", True):
+        # Check, download and install published releases on startup when enabled.
+        if self.app_config.get("automatic_updates", True):
             self.after(1500, self._check_updates_on_startup)
     
     def _check_updates_on_startup(self):
-        """Check for updates in background and notify user if available."""
-        def check_updates():
-            try:
-                checker = UpdateChecker()
-                result = checker.check_for_updates()
-                
-                if result.get('success') and result.get('has_updates'):
-                    latest_version = result.get('latest_version', '')
-                    # Show notification on main thread
-                    self.after(0, lambda: self._show_update_notification(latest_version))
-            except Exception as e:
-                logger.warning(f"Error checking for updates on startup: {e}")
-        
-        # Run in background thread to not block UI
-        thread = threading.Thread(target=check_updates, daemon=True)
-        thread.start()
-    
-    def _show_update_notification(self, latest_version):
-        """Show update notification dialog."""
-        msg = f"Version {latest_version} is available.\n\nGo to Help → Check for Updates to update."
-        messagebox.showinfo("Update Available", msg, parent=self)
+        """Check and apply a published release without blocking the interface."""
+        try:
+            self.main_window.check_for_updates(automatic=True)
+        except Exception:
+            logger.warning("Could not start the automatic update check", exc_info=True)
 
     def report_callback_exception(self, exception_type, exception, traceback):
         """Make uncaught Tk callback failures visible while preserving full logs."""

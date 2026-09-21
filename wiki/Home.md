@@ -4,12 +4,12 @@ Desktop software for radiochromic-film image analysis, scanner flat-field correc
 
 ## Documentation map
 
-- [Mathematical model and uncertainty](MATHEMATICAL_MODEL.md)
-- [Calibration and analysis workflows](WORKFLOWS.md)
-- [Data formats, configuration and traceability](DATA_FORMATS.md)
-- [Architecture and verification](ARCHITECTURE.md)
-- [Releases and packaging](RELEASES.md)
-- [Plugin development guide](PLUGIN_DEVELOPMENT_GUIDE.md)
+- [Mathematical model and uncertainty](MATHEMATICAL_MODEL)
+- [Calibration and analysis workflows](WORKFLOWS)
+- [Data formats, configuration and traceability](DATA_FORMATS)
+- [Architecture and verification](ARCHITECTURE)
+- [Releases and packaging](RELEASES)
+- [Plugin development guide](PLUGIN_DEVELOPMENT_GUIDE)
 
 ## Scope
 

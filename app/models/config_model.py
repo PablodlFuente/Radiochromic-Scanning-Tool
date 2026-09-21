@@ -30,7 +30,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "uncertainty_estimation_method": "dersimonian_laird",
     "calibration_folder": "default",
     "calibration_conversion_method": "auto",
-    "check_updates_on_startup": True,
+    "automatic_updates": True,
     "notebook_tab_order": [],
     "allow_flat_field_resize": False,
     "auto_measurement_detection_mode": "Circles and squares",

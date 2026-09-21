@@ -61,7 +61,7 @@ Multi-channel vectors are serialized inside quoted CSV fields. `expanded_uncerta
 | `allow_flat_field_resize` | `false` | Explicitly allows flat interpolation to another geometry. |
 | `use_multithreading` | `true` | Enables compatible background work. |
 | `num_threads` | available CPUs | Worker count. |
-| `check_updates_on_startup` | `true` | Checks for updates after startup. |
+| `automatic_updates` | `true` | Checks published releases at startup and installs a newer release automatically. |
 
 ## Image precision
 

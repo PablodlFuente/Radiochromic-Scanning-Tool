@@ -34,6 +34,10 @@ class ConfigManager:
                 
                 merged = deepcopy(self.default_config)
                 merged.update(config)
+                if "automatic_updates" not in config and "check_updates_on_startup" in config:
+                    # Preserve an explicit choice made in a configuration from an
+                    # earlier release while moving to the stronger update policy.
+                    merged["automatic_updates"] = bool(config["check_updates_on_startup"])
                 logger.info("Configuration loaded from file")
                 return merged
             

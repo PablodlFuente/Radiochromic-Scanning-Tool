@@ -41,7 +41,7 @@ class TkWorkflowTests(unittest.TestCase):
         completed = []
         root.report_callback_exception = lambda *exc: failures.append(str(exc[1]))
         config = copy.deepcopy(DEFAULT_CONFIG)
-        config.update(calibration_folder="__test_no_calibration__", check_updates_on_startup=False)
+        config.update(calibration_folder="__test_no_calibration__", automatic_updates=False)
         window = None
         with tempfile.TemporaryDirectory() as directory, patch(
             "app.utils.config_manager.ConfigManager.save_config", return_value=True
@@ -54,7 +54,7 @@ class TkWorkflowTests(unittest.TestCase):
                 root.main_window = window
                 self.assertEqual(
                     window.about_footer.cget("text"),
-                    "Version 2.0.1 · Pablo de la Fuente Fernández",
+                    "Version 2.0.2 · Pablo de la Fuente Fernández",
                 )
                 with patch("app.ui.main_window.webbrowser.open_new_tab") as open_browser:
                     window.open_local_documentation()

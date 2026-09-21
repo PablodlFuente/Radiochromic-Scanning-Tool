@@ -31,6 +31,13 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {"negative_mode": True})
             self.assertEqual(list(Path(directory).glob("rc_config_*.json")), [])
 
+    def test_legacy_update_preference_is_migrated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(json.dumps({"check_updates_on_startup": False}), encoding="utf-8")
+            config = ConfigManager(path).load_config()
+        self.assertFalse(config["automatic_updates"])
+
 
 class MetadataSafetyTests(unittest.TestCase):
     def test_windows_path_is_passed_via_environment_not_interpolated(self):

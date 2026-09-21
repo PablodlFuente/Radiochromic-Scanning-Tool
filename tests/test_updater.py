@@ -1,7 +1,9 @@
 import subprocess
 import tempfile
 import unittest
+from io import BytesIO
 from pathlib import Path
+from unittest.mock import patch
 
 from app.utils.updater import UpdateChecker
 
@@ -108,6 +110,37 @@ class UpdateCheckerReleaseTests(unittest.TestCase):
     def test_installer_selection_does_not_accept_an_ambiguous_executable(self):
         release = {"assets": [{"name": "RadiochromicFilmAnalyzer.exe"}]}
         self.assertIsNone(UpdateChecker._select_installer_asset(release))
+
+    def test_installer_download_reports_byte_progress(self):
+        payload = b"verified release installer"
+        release = {"assets": [{
+            "name": "RadiochromicFilmAnalyzer-Setup.exe",
+            "browser_download_url": "https://example.invalid/installer",
+            "size": len(payload),
+        }]}
+
+        class Response(BytesIO):
+            headers = {"Content-Length": str(len(payload))}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                self.close()
+
+        updates = []
+        checker = UpdateChecker(current_version="2.0.1")
+        with patch("app.utils.updater.urllib.request.urlopen", return_value=Response(payload)):
+            result = checker.download_release_installer(
+                release, progress_callback=lambda downloaded, total: updates.append((downloaded, total))
+            )
+        try:
+            self.assertTrue(result["success"], result)
+            self.assertEqual(updates[0], (0, len(payload)))
+            self.assertEqual(updates[-1], (len(payload), len(payload)))
+        finally:
+            if result.get("path"):
+                Path(result["path"]).unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
