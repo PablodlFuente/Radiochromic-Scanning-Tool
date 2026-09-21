@@ -1,32 +1,39 @@
-# Arquitectura y verificación
+# Architecture and verification
 
-## Responsabilidades
+## Responsibilities
 
-| Componente | Responsabilidad |
+| Component | Responsibility |
 |---|---|
-| `main.py`, `app/rc_analyzer.py` | Arranque, registro y ciclo de vida de la aplicación Tk. |
-| `app/ui/` | Ventanas, eventos, presentación y coordinación de acciones del usuario. |
-| `app/core/image_processor.py` | Estado de imagen, aplicación de correcciones, ROI y representación. |
-| `app/core/dosimetry.py` | Modelo racional, dominio, propagación paramétrica y combinación RGB. |
-| `app/core/calibration_manifest.py` | Identidad de artefactos, procedencia y verificación. |
-| `app/calibration/` | Asistente, extracción de puntos y ajuste dosis–respuesta. |
-| `app/utils/` | Lectura y escritura, configuración, archivos y actualización Git. |
-| `app/plugins/` | Descubrimiento, activación, notificaciones y cierre de complementos. |
-| `custom_plugins/auto_measurements/` | Detección, resultados por archivo, CTR y exportación. |
-| `custom_plugins/analysis_tools/` | Centroides, isodosis y regresión. |
-| `tests/` | Pruebas numéricas, regresiones e integración. |
+| `main.py`, `app/rc_analyzer.py` | Application startup, logging and Tk lifecycle. |
+| `app/ui/` | Windows, user events, presentation and workflow coordination. |
+| `app/core/image_processor.py` | Image state, corrections, ROI measurements and display preparation. |
+| `app/core/dosimetry.py` | Rational response, domain checks, covariance propagation and RGB combination. |
+| `app/core/spline_calibration.py` | Monotonic cubic knots, inversion and durable spline storage. |
+| `app/core/calibration_manifest.py` | Artifact identity, provenance and integrity verification. |
+| `app/calibration/` | Calibration wizard, ROI extraction and dose-response modelling. |
+| `app/utils/` | Image I/O, configuration, files and Git updating. |
+| `app/plugins/` | Plugin discovery, activation, notifications and shutdown. |
+| `custom_plugins/auto_measurements/` | Detection, per-file results, CTR processing and export. |
+| `custom_plugins/analysis_tools/` | Centroids, isodoses and weighted regression. |
+| `tests/` | Numerical, regression and integration verification. |
 
-El flujo de análisis es imagen original → flat-field opcional → dosis opcional → ROI → combinación de canales → CTR opcional → exportación. El binning pertenece únicamente a la representación.
+The analysis pipeline is:
 
-## Estado y concurrencia
+`original image → optional flat-field → optional dose conversion → ROI → channel combination → optional CTR → export`
 
-El procesador protege las operaciones sobre su estado con un bloqueo reentrante. Las solicitudes de carga llevan identificador y las respuestas obsoletas se descartan. El panel entrega resultados de trabajadores a Tk mediante una cola y comprueba la revisión del estado antes de mostrarlos. Al cargar otra imagen, los complementos invalidan sus resultados visibles antes de restaurar, cuando corresponda, la copia almacenada por archivo.
+Preview binning belongs only to display preparation. It does not alter analysis arrays or coordinates.
 
-Las medidas guardan su procedencia y los conjuntos de resultados por archivo se copian de forma profunda. La exportación no recalcula controles ni sustituye la procedencia histórica por la configuración activa. Cada procesador mantiene su propio directorio temporal.
+## State and concurrency
 
-## Estrategia de pruebas
+The image processor protects mutable operations with a reentrant lock. Image-load requests carry identifiers so stale completions cannot overwrite newer state. Worker results reach Tk through a queue, and display callbacks compare state revisions before committing results.
 
-Ejecute desde la raíz:
+Loading another image invalidates image-specific plugin results and overlays before any saved batch snapshot is restored. Measurements store their own provenance, and per-file result sets are deep-copied. Export never relabels previous results with the currently selected calibration.
+
+Interactive Matplotlib figures are embedded in Tk-owned windows. Unhandled Tk callback exceptions are written to the detailed log and shown in the graphical interface.
+
+## Verification strategy
+
+Run from the repository root:
 
 ```powershell
 python -m unittest discover -s tests -v
@@ -34,8 +41,10 @@ python -m compileall -q app custom_plugins tests main.py
 python -m pip check
 ```
 
-Las pruebas numéricas utilizan ejemplos analíticos, inversiones conocidas y transformaciones de unidades. Las pruebas de integración verifican archivos reales temporales, TIFF de 16 bits, manifiestos y repositorios Git aislados. La prueba Tk utiliza un bucle de eventos real, carga dos imágenes y verifica la invalidación del estado; se omite explícitamente si no existe una pantalla Tk disponible.
+Numerical tests use analytical examples, known inversions and unit transformations. Integration tests exercise temporary TIFF files, 16-bit storage, calibration manifests, atomic output and isolated Git repositories. The Tk smoke tests use a real event loop, sequentially load images and open a plot window. They are skipped explicitly when no Tk display is available.
 
-Los dobles de prueba permiten provocar fallos de procesamiento y probar la conservación del destino al exportar. No sustituyen la evaluación de interacción visual, estrés de concurrencia, memoria con imágenes grandes, GPU ni validación con películas y dosis de referencia independientes.
+Mocks trigger processing failures and output-replacement errors. They test workflow contracts, not experimental accuracy. The suite does not replace visual acceptance, large-image stress testing, GPU qualification or comparison against independent reference doses.
 
-La interfaz y algunos controladores de complementos concentran varias responsabilidades. Para ampliar funcionalidad conviene mantener el cálculo en funciones independientes de Tk y los resultados como datos explícitos, con pruebas en ese límite. La validación científica del sistema completo requiere el protocolo y las restricciones descritos en el [modelo matemático](MATHEMATICAL_MODEL.md).
+## Structural boundaries
+
+The directory structure separates numerical code, UI, calibration, utilities and plugins. Some UI controllers remain large and should not receive new numerical logic. New calculation features should be introduced as Tk-independent services with explicit data contracts and tests, then called by the controllers.

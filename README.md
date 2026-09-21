@@ -1,28 +1,29 @@
 # Radiochromic Scanning Tool
 
-Aplicación de escritorio para analizar imágenes de película radiocrómica, construir calibraciones dosis–respuesta, corregir la respuesta espacial del escáner y exportar medidas con incertidumbre y trazabilidad.
+Desktop software for radiochromic-film image analysis, scanner flat-field correction, dose-response calibration, uncertainty propagation and traceable result export.
 
 <p align="center">
-  <img src="images/main_interface.png" alt="Interfaz principal" width="700">
+  <img src="images/main_interface.png" alt="Main application interface" width="700">
 </p>
 
-## Funciones principales
+## Main features
 
-- Lectura TIFF conservando la profundidad de almacenamiento de 8 o 16 bits y rutas Unicode.
-- Corrección flat-field ligada a la geometría del escáner.
-- Calibración no lineal independiente para los canales R, G y B.
-- Medidas circulares, rectangulares y perfiles de línea.
-- Propagación de la covarianza completa de los parámetros de calibración.
-- Combinación RGB por varianza inversa, factor de Birge o DerSimonian–Laird.
-- Detección y medida automática de películas y regiones.
-- Sustracción de controles CTR locales o globales con covarianza.
-- Análisis de centroides, isodosis y regresión lineal ponderada.
-- Procesamiento de varios archivos y exportación CSV versionada.
-- Manifiestos SHA-256 para identificar y verificar cada calibración.
+- TIFF input with preservation of 8-bit or 16-bit storage depth and Unicode paths.
+- Scanner-coordinate flat-field correction.
+- Independent R, G and B dose-response calibration.
+- Shape-preserving cubic interpolation and rational-model conversion.
+- Circular, rectangular and line measurements.
+- Full rational-fit parameter covariance propagation.
+- RGB combination using inverse variance, Birge factor or DerSimonian-Laird.
+- Automatic film and region detection.
+- Local or global CTR subtraction with membership covariance.
+- Centroid, isodose and weighted linear-regression analysis.
+- Multi-file processing and versioned CSV export.
+- SHA-256 manifests for calibration identity and integrity.
 
-## Instalación
+## Installation
 
-Requiere Python 3.10 o posterior. En Windows, `tkinter` se incluye en la instalación estándar de Python.
+Python 3.10 or later is required. Standard Windows Python distributions include `tkinter`.
 
 ```powershell
 python -m venv .venv
@@ -31,39 +32,39 @@ python -m pip install -r requirements.txt
 python main.py
 ```
 
-La aceleración CUDA es opcional y requiere una compilación de OpenCV/CuPy compatible con el equipo. El procesamiento por CPU contiene toda la funcionalidad científica.
+CUDA acceleration is optional and requires compatible OpenCV/CuPy builds. All scientific functions are available on CPU.
 
-## Flujo recomendado
+## Recommended workflow
 
-1. Adquirir blancos y películas manteniendo resolución, orientación, profundidad de bits y protocolo de escaneo.
-2. Ejecutar `Tools → Calibration Wizard` para generar el flat-field y el ajuste dosis–respuesta.
-3. Seleccionar la carpeta de calibración en la configuración.
-4. Abrir las imágenes y activar la corrección flat-field y/o la conversión a dosis.
-5. Medir ROIs manualmente o usar `AutoMeasurements`.
-6. Revisar las regiones extrapoladas o no válidas y exportar el CSV.
+1. Acquire blank scans, calibration films and samples with the same resolution, orientation, bit depth and scanner protocol.
+2. Open `Tools → Calibration Wizard` and generate the flat-field and dose-response models.
+3. Select the calibration folder and conversion method in Settings.
+4. Load images and enable flat-field correction and/or dose conversion.
+5. Measure regions manually or with AutoMeasurements.
+6. Review invalid or extrapolated regions and export the versioned CSV.
 
-La extrapolación está desactivada por defecto. Un flat-field con dimensiones diferentes a la imagen se rechaza salvo que se habilite expresamente su redimensionado.
+`Auto` dose conversion uses the shape-preserving cubic model inside the calibrated interval and the rational fit outside it. `Spline` never extrapolates. `Fit` uses the rational model over its physical branch.
 
-## Documentación técnica
+## Technical documentation
 
-- [Modelo matemático e incertidumbre](docs/MATHEMATICAL_MODEL.md)
-- [Flujos de calibración y análisis](docs/WORKFLOWS.md)
-- [Formatos, configuración y trazabilidad](docs/DATA_FORMATS.md)
-- [Arquitectura y verificación](docs/ARCHITECTURE.md)
+- [Mathematical model and uncertainty](docs/MATHEMATICAL_MODEL.md)
+- [Calibration and analysis workflows](docs/WORKFLOWS.md)
+- [Data formats, configuration and traceability](docs/DATA_FORMATS.md)
+- [Architecture and verification](docs/ARCHITECTURE.md)
 
-## Pruebas
+## Tests
 
 ```powershell
 python -m unittest discover -s tests -v
 python -m compileall -q app custom_plugins tests main.py
 ```
 
-La integración continua ejecuta estas comprobaciones en Windows con Python 3.10 y 3.12.
+Continuous integration runs these checks on Windows with Python 3.10 and 3.12.
 
-## Alcance científico
+## Scientific scope
 
-El programa conserva los valores numéricos de adquisición y documenta la propagación interna de incertidumbre. La validez metrológica final depende además del protocolo experimental: estabilidad del escáner, orientación y posición de las películas, tiempo postirradiación, lote, dosis de referencia y diseño de la calibración. Los resultados deben validarse para el sistema de medida concreto.
+The program preserves acquisition values and documents its internal uncertainty propagation. Final metrological validity also depends on scanner stability, film orientation and position, post-irradiation time, film lot, reference dose and calibration design. Results must be validated for the specific measurement system and intended use.
 
-## Licencia
+## License
 
-GNU General Public License v3.0. Consulte [LICENSE](LICENSE).
+GNU General Public License v3.0. See [LICENSE](LICENSE).

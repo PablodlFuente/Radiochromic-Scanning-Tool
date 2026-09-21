@@ -1,103 +1,91 @@
-# Flujos de calibración y análisis
+# Calibration and analysis workflows
 
-## Preparación de las imágenes
+## Image acquisition
 
-Use un protocolo de escaneo constante para blancos, películas de calibración y muestras:
+Use one scanner protocol for blank scans, calibration films and samples:
 
-- misma resolución, profundidad de bits y modo de color;
-- misma orientación y región del cristal del escáner;
-- condiciones de calentamiento y tiempo postirradiación definidos;
-- archivos TIFF sin conversión con pérdida.
+- identical resolution, storage depth and colour mode;
+- identical film orientation and scanner-bed region;
+- defined warm-up and post-irradiation timing;
+- lossless TIFF storage.
 
-El lector conserva el `dtype` almacenado. Una imagen oscura `uint16` se trata como 16 bits aunque su máximo observado sea bajo. Los nombres y rutas Unicode no se modifican.
+The reader preserves the stored dtype. A dark `uint16` image remains a 16-bit image even when its observed maximum is low.
 
-## Crear una calibración
+## Create a calibration
 
-Abra `Tools → Calibration Wizard` y seleccione una carpeta de calibración.
+Open `Tools → Calibration Wizard` and select a calibration directory.
 
-### 1. Uniformidad
+### Scanner uniformity
 
-1. Cargue uno o varios blancos obtenidos con el mismo protocolo.
-2. Revise media, desviación, extremos y mapa espacial por canal.
-3. Aplique la normalización para generar `field_flattening.npz`.
+1. Load one or more blank scans acquired with the same protocol.
+2. Review per-channel mean, standard deviation, extremes and spatial map.
+3. Apply normalization to create `field_flattening.npz`.
 
-Cuando se promedian varios blancos, se escribe también `master_flat.tif` en la carpeta de calibración. El archivo preserva 8 o 16 bits. Los blancos deben compartir geometría y tipo de almacenamiento y tener valores positivos y finitos. Puede ejecutarse un flujo exclusivo de uniformidad para actualizar el flat-field.
+All blanks must have the same geometry and dtype and contain finite positive values. Their average is saved as `master_flat.tif` in the calibration directory.
 
-### 2. Dosis–respuesta
+### Dose response
 
-1. Cargue los TIFF de calibración.
-2. Confirme la dosis asociada a cada imagen, incluido el punto de dosis cero si existe.
-3. Defina y mida las ROIs de cada película.
-4. Revise los puntos R, G y B y ejecute el ajuste no lineal.
-5. Guarde los resultados.
+1. Load the calibration TIFF files.
+2. Confirm the dose assigned to every image, including dose zero when measured.
+3. Define and measure the film ROIs.
+4. Review included and excluded R, G and B points.
+5. Open the fit window and inspect both the rational and spline views.
+6. Choose `Save Calibration` from either plot view to save both models.
 
-La carpeta contiene `calibration_data.csv`, `fit_parameters.csv` y, si se calculó, `field_flattening.npz`. `calibration_manifest.json` registra hashes, fuentes, intervalo de dosis, método, versión de Python, plataforma y commit.
+Saving writes the rational parameters and the exact spline knots. Input rows may be in any order. Repeated doses are averaged for the spline. A non-monotonic channel is rejected with an in-window diagnostic; review or exclude the responsible calibration points rather than silently forcing monotonicity.
 
-Los parámetros introducidos manualmente no disponen de una covarianza estimada por el ajuste. En ese caso la conversión puede calcular dosis, pero la contribución paramétrica a la incertidumbre queda no disponible.
+`Export Spline CSV` is optional and exists for inspection in other software. Dose conversion reconstructs the curve from `spline_calibration.npz`, not from sampled CSV points.
 
-## Aplicar calibración
+## Apply dose conversion
 
-1. Seleccione `calibration_folder` en Settings.
-2. Cargue la imagen.
-3. Active flat-field y calibración según el análisis.
+1. Select the calibration directory in Settings.
+2. Select a conversion method.
+3. Load the image.
+4. Enable flat-field and dose conversion as required.
 
-Antes de usar los artefactos, el programa verifica los hashes del manifiesto cuando existe. Una discrepancia bloquea el artefacto afectado. Una carpeta sin manifiesto se identifica como no verificada.
+| Method | Inside calibrated range | Outside calibrated range |
+|---|---|---|
+| `Auto` | Shape-preserving cubic interpolation | Rational fit, marked as extrapolated |
+| `Spline` | Shape-preserving cubic interpolation | Invalid (`NaN`) |
+| `Fit` | Rational fit | Rational fit, marked as extrapolated |
 
-El ajuste registra el flat-field con el que se construyó. Si ese flat cambia, debe realizarse un ajuste compatible. Una operación de corrección fallida deja la imagen en intensidad sin corregir, desactiva los indicadores correspondientes e informa del error.
+`Auto` is the default. A legacy calibration without a verified spline artifact falls back to `Fit` and displays a warning. Re-save that calibration to enable spline interpolation.
 
-Cada canal genera una matriz de dosis, una máscara de validez y una máscara de extrapolación. Con la configuración predeterminada, los valores fuera del intervalo calibrado no participan en las ROIs.
+The application verifies manifest hashes before using recorded artifacts. A dose model also records the flat-field used to create it. Replacing the flat requires a compatible dose calibration.
 
-## Medida manual
+Spline interpolation does not currently provide a parameter covariance model. Measurements made in `Spline` or `Auto` therefore report calibration uncertainty as unavailable instead of borrowing the rational-fit covariance for a potentially mixed ROI. This does not prevent dose calculation, but it prevents an unsupported uncertainty claim. Select `Fit` when rational-model covariance propagation is required.
 
-Seleccione una ROI circular, rectangular o de línea y sitúela sobre la imagen. El panel presenta por canal:
+## Manual measurements
 
-- media;
-- desviación espacial;
-- incertidumbre estándar;
-- número de píxeles válidos;
-- media combinada RGB e incertidumbre, si procede.
+Select a circular, rectangular or line ROI. The panel reports channel means, spatial standard deviations, standard uncertainties, valid-pixel counts and the combined estimate when available.
 
-Los histogramas conservan como máximo 1000 muestras elegidas de forma determinista. Este muestreo afecta a la visualización, no a los estadísticos de la ROI.
-
-`Preview binning` modifica exclusivamente la representación. Las coordenadas, el radio, los estadísticos y el análisis dosimétrico utilizan la resolución original. Los círculos de AutoMeasurements tienen geometría circular con independencia de la herramienta manual seleccionada.
+Histogram display uses at most 1000 deterministic samples; ROI statistics use all valid pixels. Preview binning changes only the displayed image. Measurements and coordinates remain at source resolution.
 
 ## AutoMeasurements
 
-1. Añada uno o varios archivos TIFF.
-2. Ajuste, si es necesario, los umbrales de película y círculos.
-3. Ejecute la detección.
-4. Revise contornos y medidas antes de exportar.
+1. Add one or more TIFF files.
+2. Adjust film and circle detection thresholds if required.
+3. Run detection.
+4. Inspect contours and measurements before export.
 
-Los círculos detectados se agrupan por filas usando su coordenada Y y se ordenan por X dentro de cada fila. El nombre `C{fila}{columna}` expresa esa posición; los círculos manuales usan el sufijo `M`. Una región sin medida numérica válida no se almacena como una medida cero.
+Detected circles are grouped into rows by Y coordinate and ordered by X. `C{row}{column}` expresses that position; manually added circles use suffix `M`. Completely invalid regions are not stored as zero-dose measurements.
 
-Cada archivo mantiene su conjunto de películas, círculos, resultados y controles durante la navegación del lote.
+Right-click a measured circle to open its Tk-owned 3D dose or intensity window. Image-specific results and overlays are cleared before another image is displayed; batch navigation then restores the snapshot belonging to the requested file.
 
-## Controles CTR
+## CTR controls
 
-Marque uno o varios círculos como CTR para corregir las medidas de su película. Un CTR global se aplica a todas las películas de la imagen activa. La selección global se limpia al cargar otra imagen; los resultados guardados conservan el contexto del CTR aplicado. Los valores originales de precisión completa se conservan para que activar, desactivar o cambiar el control no acumule sustracciones.
+Mark one or more circles as CTR controls for their film. A global CTR applies to every film in the active image. Original full-precision values are retained, so enabling, disabling or changing a control never accumulates subtraction.
 
-El programa valida valor e incertidumbre antes de aplicar la corrección. Consulte las ecuaciones en [Modelo matemático e incertidumbre](MATHEMATICAL_MODEL.md#sustracción-de-controles-ctr).
+Invalid controls are excluded. When a measured circle belongs to the control mean, its covariance with that mean is included. A single control subtracted from itself is exactly $0\pm0$.
 
 ## Analysis Tools
 
-El complemento de análisis ofrece:
+The plugin provides geometric-versus-dose centroid comparison, four centroid methods, isodose contours, introduced-value association and weighted linear regression. `Plot Dose vs Value` opens an application-owned Tk figure rather than relying on Matplotlib's global show loop.
 
-- comparación entre centro geométrico y centro de dosis;
-- cuatro métodos de centroide;
-- contornos de isodosis dentro de las ROIs;
-- asociación de valores introducidos;
-- regresión ponderada con intercepto libre o forzada al origen.
+## Export
 
-Revise visualmente los centroides y la geometría de cada ROI. La incertidumbre de la regresión sólo se informa cuando los datos identifican el modelo.
+Use `Export CSV` after reviewing the measurements. Numerical values are exported without TreeView rounding. Date, calibration identity, units, method and CTR context come from each measurement's captured provenance.
 
-## Exportar
+## Updates and plugins
 
-Use `Export CSV` al terminar la revisión. El exportador procesa los valores numéricos sin redondeo intermedio, rechaza campos científicos no numéricos e incorpora identificador y estado de integridad de la calibración. La presentación redondeada del TreeView no se usa como fuente si existe el valor numérico.
-
-La fecha y el método se registran al realizar cada medida. Seleccione la fecha manual antes de medir; una fecha manual actúa como entrada del usuario, mientras que la fecha de metadatos depende del archivo. Para modificar la procedencia de un resultado, vuelva a medirlo. Consulte el esquema CSV y sus estados en [Formatos](DATA_FORMATS.md).
-
-## Actualizaciones y plugins
-
-Los plugins se pueden activar o desactivar desde la interfaz. Al desactivarlos se ejecuta su función de cierre para eliminar overlays y referencias.
-
-La actualización integrada sólo acepta avance rápido de Git. Si el árbol contiene cambios, los guarda temporalmente incluyendo archivos no seguidos, actualiza y los restaura. Un conflicto conserva el guardado temporal para recuperación manual.
+Disabling a plugin runs its teardown function and removes overlays and references. The integrated updater accepts fast-forward Git updates only. Local tracked and untracked changes are temporarily stored and restored; a conflict retains the recovery material.
