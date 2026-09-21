@@ -231,6 +231,33 @@ class ExportWorkflowTests(unittest.TestCase):
 
 
 class CalibrationPersistenceTests(unittest.TestCase):
+    def test_closing_modified_calibration_prompts_before_discarding(self):
+        app = CalibrationApp.__new__(CalibrationApp)
+        app._fit_dirty = True
+        app.fit_window = SimpleNamespace(destroy=Mock())
+        app._apply_fit = Mock()
+        with patch(
+            "app.calibration.calibration_app.messagebox.askyesnocancel",
+            return_value=False,
+        ) as prompt:
+            app._close_fit_window()
+        prompt.assert_called_once()
+        app._apply_fit.assert_not_called()
+        app.fit_window.destroy.assert_called_once()
+
+    def test_closing_modified_calibration_can_save(self):
+        app = CalibrationApp.__new__(CalibrationApp)
+        app._fit_dirty = True
+        app.fit_window = SimpleNamespace(destroy=Mock())
+        app._apply_fit = Mock()
+        with patch(
+            "app.calibration.calibration_app.messagebox.askyesnocancel",
+            return_value=True,
+        ):
+            app._close_fit_window()
+        app._apply_fit.assert_called_once()
+        app.fit_window.destroy.assert_not_called()
+
     def test_fit_point_selection_requires_a_near_screen_click(self):
         app = CalibrationApp.__new__(CalibrationApp)
         figure = Figure()
