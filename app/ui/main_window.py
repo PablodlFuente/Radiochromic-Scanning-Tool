@@ -443,6 +443,7 @@ class MainWindow:
             
             # Update UI
             self.update_status(f"Loaded image: {os.path.basename(file_path)}")
+            self.measurement_panel.update_size_limits()
             
             # Add to recent files
             self.file_manager.add_recent_file(file_path)
@@ -1179,7 +1180,7 @@ class MainWindow:
             calibration_window.geometry("1200x800")
             calibration_app = CalibrationApp(
                 calibration_window, data_dir=calibration_dir,
-                load_existing=True, open_fit=True,
+                load_existing=True, open_fit=True, fit_only=True,
             )
             calibration_window.calibration_app = calibration_app
         except Exception as exc:

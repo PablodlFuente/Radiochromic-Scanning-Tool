@@ -95,7 +95,7 @@ class MeasurementPanel:
         self.size_spinbox = ttk.Spinbox(
             self.single_size_frame, 
             from_=5, 
-            to=500, 
+            to=1_000_000,
             textvariable=self.size_var, 
             width=10,
             command=self._on_size_change
@@ -119,7 +119,7 @@ class MeasurementPanel:
         self.size_x_spinbox = ttk.Spinbox(
             self.rect_size_frame,
             from_=5,
-            to=500,
+            to=1_000_000,
             textvariable=self.size_x_var,
             width=10,
             command=self._on_size_change
@@ -137,7 +137,7 @@ class MeasurementPanel:
         self.size_y_spinbox = ttk.Spinbox(
             self.rect_size_frame,
             from_=5,
-            to=500,
+            to=1_000_000,
             textvariable=self.size_y_var,
             width=10,
             command=self._on_size_change
@@ -492,11 +492,12 @@ class MeasurementPanel:
     def _on_size_change(self):
         """Handle size change."""
         shape = self.shape_var.get()
+        maximum = self._maximum_measurement_size()
         
         try:
             if shape == "circular":
                 size = self.size_var.get()
-                if size < 5 or size > 500:  # Validate range
+                if size < 5 or size > maximum:
                     return
                 self.image_processor.set_measurement_size(size)
                 logger.debug(f"Circular measurement size changed to {size}")
@@ -504,7 +505,7 @@ class MeasurementPanel:
                 # For rectangular, we need to store both width and height
                 width = self.size_x_var.get()
                 height = self.size_y_var.get()
-                if width < 5 or width > 500 or height < 5 or height > 500:  # Validate range
+                if width < 5 or width > maximum or height < 5 or height > maximum:
                     return
                 # Store as tuple in image processor
                 self.image_processor.measurement_size_rect = (width, height)
@@ -582,8 +583,7 @@ class MeasurementPanel:
         # Calculate new size
         new_size = self.size_var.get() + (5 if delta > 0 else -5)
         
-        # Limit between 5 and 500
-        if 5 <= new_size <= 500:
+        if 5 <= new_size <= self._maximum_measurement_size():
             self.size_var.set(new_size)
             self._on_size_change()  # This will now redraw the measurement area
         
@@ -592,6 +592,27 @@ class MeasurementPanel:
     
         # Prevent event from propagating
         return "break"
+
+    def _maximum_measurement_size(self):
+        """Return the largest side of the currently loaded source image."""
+        image = getattr(self.image_processor, "original_image", None)
+        if image is None:
+            image = getattr(self.image_processor, "current_image", None)
+        if image is None or np.ndim(image) < 2:
+            return 1_000_000
+        return max(5, int(max(image.shape[:2])))
+
+    def update_size_limits(self):
+        """Synchronize size controls with the dimensions of the loaded image."""
+        maximum = self._maximum_measurement_size()
+        for spinbox in (self.size_spinbox, self.size_x_spinbox, self.size_y_spinbox):
+            spinbox.configure(to=maximum)
+        for variable in (self.size_var, self.size_x_var, self.size_y_var):
+            try:
+                if variable.get() > maximum:
+                    variable.set(maximum)
+            except tk.TclError:
+                pass
     
     def update_results(self, results):
         """Update the measurement results display."""

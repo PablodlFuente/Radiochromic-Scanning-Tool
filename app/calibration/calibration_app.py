@@ -28,8 +28,9 @@ from app.core.spline_calibration import (
 logger = logging.getLogger(__name__)
 
 class CalibrationApp:
-    def __init__(self, root, data_dir=None, *, load_existing=False, open_fit=False):
+    def __init__(self, root, data_dir=None, *, load_existing=False, open_fit=False, fit_only=False):
         self.root = root
+        self.fit_only = bool(fit_only)
         self.root.title("Radiochromic Film Calibration")
         self.root.geometry("1200x800")
         
@@ -167,6 +168,9 @@ class CalibrationApp:
         if load_existing:
             self._load_existing_calibration_data()
             if open_fit and self.image_files:
+                if self.fit_only:
+                    self.image_frame.pack_forget()
+                    self.list_frame.pack_forget()
                 self.root.after_idle(self.open_fit_window)
     
     def _load_field_flattening(self):
@@ -1196,9 +1200,10 @@ class CalibrationApp:
             self.fit_window.lift()
             return
 
-        self.fit_window = tk.Toplevel(self.root)
+        self.fit_window = self.root if self.fit_only else tk.Toplevel(self.root)
         self.fit_window.title("Fit Calibration Data")
         self.fit_window.geometry("1000x750")
+        self._fit_dirty = False
 
         # ----- PLOT -----
         import matplotlib.pyplot as plt
@@ -1259,10 +1264,8 @@ class CalibrationApp:
         # ----- BUTTONS -----
         btn_frame = tk.Frame(self.fit_window)
         btn_frame.pack(fill=tk.X, pady=5)
-        tk.Button(btn_frame, text="Auto Fit", command=self._auto_fit).pack(side=tk.LEFT, padx=10)
         tk.Button(btn_frame, text="Restore All Excluded Points", command=self._restore_all_excluded_points).pack(side=tk.LEFT, padx=5)
         tk.Button(btn_frame, text="Save Calibration", command=self._apply_fit).pack(side=tk.RIGHT, padx=10)
-        tk.Button(controls_frame, text="Export Spline CSV", command=self._save_spline_csv).pack(side=tk.RIGHT, padx=5)
 
         # prepare results dict before plotting
         self.latest_fit_results = {}
@@ -1270,21 +1273,35 @@ class CalibrationApp:
 
         self.fit_fig.canvas.mpl_connect('button_press_event', self._on_fit_click)
         self.fit_fig.canvas.mpl_connect('motion_notify_event', self._on_fit_motion)
+        self.fit_window.protocol("WM_DELETE_WINDOW", self._close_fit_window)
 
         self._update_fit_plot()
         self._manual_override.clear() # clear manual overrides when opening fit window
 
         self.fit_canvas.draw()
 
-    def _auto_fit(self):
-        """Perform automatic fitting and update plot."""
-        self._manual_override.clear()
-        self._update_fit_plot()
-
     def _restore_all_excluded_points(self):
         """Include every recorded point again in both calibration models."""
+        if not self.excluded_points:
+            return
         self.excluded_points.clear()
+        self._fit_dirty = True
         self._update_fit_plot()
+
+    def _close_fit_window(self):
+        """Confirm unsaved calibration edits before closing the fit editor."""
+        if getattr(self, "_fit_dirty", False):
+            answer = messagebox.askyesnocancel(
+                "Unsaved Calibration",
+                "The calibration has unsaved changes. Save them before closing?",
+                parent=self.fit_window,
+            )
+            if answer is None:
+                return
+            if answer:
+                self._apply_fit()
+                return
+        self.fit_window.destroy()
 
     def _set_fit_status(self, message):
         """Display fitting diagnostics in the calibration window and record details."""
@@ -1386,6 +1403,7 @@ class CalibrationApp:
                 f"Rational fit and spline calibration saved in {self.data_dir.resolve()}\\n"
                 f"Calibration bit depth: {self.calibration_bit_depth}-bit",
             )
+            self._fit_dirty = False
             self.fit_window.destroy()
         except Exception as e:
             if 'temporary_name' in locals() and os.path.exists(temporary_name):
@@ -1675,6 +1693,7 @@ class CalibrationApp:
             self.excluded_points.remove(key)
         else:
             self.excluded_points.add(key)
+        self._fit_dirty = True
         self._update_fit_plot()
 
     def _nearest_fit_point(self, event, maximum_distance=12):
@@ -1728,34 +1747,8 @@ class CalibrationApp:
                         if ch in self._manual_override:
                             self._manual_override.pop(ch)
                     break
+        self._fit_dirty = True
         self._update_fit_plot()
-
-    def _save_spline_csv(self):
-        """Export sampled spline curves for inspection; conversion uses the saved knots."""
-        # Ensure plot up to date
-        self._update_fit_plot()
-
-        # Expect latest spline results stored
-        curves = []
-        for ch in ('R','G','B'):
-            res = self.latest_fit_results.get(f"Spline {ch}")
-            if not res or 'x' not in res:
-                messagebox.showerror("Save Spline", "Spline data not available. Run Auto Fit first.")
-                return
-            curves.append((res['x'], res['y']))
-
-        # transpose rows to columns
-        fname = str(self.data_dir / 'spline_points.csv')
-        try:
-            from app.utils.atomic_file import atomic_open
-            with atomic_open(fname, newline='', encoding='utf-8') as f:
-                w=csv.writer(f)
-                w.writerow(['DoseR','SplineR','DoseG','SplineG','DoseB','SplineB'])
-                for row in zip(curves[0][0], curves[0][1], curves[1][0], curves[1][1], curves[2][0], curves[2][1]):
-                    w.writerow(row)
-            messagebox.showinfo("Export Spline CSV", f"Spline points saved to {os.path.abspath(fname)}")
-        except Exception as e:
-            messagebox.showerror("Export Spline CSV", str(e))
 
     # -------- helper to crop white border -------- #
     def _crop_white_border(self, pil_img, thresh: int = 240):
