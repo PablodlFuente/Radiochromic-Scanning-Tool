@@ -10,9 +10,10 @@ import os
 import logging
 import datetime
 from app.rc_analyzer import RCAnalyzer
+from app.paths import PROJECT_ROOT
 
 # Configure logging: create one log file per run, keep in 'logs' directory, include timestamp in filename
-logs_dir = os.path.join(os.path.dirname(__file__), "logs")
+logs_dir = os.path.join(PROJECT_ROOT, "logs")
 os.makedirs(logs_dir, exist_ok=True)
 
 # Create timestamped log filename, e.g. rc_analyzer_20250614_193835.log

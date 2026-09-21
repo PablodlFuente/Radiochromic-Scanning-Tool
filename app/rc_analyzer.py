@@ -15,6 +15,7 @@ import threading
 from app.ui.main_window import MainWindow
 from app.utils.config_manager import ConfigManager
 from app.utils.updater import UpdateChecker
+from app.paths import PROJECT_ROOT
 
 logger = logging.getLogger(__name__)
 
@@ -62,9 +63,9 @@ class RCAnalyzer(tk.Tk):
                 result = checker.check_for_updates()
                 
                 if result.get('success') and result.get('has_updates'):
-                    commits_behind = result.get('commits_behind', 0)
+                    latest_version = result.get('latest_version', '')
                     # Show notification on main thread
-                    self.after(0, lambda: self._show_update_notification(commits_behind))
+                    self.after(0, lambda: self._show_update_notification(latest_version))
             except Exception as e:
                 logger.warning(f"Error checking for updates on startup: {e}")
         
@@ -72,9 +73,9 @@ class RCAnalyzer(tk.Tk):
         thread = threading.Thread(target=check_updates, daemon=True)
         thread.start()
     
-    def _show_update_notification(self, commits_behind):
+    def _show_update_notification(self, latest_version):
         """Show update notification dialog."""
-        msg = f"A new version is available!\n\n{commits_behind} update(s) available.\n\nGo to Help → Check for Updates to update."
+        msg = f"Version {latest_version} is available.\n\nGo to Help → Check for Updates to update."
         messagebox.showinfo("Update Available", msg, parent=self)
 
     def report_callback_exception(self, exception_type, exception, traceback):
@@ -94,7 +95,7 @@ class RCAnalyzer(tk.Tk):
         """Clean up log and temporary files."""
         try:
             # Clean up log files – keep only the most recent 10
-            logs_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs")
+            logs_dir = os.path.join(PROJECT_ROOT, "logs")
             if os.path.isdir(logs_dir):
                 log_files = sorted(glob.glob(os.path.join(logs_dir, "rc_analyzer_*.log")))
                 # Remove oldest logs while more than 10 remain

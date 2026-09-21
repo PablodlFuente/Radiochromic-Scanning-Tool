@@ -72,5 +72,39 @@ class UpdateCheckerGitTests(unittest.TestCase):
         self.assertEqual(self.run_git(self.local, "stash", "list"), "")
 
 
+class UpdateCheckerReleaseTests(unittest.TestCase):
+    def test_update_check_uses_published_release_version(self):
+        checker = UpdateChecker(current_version="2.0.0")
+        checker._request_json = lambda _url: {
+            "tag_name": "v2.1.0", "draft": False,
+            "html_url": "https://example.invalid/release", "assets": [],
+        }
+
+        result = checker.check_for_updates()
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result["has_updates"])
+        self.assertEqual(result["current_version"], "2.0.0")
+        self.assertEqual(result["latest_version"], "2.1.0")
+
+    def test_same_release_is_up_to_date(self):
+        checker = UpdateChecker(current_version="2.0.0")
+        checker._request_json = lambda _url: {
+            "tag_name": "2.0.0", "draft": False, "assets": [],
+        }
+
+        self.assertFalse(checker.check_for_updates()["has_updates"])
+
+    def test_executable_asset_selection_prefers_release_name(self):
+        release = {"assets": [
+            {"name": "helper.exe"},
+            {"name": "RadiochromicFilmAnalyzer.exe"},
+        ]}
+
+        selected = UpdateChecker._select_executable_asset(release)
+
+        self.assertEqual(selected["name"], "RadiochromicFilmAnalyzer.exe")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -11,28 +11,170 @@ import os
 import sys
 import subprocess
 import logging
+import hashlib
+import json
+import tempfile
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+from app.version import __version__
+from app.paths import PROJECT_ROOT
 
 logger = logging.getLogger(__name__)
 
 # Get application root directory
-APP_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+APP_DIR = os.fspath(PROJECT_ROOT)
+GITHUB_REPOSITORY = "PablodlFuente/Radiochromic-Scanning-Tool"
+LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 
 
 class UpdateChecker:
     """Handles checking and applying updates from GitHub."""
     
-    def __init__(self, app_dir=None):
+    def __init__(self, app_dir=None, current_version=None, release_api=None):
         """Initialize the update checker.
         
         Args:
             app_dir: The application root directory. Defaults to auto-detected.
         """
         self.app_dir = app_dir or APP_DIR
+        self.current_version = current_version or __version__
+        self.release_api = release_api or LATEST_RELEASE_API
         self.local_commit = None
         self.remote_commit = None
         self.commits_behind = 0
         self.has_updates = False
         self.error = None
+
+    @staticmethod
+    def _version_key(value):
+        """Return a comparable numeric key for conventional release tags."""
+        text = str(value or "").strip().lower().lstrip("v")
+        core = text.split("-", 1)[0].split("+", 1)[0]
+        try:
+            parts = tuple(int(part) for part in core.split("."))
+        except ValueError:
+            return ()
+        return parts + (0,) * (3 - len(parts))
+
+    def _request_json(self, url):
+        request = urllib.request.Request(
+            url,
+            headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": f"RadiochromicFilmAnalyzer/{self.current_version}",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+        )
+        with urllib.request.urlopen(request, timeout=20) as response:
+            return json.load(response)
+
+    def get_latest_release(self):
+        """Read the latest published release; commits are intentionally ignored."""
+        try:
+            release = self._request_json(self.release_api)
+            if release.get("draft"):
+                raise ValueError("GitHub returned a draft instead of a published release")
+            tag = str(release.get("tag_name", "")).strip()
+            if not self._version_key(tag):
+                raise ValueError("The latest release has no valid version tag")
+            return release, None
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return None, "No published release is available"
+            return None, f"GitHub release request failed (HTTP {exc.code})"
+        except (urllib.error.URLError, TimeoutError) as exc:
+            return None, f"Could not contact GitHub Releases: {exc}"
+        except Exception as exc:
+            logger.error("Could not read the latest release", exc_info=True)
+            return None, str(exc)
+
+    @staticmethod
+    def _select_executable_asset(release):
+        assets = release.get("assets", [])
+        preferred = [
+            asset for asset in assets
+            if str(asset.get("name", "")).lower() == "radiochromicfilmanalyzer.exe"
+        ]
+        candidates = preferred or [
+            asset for asset in assets
+            if str(asset.get("name", "")).lower().endswith(".exe")
+        ]
+        return candidates[0] if len(candidates) == 1 else None
+
+    def download_release_executable(self, release):
+        """Download and verify the executable asset from a published release."""
+        asset = self._select_executable_asset(release)
+        if asset is None:
+            return {"success": False, "error": "The release has no unambiguous Windows executable asset"}
+        url = asset.get("browser_download_url")
+        expected_size = int(asset.get("size") or 0)
+        if not url:
+            return {"success": False, "error": "The executable asset has no download URL"}
+        destination_dir = Path(tempfile.gettempdir()) / "RadiochromicFilmAnalyzerUpdate"
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        destination = destination_dir / str(asset["name"])
+        request = urllib.request.Request(
+            url, headers={"User-Agent": f"RadiochromicFilmAnalyzer/{self.current_version}"}
+        )
+        try:
+            digest = hashlib.sha256()
+            byte_count = 0
+            with urllib.request.urlopen(request, timeout=120) as response, destination.open("wb") as output:
+                while True:
+                    block = response.read(1024 * 1024)
+                    if not block:
+                        break
+                    output.write(block)
+                    digest.update(block)
+                    byte_count += len(block)
+            if expected_size and byte_count != expected_size:
+                destination.unlink(missing_ok=True)
+                return {"success": False, "error": "Downloaded executable size does not match the release asset"}
+            declared_digest = str(asset.get("digest") or "")
+            if declared_digest.startswith("sha256:") and digest.hexdigest() != declared_digest[7:]:
+                destination.unlink(missing_ok=True)
+                return {"success": False, "error": "Downloaded executable failed SHA-256 verification"}
+            return {"success": True, "path": str(destination), "asset": asset, "error": None}
+        except Exception as exc:
+            destination.unlink(missing_ok=True)
+            logger.error("Release download failed", exc_info=True)
+            return {"success": False, "error": str(exc)}
+
+    def prepare_executable_replacement(self, downloaded_path):
+        """Schedule replacement of a frozen executable after this process exits."""
+        if not getattr(sys, "frozen", False):
+            return {
+                "success": False,
+                "error": "Automatic executable replacement is only available in the packaged application",
+            }
+        current_executable = Path(sys.executable).resolve()
+        downloaded = Path(downloaded_path).resolve()
+        helper = downloaded.parent / "apply_radiochromic_update.cmd"
+        helper.write_text(
+            "@echo off\n"
+            "setlocal\n"
+            f"set \"TARGET={current_executable}\"\n"
+            f"set \"SOURCE={downloaded}\"\n"
+            f"set \"APP_PID={os.getpid()}\"\n"
+            ":wait_for_exit\n"
+            "tasklist /FI \"PID eq %APP_PID%\" 2>NUL | find \"%APP_PID%\" >NUL\n"
+            "if not errorlevel 1 (timeout /t 1 /nobreak >NUL & goto wait_for_exit)\n"
+            "copy /Y \"%SOURCE%\" \"%TARGET%\" >NUL\n"
+            "if errorlevel 1 exit /b 1\n"
+            "start \"\" \"%TARGET%\"\n"
+            "del \"%SOURCE%\"\n"
+            "del \"%~f0\"\n",
+            encoding="utf-8",
+        )
+        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        subprocess.Popen(
+            ["cmd.exe", "/c", str(helper)],
+            cwd=str(downloaded.parent),
+            creationflags=creation_flags,
+        )
+        return {"success": True, "error": None}
     
     def is_git_available(self) -> bool:
         """Check if git is installed and available."""
@@ -152,7 +294,7 @@ class UpdateChecker:
         return 0
     
     def check_for_updates(self, branch="master") -> dict:
-        """Check for available updates.
+        """Check the latest published GitHub Release, never branch commits.
         
         Args:
             branch: The remote branch to check against.
@@ -169,42 +311,19 @@ class UpdateChecker:
             }
         """
         self.error = None
-        
-        # Check prerequisites
-        if not self.is_git_available():
-            return {
-                'success': False,
-                'has_updates': False,
-                'error': "Git is not installed or not in PATH"
-            }
-        
-        if not self.is_git_repository():
-            return {
-                'success': False,
-                'has_updates': False,
-                'error': "Application directory is not a git repository"
-            }
-        
-        # Fetch latest from remote
-        if not self.fetch_updates():
-            return {
-                'success': False,
-                'has_updates': False,
-                'error': self.error or "Failed to fetch updates"
-            }
-        
-        # Get commit information
-        self.get_local_commit()
-        self.get_remote_commit(branch)
-        self.count_commits_behind(branch)
-        
+        release, error = self.get_latest_release()
+        if release is None:
+            return {"success": False, "has_updates": False, "error": error}
+        latest_version = str(release["tag_name"]).lstrip("v")
+        has_updates = self._version_key(latest_version) > self._version_key(self.current_version)
         return {
-            'success': True,
-            'has_updates': self.has_updates,
-            'local_commit': self.local_commit[:8] if self.local_commit else None,
-            'remote_commit': self.remote_commit[:8] if self.remote_commit else None,
-            'commits_behind': self.commits_behind,
-            'error': None
+            "success": True,
+            "has_updates": has_updates,
+            "current_version": self.current_version,
+            "latest_version": latest_version,
+            "release_url": release.get("html_url", ""),
+            "release": release,
+            "error": None,
         }
     
     def has_local_changes(self) -> bool:

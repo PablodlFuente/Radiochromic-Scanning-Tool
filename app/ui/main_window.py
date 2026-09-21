@@ -9,6 +9,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import logging
 import os
+import sys
 import threading
 from app.ui.measurement_panel import MeasurementPanel
 from app.ui.image_settings_panel import ImageSettingsPanel
@@ -574,7 +575,7 @@ class MainWindow:
         ).pack(anchor=tk.W, pady=(10, 5))
         
         # Get available calibration folders
-        calibration_base_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "calibration_data")
+        calibration_base_dir = os.fspath(CALIBRATION_ROOT)
         calibration_folders = ["default"]  # Default uses calibration_data root
         
         try:
@@ -1548,13 +1549,14 @@ class MainWindow:
     
     def show_about(self):
         """Show the about dialog."""
+        from app.version import __version__
         messagebox.showinfo(
             "About Radiochromic Film Analyzer",
             "Radiochromic Film Analyzer\n\n"
             "A tool for analyzing radiochromic films and calculating dose.\n\n"
             "Created by Pablo de la Fuente Fernández\n"
             "Licensed under the GNU GPL v3\n\n"
-            "Version 1.0.0\n\n"
+            f"Version {__version__}\n\n"
             "Tester: Paula Martinez Bononad"
         )
     
@@ -1623,18 +1625,20 @@ class MainWindow:
                     self.parent.after(0, lambda: append_status(f"❌ Error: {result['error']}"))
                     return
                 
-                local_commit = result['local_commit']
-                remote_commit = result['remote_commit']
-                commits_behind = result['commits_behind']
-                
-                self.parent.after(0, lambda: append_status(f"Local version: {local_commit}"))
-                self.parent.after(0, lambda: append_status(f"Latest version: {remote_commit}"))
+                current_version = result['current_version']
+                latest_version = result['latest_version']
+                self.parent.after(0, lambda: append_status(f"Installed version: {current_version}"))
+                self.parent.after(0, lambda: append_status(f"Latest release: {latest_version}"))
                 
                 if not result['has_updates']:
                     self.parent.after(0, lambda: append_status("\n✅ You are running the latest version!"))
                 else:
-                    self.parent.after(0, lambda: append_status(f"\n⚠️ You are {commits_behind} commit(s) behind."))
-                    self.parent.after(0, lambda: append_status("Click 'Update Now' to download the latest version."))
+                    self.parent.after(0, lambda: append_status("\nA newer published release is available."))
+                    if not getattr(sys, "frozen", False):
+                        self.parent.after(0, lambda: append_status(
+                            "Automatic replacement is available in the packaged executable."
+                        ))
+                        return
                     
                     # Enable update button
                     def enable_update():
@@ -1653,18 +1657,16 @@ class MainWindow:
         def perform_update_thread():
             """Background thread to perform the update."""
             try:
-                self.parent.after(0, lambda: append_status("\nPulling latest changes..."))
-                
-                # Check for local changes
-                if updater.has_local_changes():
-                    self.parent.after(0, lambda: append_status("Stashing local changes..."))
-                
-                # Pull the updates
-                result = updater.pull_updates()
+                self.parent.after(0, lambda: append_status("\nDownloading the release executable..."))
+                release, error = updater.get_latest_release()
+                result = ({"success": False, "error": error} if release is None
+                          else updater.download_release_executable(release))
+                if result['success']:
+                    result = updater.prepare_executable_replacement(result['path'])
                 
                 if result['success']:
-                    self.parent.after(0, lambda: append_status("✅ Update successful!"))
-                    self.parent.after(0, lambda: append_status("\n⚠️ Please restart the application to apply changes."))
+                    self.parent.after(0, lambda: append_status("✅ Update downloaded and verified."))
+                    self.parent.after(0, lambda: append_status("The application will close and restart with the new release."))
                     
                     # Show restart prompt
                     def prompt_restart():
@@ -1673,10 +1675,8 @@ class MainWindow:
                             "The application has been updated successfully.\n\n"
                             "Would you like to restart now to apply the changes?"
                         ):
-                            # Close the update window
                             update_window.destroy()
-                            # Restart the application
-                            updater.restart_application()
+                            self.parent.destroy()
                     
                     self.parent.after(0, prompt_restart)
                 else:

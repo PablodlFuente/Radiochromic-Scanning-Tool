@@ -189,7 +189,8 @@ class ImageProcessor:
     def _setup_temp_dir(self):
         """Set up the temporary directory for the application."""
         # Create a temp directory in the application folder
-        temp_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "temp")
+        from app.paths import PROJECT_ROOT
+        temp_dir = os.path.join(PROJECT_ROOT, "temp")
         
         # Create the directory if it doesn't exist
         if not os.path.exists(temp_dir):
