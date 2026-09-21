@@ -103,6 +103,16 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertTrue(Path("resources/radiochromic_film_analyzer.ico").is_file())
         self.assertIn('icon="resources/radiochromic_film_analyzer.ico"', spec)
 
+    def test_local_documentation_and_wiki_have_a_navigable_home_page(self):
+        local_home = Path("docs/Home.md").read_text(encoding="utf-8")
+        wiki_home = Path("wiki/Home.md").read_text(encoding="utf-8")
+        sidebar = Path("wiki/_Sidebar.md").read_text(encoding="utf-8")
+        for page in ("MATHEMATICAL_MODEL", "WORKFLOWS", "DATA_FORMATS", "ARCHITECTURE", "RELEASES"):
+            self.assertTrue(Path("wiki", f"{page}.md").is_file())
+            self.assertIn(page, local_home)
+            self.assertIn(page, wiki_home)
+            self.assertIn(page, sidebar)
+
 
 if __name__ == "__main__":
     unittest.main()

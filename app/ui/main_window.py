@@ -11,15 +11,19 @@ import logging
 import os
 import sys
 import threading
+import webbrowser
 from app.ui.measurement_panel import MeasurementPanel
 from app.ui.image_settings_panel import ImageSettingsPanel
 from app.ui.image_panel import ImagePanel
 from app.core.image_processor import ImageProcessor
 from app.utils.file_manager import FileManager
 from app.utils.config_manager import ConfigManager
-from app.paths import CALIBRATION_ROOT
+from app.paths import CALIBRATION_ROOT, PROJECT_ROOT
+from app.version import __version__
 
 logger = logging.getLogger(__name__)
+AUTHOR_NAME = "Pablo de la Fuente Fernández"
+AUTHOR_GITHUB_URL = "https://github.com/PablodlFuente"
 
 class MainWindow:
     """Main window UI for the Radiochromic Film Analyzer."""
@@ -136,6 +140,7 @@ class MainWindow:
         # Help menu
         self.help_menu = tk.Menu(self.menu_bar, tearoff=0)
         self.menu_bar.add_cascade(label="Help", menu=self.help_menu)
+        self.help_menu.add_command(label="Documentation", command=self.open_local_documentation)
         self.help_menu.add_command(label="Check for Updates...", command=self.check_for_updates)
         self.help_menu.add_separator()
         self.help_menu.add_command(label="About", command=self.show_about)
@@ -198,6 +203,14 @@ class MainWindow:
         
         self.zoom_label = ttk.Label(self.status_bar, text="Zoom: 100%")
         self.zoom_label.pack(side=tk.RIGHT, padx=5)
+
+        self.about_footer = ttk.Label(
+            self.status_bar,
+            text=f"Version {__version__} · {AUTHOR_NAME}",
+            cursor="hand2",
+        )
+        self.about_footer.pack(side=tk.RIGHT, padx=(14, 5))
+        self.about_footer.bind("<Button-1>", lambda _event: self.show_about())
 
     def _enable_notebook_tab_reordering(self):
         """Allow notebook tabs to be reordered by dragging them."""
@@ -1547,17 +1560,59 @@ class MainWindow:
         logger.info(f"Flatness analysis ({image_source}): avg CV={avg_cv:.2f}%, grade={uniformity_grade}")
     
     def show_about(self):
-        """Show the about dialog."""
-        from app.version import __version__
-        messagebox.showinfo(
-            "About Radiochromic Film Analyzer",
-            "Radiochromic Film Analyzer\n\n"
-            "A tool for analyzing radiochromic films and calculating dose.\n\n"
-            "Created by Pablo de la Fuente Fernández\n"
-            "Licensed under the GNU GPL v3\n\n"
-            f"Version {__version__}\n\n"
-            "Tester: Paula Martinez Bononad"
+        """Show application information with a link to the author's profile."""
+        dialog = tk.Toplevel(self.parent)
+        dialog.title("About Radiochromic Film Analyzer")
+        dialog.transient(self.parent)
+        dialog.resizable(False, False)
+        dialog.grab_set()
+
+        frame = ttk.Frame(dialog, padding=24)
+        frame.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(
+            frame,
+            text="Radiochromic Film Analyzer",
+            font=("TkDefaultFont", 14, "bold"),
+        ).pack(pady=(0, 12))
+        ttk.Label(
+            frame,
+            text="A tool for analyzing radiochromic films and calculating dose.",
+            wraplength=380,
+            justify=tk.CENTER,
+        ).pack(pady=(0, 16))
+        ttk.Label(frame, text="Created by").pack()
+        author_link = ttk.Label(
+            frame,
+            text=AUTHOR_NAME,
+            foreground="#0563C1",
+            cursor="hand2",
+            font=("TkDefaultFont", 10, "underline"),
         )
+        author_link.pack(pady=(2, 14))
+        author_link.bind("<Button-1>", lambda _event: webbrowser.open_new_tab(AUTHOR_GITHUB_URL))
+        ttk.Label(frame, text=f"Version {__version__}\nLicensed under the GNU GPL v3", justify=tk.CENTER).pack()
+        ttk.Button(frame, text="Close", command=dialog.destroy).pack(pady=(18, 0))
+
+        dialog.update_idletasks()
+        x = self.parent.winfo_rootx() + max((self.parent.winfo_width() - dialog.winfo_width()) // 2, 0)
+        y = self.parent.winfo_rooty() + max((self.parent.winfo_height() - dialog.winfo_height()) // 2, 0)
+        dialog.geometry(f"+{x}+{y}")
+
+    def open_local_documentation(self):
+        """Open the installed documentation index in the default browser."""
+        documentation = PROJECT_ROOT / "docs" / "Home.md"
+        if not documentation.is_file():
+            messagebox.showerror(
+                "Documentation unavailable",
+                "The local documentation index is missing. Reinstall the application to restore it.",
+                parent=self.parent,
+            )
+            return
+        try:
+            webbrowser.open_new_tab(documentation.resolve().as_uri())
+        except Exception as exc:
+            logger.error("Could not open local documentation", exc_info=True)
+            messagebox.showerror("Documentation unavailable", str(exc), parent=self.parent)
     
     def check_for_updates(self):
         """Check for updates from GitHub and offer to update if available."""

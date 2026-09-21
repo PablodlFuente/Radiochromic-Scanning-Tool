@@ -52,6 +52,14 @@ class TkWorkflowTests(unittest.TestCase):
             try:
                 window = MainWindow(root, config)
                 root.main_window = window
+                self.assertEqual(
+                    window.about_footer.cget("text"),
+                    "Version 2.0.1 · Pablo de la Fuente Fernández",
+                )
+                with patch("app.ui.main_window.webbrowser.open_new_tab") as open_browser:
+                    window.open_local_documentation()
+                self.assertTrue(open_browser.called)
+                self.assertIn("docs/Home.md", open_browser.call_args.args[0])
                 from custom_plugins import auto_measurements
                 tab = auto_measurements._AUTO_MEASUREMENTS_INSTANCE
                 self.assertIsNotNone(tab)

@@ -53,6 +53,7 @@ CUDA acceleration is optional and requires compatible OpenCV/CuPy builds. All sc
 
 ## Technical documentation
 
+- [Documentation home](docs/Home.md)
 - [Mathematical model and uncertainty](docs/MATHEMATICAL_MODEL.md)
 - [Calibration and analysis workflows](docs/WORKFLOWS.md)
 - [Data formats, configuration and traceability](docs/DATA_FORMATS.md)
