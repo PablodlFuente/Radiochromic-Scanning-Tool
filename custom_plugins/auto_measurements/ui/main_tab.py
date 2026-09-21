@@ -3074,7 +3074,7 @@ class AutoMeasurementsTab(ttk.Frame):
     # ---------------------------------------------------------------
 
     def _show_shape_picker(self, target, anchor):
-        """Open a compact geometry picker directly below the pressed button."""
+        """Open a vertical popover menu below the pressed button."""
         if self._shape_picker_window is not None:
             try:
                 self._shape_picker_window.destroy()
@@ -3085,29 +3085,56 @@ class AutoMeasurementsTab(ttk.Frame):
         popup.overrideredirect(True)
         popup.transient(self.frame.winfo_toplevel())
         popup.attributes("-topmost", True)
-        picker = ttk.Frame(popup, padding=3, relief="solid", borderwidth=1)
+        picker = tk.Frame(
+            popup, background="#7a7a7a", borderwidth=0,
+            padx=12, pady=10,
+        )
         picker.pack()
 
+        def close_popup():
+            if self._shape_picker_window is popup:
+                self._shape_picker_window = None
+            try:
+                popup.destroy()
+            except tk.TclError:
+                pass
+
         def select_shape(shape_type):
-            popup.destroy()
-            self._shape_picker_window = None
+            close_popup()
             self._start_draw_mode(shape_type)
 
         for label, shape_type in (
-            ("Circle", "circle"),
-            ("Rectangle", "rectangle"),
-            ("Custom Area", "polygon"),
+            ("Draw rectangle", "rectangle"),
+            ("Draw circle", "circle"),
+            ("Draw custom", "polygon"),
         ):
-            ttk.Button(
+            tk.Button(
                 picker, text=label,
                 command=lambda selected=shape_type: select_shape(selected),
-            ).pack(side=tk.LEFT, padx=1)
+                background="white", activebackground="#f0f0f0",
+                foreground="#202020", relief=tk.FLAT, borderwidth=0,
+                width=19, font=("Segoe UI", 10), cursor="hand2",
+            ).pack(fill=tk.X, pady=4, ipady=5)
 
         popup.update_idletasks()
-        x = anchor.winfo_rootx()
+        x = int(
+            anchor.winfo_rootx() + anchor.winfo_width() / 2
+            - popup.winfo_reqwidth() / 2
+        )
         y = anchor.winfo_rooty() + anchor.winfo_height() + 2
+        x = max(0, min(x, popup.winfo_screenwidth() - popup.winfo_reqwidth()))
+        y = max(0, min(y, popup.winfo_screenheight() - popup.winfo_reqheight()))
         popup.geometry(f"+{x}+{y}")
-        popup.bind("<Escape>", lambda _event: popup.destroy())
+        popup.bind("<Escape>", lambda _event: close_popup())
+
+        def close_when_focus_leaves(_event=None):
+            def check_focus():
+                focused = popup.focus_get()
+                if focused is None or not str(focused).startswith(str(popup)):
+                    close_popup()
+            popup.after_idle(check_focus)
+
+        popup.bind("<FocusOut>", close_when_focus_leaves)
         popup.focus_force()
         self._shape_picker_window = popup
 
