@@ -579,76 +579,61 @@ class AnalysisTab:
     # ------------------------------------------------------------------
     # Isobar contour extraction (smooth continuous lines)
     # ------------------------------------------------------------------
-    def _extract_isobars(self, dose_2d, cx, cy, radius, n_levels=5):
-        """Compute smooth isodose contour lines inside a circle.
+    def _extract_isobars(self, dose_2d, cx, cy, radius, n_levels=5,
+                         ring_center=None):
+        """Return concentric isodoses from an azimuthally averaged dose field.
 
-        Uses matplotlib contour generator for smooth curves, then clips
-        to the circular boundary.  Returns list of Nx1x2 int32 arrays
-        in absolute image coordinates.
+        The measured pixels are strongly smoothed before forming a radial dose
+        profile.  Drawing the corresponding radii avoids presenting scanner
+        grain and isolated flat-field residuals as meaningful dose structure.
         """
-        import matplotlib
-        matplotlib.use('Agg')  # non-interactive backend (safe for thread)
-        import matplotlib.pyplot as plt
-
         extraction = self._extract_circle_roi(dose_2d, cx, cy, radius)
         if extraction is None:
             return []
-        roi, xx, yy, mask, x_min, y_min = extraction
-
-        # Contours should represent the large-scale dose field, not scanner grain
-        # or isolated invalid pixels.  The smoothing scale follows the measured
-        # area's radius so it behaves consistently at different resolutions.
-        roi = self._smooth_dose_map(roi, sigma=max(1.5, float(radius) * 0.035))
-        valid_vals = roi[np.isfinite(roi) & mask]
-        if len(valid_vals) < 10:
+        roi, xx, yy, mask, _x_min, _y_min = extraction
+        roi = self._smooth_dose_map(roi, sigma=max(2.0, float(radius) * 0.08))
+        valid = np.isfinite(roi) & mask
+        if np.count_nonzero(valid) < 20:
             return []
 
-        v_min, v_max = float(np.nanmin(valid_vals)), float(np.nanmax(valid_vals))
-        if v_max - v_min < 1e-9:
+        center_x, center_y = ring_center or (cx, cy)
+        center_offset = float(np.hypot(center_x - cx, center_y - cy))
+        usable_radius = float(radius) - center_offset - 1.0
+        if usable_radius < 5.0:
             return []
 
-        percentile_count = max(1, min(int(n_levels), 5))
-        percentile_levels = np.linspace(20.0, 80.0, percentile_count)
-        levels = np.unique(np.percentile(valid_vals, percentile_levels))
-        if len(levels) == 0:
+        radial_distance = np.hypot(xx - center_x, yy - center_y)
+        bin_index = np.floor(radial_distance[valid]).astype(int)
+        values = roi[valid]
+        bin_count = int(np.floor(usable_radius)) + 1
+        profile = np.full(bin_count, np.nan, dtype=np.float64)
+        for index in range(bin_count):
+            samples = values[bin_index == index]
+            if samples.size:
+                profile[index] = float(np.median(samples))
+
+        finite = np.isfinite(profile)
+        if np.count_nonzero(finite) < 5:
             return []
-        if len(levels) > 5:
-            levels = levels[:5]
-        levels = levels[(levels > v_min) & (levels < v_max)]
-        if len(levels) == 0:
+        locations = np.arange(bin_count, dtype=np.float64)
+        profile = np.interp(locations, locations[finite], profile[finite])
+        profile = gaussian_filter(profile, sigma=max(1.0, float(radius) * 0.025))
+        if float(np.ptp(profile)) <= np.finfo(float).eps * max(
+            float(np.max(np.abs(profile))), 1.0
+        ) * 64.0:
             return []
 
-        # Use matplotlib to get smooth contour paths
-        fig, ax = plt.subplots(1, 1, figsize=(1, 1))
-        contour_data = np.ma.array(roi, mask=(~mask) | ~np.isfinite(roi))
-        cs = ax.contour(xx, yy, contour_data, levels=levels)
-        plt.close(fig)
-
-        contours_out = []
-        minimum_area = np.pi * float(radius) ** 2 * 0.015
-        # Keep one dominant contour per dose level.  Tiny satellite contours are
-        # noise and were the cause of the saturated, stippled overlay.
-        for level_segs in cs.allsegs:
-            candidates = []
-            for seg in level_segs:
-                if len(seg) < 8:
-                    continue
-                dx = seg[:, 0] - cx
-                dy = seg[:, 1] - cy
-                inside = (dx**2 + dy**2) <= (radius * 1.02)**2
-                if np.sum(inside) < 8:
-                    continue
-                pts = seg[inside]
-                area = abs(float(cv2.contourArea(pts.astype(np.float32))))
-                if area >= minimum_area:
-                    candidates.append((area, pts))
-            if candidates:
-                _, dominant = max(candidates, key=lambda item: item[0])
-                contours_out.append(
-                    np.rint(dominant).reshape(-1, 1, 2).astype(np.int32)
-                )
-
-        return contours_out
+        count = max(1, min(int(n_levels), 5))
+        contour_radii = np.linspace(0.20, 0.85, count) * usable_radius
+        angles = np.linspace(0.0, 2.0 * np.pi, 181, endpoint=True)
+        contours = []
+        for contour_radius in contour_radii:
+            points = np.column_stack((
+                center_x + contour_radius * np.cos(angles),
+                center_y + contour_radius * np.sin(angles),
+            ))
+            contours.append(np.rint(points).reshape(-1, 1, 2).astype(np.int32))
+        return contours
 
     def _compute_centroids(self):
         """Compare geometric vs dose-weighted centroid for each circle."""
@@ -743,7 +728,9 @@ class AnalysisTab:
                 _CENTROID_MARKERS.append((float(cx), float(cy), float(dose_cx), float(dose_cy)))
 
                 # Compute isobars for this circle
-                isobar_contours = self._extract_isobars(dose_2d, cx, cy, radius)
+                isobar_contours = self._extract_isobars(
+                    dose_2d, cx, cy, radius, ring_center=(dose_cx, dose_cy)
+                )
                 _ISOBAR_CONTOURS.extend(isobar_contours)
 
         if non_converged:

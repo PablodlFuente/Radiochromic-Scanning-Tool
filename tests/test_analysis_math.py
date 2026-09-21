@@ -58,6 +58,10 @@ class AnalysisMathTests(unittest.TestCase):
         self.assertGreaterEqual(len(contours), 3)
         self.assertLessEqual(len(contours), 5)
         self.assertTrue(all(len(contour) >= 8 for contour in contours))
+        for contour in contours:
+            points = contour[:, 0, :].astype(float)
+            radial_distance = np.hypot(points[:, 0] - 90, points[:, 1] - 90)
+            self.assertLess(np.std(radial_distance), 0.6)
 
     def test_dose_plot_is_opened_in_application_owned_window(self):
         analysis = AnalysisTab.__new__(AnalysisTab)
