@@ -137,7 +137,6 @@ class MainWindow:
         self.help_menu = tk.Menu(self.menu_bar, tearoff=0)
         self.menu_bar.add_cascade(label="Help", menu=self.help_menu)
         self.help_menu.add_command(label="Check for Updates...", command=self.check_for_updates)
-        self.help_menu.add_command(label="Downgrade...", command=self.open_downgrade_dialog)
         self.help_menu.add_separator()
         self.help_menu.add_command(label="About", command=self.show_about)
     
