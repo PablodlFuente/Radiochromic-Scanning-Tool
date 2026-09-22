@@ -105,6 +105,7 @@ class MainWindow:
         # Toggle for field flattening (independent)
         # Store the menu index for enabling/disabling later
         self.flat_var = tk.BooleanVar(value=False)
+        self._requested_flat_correction = False
         self.calibration_menu.add_checkbutton(
             label="Apply Flat",
             variable=self.flat_var,
@@ -114,6 +115,11 @@ class MainWindow:
         
         # Toggle for dose conversion (independent, can combine with flat)
         self.calibration_var = tk.BooleanVar(value=False)
+        # Keep the user's intention while temporarily selecting a folder that
+        # has no calibration.  The menu variable must become false while that
+        # folder is unavailable, but selecting the prior calibration again
+        # should immediately reapply dose conversion.
+        self._requested_calibration_correction = False
         self.calibration_menu.add_checkbutton(
             label="Apply Dose Conversion",
             variable=self.calibration_var,
@@ -1115,8 +1121,10 @@ class MainWindow:
         # Preserve the user's correction choices across a calibration reload.
         # update_settings intentionally clears stale calibration state before
         # loading the newly selected calibration.
-        apply_flat = bool(self.flat_var.get())
-        apply_calibration = bool(self.calibration_var.get())
+        apply_flat = getattr(self, "_requested_flat_correction", bool(self.flat_var.get()))
+        apply_calibration = getattr(
+            self, "_requested_calibration_correction", bool(self.calibration_var.get())
+        )
         # Update image processor settings
         calibration_changed = self.image_processor.update_settings(self.app_config)
         if calibration_changed:
@@ -1335,6 +1343,7 @@ class MainWindow:
         """Toggle dose conversion on/off (independent of flat)."""
         if not self.image_processor.has_image():
             self.calibration_var.set(False)
+            self._requested_calibration_correction = False
             return
 
         if self.calibration_var.get():
@@ -1342,6 +1351,7 @@ class MainWindow:
             if not self.image_processor.has_calibration():
                 messagebox.showwarning("Calibration", "No calibration parameters available.")
                 self.calibration_var.set(False)
+                self._requested_calibration_correction = False
                 return
             
             # Check bit depth compatibility
@@ -1360,6 +1370,7 @@ class MainWindow:
                 
                 if not response:
                     self.calibration_var.set(False)
+                    self._requested_calibration_correction = False
                     self.update_status("Calibration cancelled - bit depth mismatch")
                     return
                 
@@ -1372,14 +1383,16 @@ class MainWindow:
                 if not success_rescale:
                     messagebox.showerror("Error", f"Failed to rescale image to {calibration_bits}-bit.")
                     self.calibration_var.set(False)
+                    self._requested_calibration_correction = False
                     return
-        
+        self._requested_calibration_correction = bool(self.calibration_var.get())
         self._reapply_corrections_async(self._update_correction_status)
     
     def apply_flat(self):
         """Toggle field flattening on/off (independent of dose conversion)."""
         if not self.image_processor.has_image():
             self.flat_var.set(False)
+            self._requested_flat_correction = False
             return
 
         if self.flat_var.get():
@@ -1389,8 +1402,9 @@ class MainWindow:
                     "No field flattening data available.\n\n"
                     "Use 'Calibrate Scanner' to create field flattening data first.")
                 self.flat_var.set(False)
+                self._requested_flat_correction = False
                 return
-        
+        self._requested_flat_correction = bool(self.flat_var.get())
         self._reapply_corrections_async(self._update_correction_status)
     
     def measure_image_flatness(self):

@@ -172,6 +172,11 @@ class UpdateCheckerReleaseTests(unittest.TestCase):
                 result = checker.prepare_installer_update(installer)
             self.assertTrue(result["success"], result)
             self.assertTrue(Path(popen.call_args.kwargs["cwd"]).samefile(root))
+            helper = installer.parent / "apply_radiochromic_update.cmd"
+            helper_text = helper.read_text(encoding="utf-8")
+            self.assertIn('set "_PYI_APPLICATION_HOME_DIR="', helper_text)
+            self.assertIn('set "_PYI_PARENT_PROCESS_LEVEL="', helper_text)
+            self.assertIn('set "PYINSTALLER_RESET_ENVIRONMENT=1"', helper_text)
 
 
 if __name__ == "__main__":

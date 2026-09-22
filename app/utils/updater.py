@@ -191,6 +191,11 @@ class UpdateChecker:
             "if not errorlevel 1 (timeout /t 1 /nobreak >NUL & goto wait_for_exit)\n"
             "start \"\" /wait \"%INSTALLER%\" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART\n"
             "if errorlevel 1 exit /b 1\n"
+            "rem Do not pass one-file extraction state to the restarted executable.\n"
+            "set \"_PYI_APPLICATION_HOME_DIR=\"\n"
+            "set \"_PYI_PARENT_PROCESS_LEVEL=\"\n"
+            "set \"_PYI_SPLASH_IPC=\"\n"
+            "set \"PYINSTALLER_RESET_ENVIRONMENT=1\"\n"
             "start \"\" \"%TARGET%\"\n"
             "del \"%INSTALLER%\"\n"
             "del \"%~f0\"\n",

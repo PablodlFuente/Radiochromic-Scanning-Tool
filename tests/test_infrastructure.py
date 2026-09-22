@@ -12,6 +12,7 @@ from unittest.mock import patch
 from app.models.config_model import DEFAULT_CONFIG
 from app.paths import ApplicationPermissionError, ensure_writable_directories
 from app.plugins.plugin_manager import PluginManager
+from app.ui.main_window import MainWindow
 from app.utils.config_manager import ConfigManager
 from app.version import __version__
 from custom_plugins.auto_measurements.core.metadata import MetadataExtractor
@@ -130,6 +131,51 @@ class AutoMeasurementNavigationTests(unittest.TestCase):
         self.assertEqual(manager.file_counter_label.values["text"], "2/2")
         self.assertEqual(manager.prev_button.values["state"], "normal")
         self.assertEqual(manager.next_button.values["state"], "disabled")
+
+
+class CalibrationSelectionTests(unittest.TestCase):
+    def test_reselecting_a_calibration_restores_requested_dose_conversion(self):
+        class Variable:
+            def __init__(self, value):
+                self.value = value
+
+            def get(self):
+                return self.value
+
+            def set(self, value):
+                self.value = value
+
+        class Processor:
+            calibration_available = False
+
+            def update_settings(self, _config):
+                return True
+
+            def has_field_flattening(self):
+                return False
+
+            def has_calibration(self):
+                return self.calibration_available
+
+            def has_image(self):
+                return False
+
+        window = MainWindow.__new__(MainWindow)
+        window.flat_var = Variable(False)
+        window.calibration_var = Variable(True)
+        window._requested_flat_correction = False
+        window._requested_calibration_correction = True
+        window.app_config = {"calibration_folder": "default"}
+        window.image_processor = Processor()
+
+        window.apply_settings()
+        self.assertFalse(window.calibration_var.get())
+        self.assertTrue(window._requested_calibration_correction)
+
+        window.image_processor.calibration_available = True
+        window.app_config["calibration_folder"] = "validated_calibration"
+        window.apply_settings()
+        self.assertTrue(window.calibration_var.get())
 
 
 class ReleaseMetadataTests(unittest.TestCase):
