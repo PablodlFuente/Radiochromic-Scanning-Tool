@@ -15,6 +15,7 @@ from app.plugins.plugin_manager import PluginManager
 from app.utils.config_manager import ConfigManager
 from app.version import __version__
 from custom_plugins.auto_measurements.core.metadata import MetadataExtractor
+from custom_plugins.auto_measurements.core.file_manager import FileDataManager
 
 
 class ConfigurationTests(unittest.TestCase):
@@ -105,6 +106,30 @@ class PluginLifecycleTests(unittest.TestCase):
             )
             manager = PluginManager(directory)
         self.assertIn("my_plugin", manager.plugin_names())
+
+
+class AutoMeasurementNavigationTests(unittest.TestCase):
+    def test_loaded_batch_path_updates_counter_and_both_navigation_buttons(self):
+        class Control:
+            def __init__(self):
+                self.values = {}
+
+            def config(self, **kwargs):
+                self.values.update(kwargs)
+
+        manager = FileDataManager.__new__(FileDataManager)
+        manager.file_list = [r"C:\\batch\\first.tif", r"C:\\batch\\second.tif"]
+        manager.current_file_index = 0
+        manager.prev_button = Control()
+        manager.next_button = Control()
+        manager.file_counter_label = Control()
+        manager.current_file_label = None
+
+        self.assertTrue(manager.set_current_file_from_loaded_path(r"C:\\batch\\second.tif"))
+        self.assertEqual(manager.current_file_index, 1)
+        self.assertEqual(manager.file_counter_label.values["text"], "2/2")
+        self.assertEqual(manager.prev_button.values["state"], "normal")
+        self.assertEqual(manager.next_button.values["state"], "disabled")
 
 
 class ReleaseMetadataTests(unittest.TestCase):

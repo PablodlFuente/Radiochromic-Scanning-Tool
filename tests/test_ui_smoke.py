@@ -69,7 +69,7 @@ class TkWorkflowTests(unittest.TestCase):
                 root.main_window = window
                 self.assertEqual(
                     window.about_footer.cget("text"),
-                    "Version 2.1.5 · Pablo de la Fuente Fernández",
+                    "Version 2.1.6 · Pablo de la Fuente Fernández",
                 )
                 with patch("app.ui.main_window.webbrowser.open_new_tab") as open_browser:
                     window.open_local_documentation()

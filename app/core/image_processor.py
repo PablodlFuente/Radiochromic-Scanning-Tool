@@ -1837,7 +1837,7 @@ class ImageProcessor:
             self.load_field_flattening()
     
         logger.info("Settings updated")
-        return True
+        return cal_folder_changed
     
     @synchronized
     def process_corrections(self, *, flat=False, calibration=False):

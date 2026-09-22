@@ -94,6 +94,32 @@ class AnalysisMathTests(unittest.TestCase):
         show.assert_called_once()
         plt.close("all")
 
+    def test_line_profile_uses_the_coordinate_that_varies_along_each_axis(self):
+        panel = MeasurementPanel.__new__(MeasurementPanel)
+        panel.viz_fig = plt.Figure()
+        panel.viz_canvas = SimpleNamespace(draw=lambda: None)
+        panel.image_processor = SimpleNamespace(
+            calibration_applied=True,
+            get_last_measurement_raw_data=lambda: np.array([
+                [1.0, 1.0, 1.0], [2.0, 2.0, 2.0], [3.0, 3.0, 3.0],
+            ]),
+            # Coordinates are stored as (column, row).
+            last_measurement_coordinates=np.array([
+                [10.0, 7.0], [11.0, 7.0], [12.0, 7.0],
+            ]),
+        )
+        panel.line_orientation_var = SimpleNamespace(get=lambda: "horizontal")
+        panel._update_line_profile()
+        np.testing.assert_array_equal(panel.viz_fig.axes[0].lines[0].get_xdata(), [10, 11, 12])
+
+        panel.viz_fig.clear()
+        panel.image_processor.last_measurement_coordinates = np.array([
+            [4.0, 20.0], [4.0, 21.0], [4.0, 22.0],
+        ])
+        panel.line_orientation_var = SimpleNamespace(get=lambda: "vertical")
+        panel._update_line_profile()
+        np.testing.assert_array_equal(panel.viz_fig.axes[0].lines[0].get_xdata(), [20, 21, 22])
+
     def test_measurement_limit_tracks_largest_image_side(self):
         panel = MeasurementPanel.__new__(MeasurementPanel)
         panel.image_processor = SimpleNamespace(

@@ -68,6 +68,23 @@ class FileDataManager:
         self.next_button = next_button
         self.file_counter_label = file_counter_label
         self.current_file_label = current_file_label
+
+    @staticmethod
+    def _normalise_path(file_path):
+        """Return a Windows-comparable path without changing its meaning."""
+        return os.path.normcase(os.path.abspath(os.fspath(file_path)))
+
+    def set_current_file_from_loaded_path(self, file_path):
+        """Synchronise navigation with the image that the main window loaded."""
+        loaded_path = self._normalise_path(file_path)
+        for index, candidate in enumerate(self.file_list):
+            if self._normalise_path(candidate) == loaded_path:
+                self.current_file_index = index
+                self.update_navigation_controls()
+                return True
+        self.current_file_index = -1
+        self.update_navigation_controls()
+        return False
     
     def add_files(self, store_current_callback, update_treeview_callback):
         """Allow user to select multiple image files for analysis.
@@ -115,7 +132,8 @@ class FileDataManager:
             
             # Add new files to the list
             new_files_count = 0
-            for file_path in files:
+            for selected_path in files:
+                file_path = self._normalise_path(selected_path)
                 if file_path not in self.file_list:
                     self.file_list.append(file_path)
                     new_files_count += 1
@@ -361,6 +379,7 @@ class FileDataManager:
                 filename = os.path.basename(file_path)
                 if self.current_file_label:
                     self.current_file_label.config(text=f"Current: {filename}", foreground="black")
+                self.update_navigation_controls()
 
             self.main_window.load_image(file_path, on_complete=finish_loaded_file)
             

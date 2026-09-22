@@ -542,7 +542,8 @@ class MainWindow:
         # Create settings window
         settings_window = tk.Toplevel(self.parent)
         settings_window.title("Settings")
-        settings_window.geometry("500x600")  # 20% taller
+        settings_window.geometry("640x680")
+        settings_window.minsize(520, 480)
         settings_window.grab_set()  # Modal
         
         # Create a canvas with scrollbar for content
@@ -561,8 +562,16 @@ class MainWindow:
         )
         
         # Create window in canvas
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas_window = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
+
+        # Keep the embedded frame as wide as the viewport.  Without this,
+        # ttk widgets retain their requested width and the right side of the
+        # Settings dialog is clipped instead of reflowing with the window.
+        canvas.bind(
+            "<Configure>",
+            lambda event: canvas.itemconfigure(canvas_window, width=event.width),
+        )
         
         # Pack canvas and scrollbar
         canvas.pack(side="left", fill="both", expand=True)
@@ -981,53 +990,74 @@ class MainWindow:
             font=("Arial", 9)
         ).pack(anchor=tk.W, padx=10, pady=(0, 10))
         
-        # Buttons
+        # Changes are persisted and applied automatically.  A short debounce
+        # makes sliders practical while still applying a settled value
+        # immediately from the user's point of view.
         button_frame = ttk.Frame(main_frame)
         button_frame.pack(fill=tk.X, pady=20)
-        
-        def save_settings():
-            # Update config
-            self.app_config["auto_measure"] = auto_measure_var.get()
-            self.app_config["colormap"] = colormap_var.get()
-            self.app_config["use_gpu"] = use_gpu_var.get()
-            self.app_config["gpu_force_enabled"] = gpu_force_enabled_var.get()
-            self.app_config["use_multithreading"] = use_multithreading_var.get()
-            self.app_config["num_threads"] = num_threads_var.get()
-            self.app_config["max_memory_percent"] = memory_var.get()
-            self.app_config["max_cache_mb"] = cache_var.get()
-            self.app_config["log_level"] = log_level_var.get()
-            self.app_config["detailed_logging"] = detailed_logging_var.get()
-            self.app_config["uncertainty_estimation_method"] = uncertainty_method_var.get()
-            self.app_config["calibration_folder"] = calibration_folder_var.get()
-            self.app_config["calibration_conversion_method"] = conversion_method_var.get()
-            self.app_config["automatic_updates"] = automatic_updates_var.get()
-            self.app_config.pop("check_updates_on_startup", None)
-            
-            # Save configuration to file
+        settings_apply_job = None
+
+        def apply_changed_settings():
+            nonlocal settings_apply_job
+            settings_apply_job = None
             try:
-                config_manager = ConfigManager()
-                config_manager.save_config(self.app_config)
-                logger.info("Settings saved to configuration file")
-            except Exception as e:
-                logger.error(f"Error saving configuration: {str(e)}", exc_info=True)
-                messagebox.showerror("Error", f"Error saving configuration: {str(e)}")
+                changed_values = {
+                    "auto_measure": auto_measure_var.get(),
+                    "colormap": colormap_var.get(),
+                    "use_gpu": use_gpu_var.get(),
+                    "gpu_force_enabled": gpu_force_enabled_var.get(),
+                    "use_multithreading": use_multithreading_var.get(),
+                    "num_threads": num_threads_var.get(),
+                    "max_memory_percent": memory_var.get(),
+                    "max_cache_mb": cache_var.get(),
+                    "log_level": log_level_var.get(),
+                    "detailed_logging": detailed_logging_var.get(),
+                    "uncertainty_estimation_method": uncertainty_method_var.get(),
+                    "calibration_folder": calibration_folder_var.get(),
+                    "calibration_conversion_method": conversion_method_var.get(),
+                    "automatic_updates": automatic_updates_var.get(),
+                }
+            except tk.TclError:
+                # A Spinbox can be temporarily empty while the user edits it.
                 return
-            
-            # Apply settings
-            self.apply_settings()
-            
-            # Update calibration menu states (flat/dose availability may have changed)
-            self._update_calibration_menu_states()
-            
-            # Clean up events and close window
-            cleanup_events()
-            settings_window.destroy()
-            
-            # Show success message
-            messagebox.showinfo("Settings", "Settings saved and applied successfully.")
+
+            self.app_config.update(changed_values)
+            self.app_config.pop("check_updates_on_startup", None)
+            try:
+                ConfigManager().save_config(self.app_config)
+                self.apply_settings()
+                self._update_calibration_menu_states()
+                logger.info("Settings changed, saved and applied")
+            except Exception as exc:
+                logger.error("Could not apply changed settings", exc_info=True)
+                messagebox.showerror("Settings", f"Could not apply settings:\n{exc}")
+
+        def schedule_settings_apply(*_args):
+            nonlocal settings_apply_job
+            if settings_apply_job is not None:
+                try:
+                    settings_window.after_cancel(settings_apply_job)
+                except tk.TclError:
+                    return
+            settings_apply_job = settings_window.after(180, apply_changed_settings)
+
+        for setting_var in (
+            auto_measure_var, colormap_var, use_gpu_var, gpu_force_enabled_var,
+            use_multithreading_var, num_threads_var, memory_var, cache_var,
+            log_level_var, detailed_logging_var, uncertainty_method_var,
+            calibration_folder_var, conversion_method_var, automatic_updates_var,
+        ):
+            setting_var.trace_add("write", schedule_settings_apply)
         
         # Cleanup function to unbind events when window is destroyed
         def cleanup_events():
+            nonlocal settings_apply_job
+            if settings_apply_job is not None:
+                try:
+                    settings_window.after_cancel(settings_apply_job)
+                except tk.TclError:
+                    pass
+                settings_apply_job = None
             try:
                 canvas.unbind_all("<MouseWheel>")
                 canvas.unbind_all("<Button-4>")
@@ -1035,20 +1065,14 @@ class MainWindow:
             except tk.TclError:
                 pass
         
-        def cancel_settings():
+        def close_settings():
             cleanup_events()
             settings_window.destroy()
         
         ttk.Button(
             button_frame, 
-            text="Cancel", 
-            command=cancel_settings
-        ).pack(side=tk.RIGHT, padx=5)
-        
-        ttk.Button(
-            button_frame, 
-            text="Save & Apply", 
-            command=save_settings
+            text="Close",
+            command=close_settings
         ).pack(side=tk.RIGHT, padx=5)
         
         # Make canvas scrollable with mouse wheel
@@ -1080,7 +1104,7 @@ class MainWindow:
         canvas.bind_all("<Button-5>", _on_scroll_down)   # For Linux
         
         # Bind cleanup to window destruction
-        settings_window.protocol("WM_DELETE_WINDOW", lambda: (cleanup_events(), settings_window.destroy()))
+        settings_window.protocol("WM_DELETE_WINDOW", close_settings)
         
         # Make sure scrollregion is updated properly
         canvas.update_idletasks()
@@ -1088,8 +1112,16 @@ class MainWindow:
     
     def apply_settings(self):
         """Apply settings changes."""
+        # Preserve the user's correction choices across a calibration reload.
+        # update_settings intentionally clears stale calibration state before
+        # loading the newly selected calibration.
+        apply_flat = bool(self.flat_var.get())
+        apply_calibration = bool(self.calibration_var.get())
         # Update image processor settings
-        self.image_processor.update_settings(self.app_config)
+        calibration_changed = self.image_processor.update_settings(self.app_config)
+        if calibration_changed:
+            self.flat_var.set(apply_flat and self.image_processor.has_field_flattening())
+            self.calibration_var.set(apply_calibration and self.image_processor.has_calibration())
         
         # Reload current image if available
         if self.image_processor.has_image():

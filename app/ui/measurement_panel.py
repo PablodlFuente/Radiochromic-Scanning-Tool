@@ -775,11 +775,11 @@ class MeasurementPanel:
                 axis_label = "Distance (pixels)"
             elif orientation == "horizontal":
                 # Horizontal line - use column (X) coordinates
-                positions = coords[:, 1]
+                positions = coords[:, 0]
                 axis_label = "X Position (pixels)"
             else:  # vertical
                 # Vertical line - use row (Y) coordinates
-                positions = coords[:, 0]
+                positions = coords[:, 1]
                 axis_label = "Y Position (pixels)"
         else:
             # Fallback to simple indexing

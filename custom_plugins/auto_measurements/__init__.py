@@ -293,10 +293,7 @@ def on_image_loaded(file_path):
     tab = _AUTO_MEASUREMENTS_INSTANCE
     if tab is None:
         return
-    tab.file_manager.current_file_index = (
-        tab.file_manager.file_list.index(file_path)
-        if file_path in tab.file_manager.file_list else -1
-    )
+    tab.file_manager.set_current_file_from_loaded_path(file_path)
     tab.results = []
     for item in tab.tree.get_children():
         tab.tree.delete(item)
